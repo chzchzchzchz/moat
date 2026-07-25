@@ -1,0 +1,10 @@
+quantization:
+  bits: 4
+  group_size: 32
+  superblock_size: 256
+  alignment_bytes: 128
+
+execution:
+  batch_size: 8
+  reflection_threshold: 0.75
+  port: 8080
