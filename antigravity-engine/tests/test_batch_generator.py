@@ -142,10 +142,10 @@ class TestBatchedRolloutCoordinator(unittest.TestCase):
         """When a channel samples the EOS token (e.g. 2), its active_mask becomes False."""
         coordinator = BatchedRolloutCoordinator(n_channels=2, vocab_size=10, hidden_dim=16)
 
-        activations = np.random.randn(2, 16).astype(np.float16)
+        activations = np.ones((2, 16), dtype=np.float16)
         weights = np.zeros((16, 10), dtype=np.float16)
 
-        # Force channel 0 to pick token 2 (EOS)
+        # Force channel 0 and 1 to pick token 2 (EOS)
         weights[:, 2] = 10.0  # token 2 highest logit
 
         result = coordinator.step_decode_batch(activations, weights, temperature=0.0, eos_token_id=2)

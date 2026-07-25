@@ -59,13 +59,13 @@ class TestOpenAIServerEndpoint(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Start local HTTP server on port 8999 in background thread."""
-        cls.port = 9123
-        cls.server = HTTPServer(("127.0.0.1", cls.port), OpenAIRequestHandler)
+        """Start local HTTP server on dynamic port in background thread."""
+        cls.server = HTTPServer(("127.0.0.1", 0), OpenAIRequestHandler)
+        cls.port = cls.server.server_port
         cls.server_thread = threading.Thread(target=cls.server.serve_forever)
         cls.server_thread.daemon = True
         cls.server_thread.start()
-        time.sleep(0.5)  # Wait for server startup
+        time.sleep(0.2)  # Wait for server startup
 
     @classmethod
     def tearDownClass(cls):
