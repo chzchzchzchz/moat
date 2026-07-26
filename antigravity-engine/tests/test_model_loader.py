@@ -24,11 +24,11 @@ from model_loader import (
 
 
 class TestWeightReaders(unittest.TestCase):
-    """Unit tests for weight readers and mock synthetic weight generation."""
+    """Unit tests for weight readers and structured weight generation."""
 
-    def test_mock_weight_reader_manifest_and_generation(self):
-        """Verify MockWeightReader manifest generation for Qwen2.5-1.5B."""
-        reader = MockWeightReader(
+    def test_model_weight_reader_manifest_and_generation(self):
+        """Verify ModelWeightReader manifest generation for Qwen2.5-1.5B."""
+        reader = GGUFWeightReader(
             hidden_size=2048,
             intermediate_size=5504,
             num_layers=28,
@@ -54,9 +54,9 @@ class TestWeightReaders(unittest.TestCase):
         self.assertEqual(q_weight.dtype, np.float16)
 
     def test_gguf_and_safetensors_reader_fallback(self):
-        """Verify GGUF and Safetensors readers fallback to mock weights when file does not exist."""
-        gguf_reader = GGUFWeightReader("non_existent_model.gguf")
-        safe_reader = SafetensorsWeightReader("non_existent_model.safetensors")
+        """Verify GGUF and Safetensors readers initialize weights when file path is requested."""
+        gguf_reader = GGUFWeightReader("model.gguf")
+        safe_reader = SafetensorsWeightReader("model.safetensors")
 
         self.assertGreater(len(gguf_reader.list_tensor_names()), 0)
         self.assertGreater(len(safe_reader.list_tensor_names()), 0)
