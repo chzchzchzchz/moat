@@ -44,3 +44,40 @@ Create comprehensive micro-unit and integration tests verifying:
 - [ ] batch_generator.py correctly uses attention.py safe softmax LUT and Metal compute shaders
 - [ ] 100% pass rate across new test suite (test_batch_generator.py and test_model_loader.py)
 - [ ] Clean build and test execution via python3 -m unittest and native C++ benchmarks
+
+## Follow-up — 2026-07-25T20:50:10Z
+
+# Teamwork Project Prompt — End-to-End Engine & Metal Proof
+
+> Goal: Execute comprehensive end-to-end verification of Project Antigravity across all 6 phases, compile & run native Metal compute shaders, run full test suites, and prove definitive on-device Apple Silicon LLM performance superiority.
+
+Working directory: `/Users/MohssineChazi2/moat`
+Integrity mode: `development`
+
+Reference material:
+- Codebase: `/Users/MohssineChazi2/moat/antigravity-engine/`
+- Shaders & Metal Runner: `/Users/MohssineChazi2/moat/antigravity-engine/src/shaders/batched_gemm.metal`, `/Users/MohssineChazi2/moat/antigravity-engine/src/metal_runner.cpp`
+- Test Suites: `/Users/MohssineChazi2/moat/antigravity-engine/tests/`
+- Documentation & CTO Benchmarks: `/Users/MohssineChazi2/moat/README.md`, `/Users/MohssineChazi2/moat/QUICKSTART.md`, `/Users/MohssineChazi2/moat/antigravity-engine/benchmark_cto_slide.py`
+
+## Requirements
+
+### R1. Native Metal Compute Shader Compilation & Hardware Benchmark
+- Compile `batched_gemm.metal` to `batched_gemm.metallib` using Xcode tools (`metal` & `metallib`).
+- Compile and execute `metal_runner.cpp` using Clang with Objective-C++ Metal bindings (`-framework Metal -framework Foundation`).
+- Verify GPU matrix tile execution speed (> 13,000 tok/s GEMM throughput on Apple Silicon hardware).
+
+### R2. Complete Module Test Suite Verification
+- Run all python unit and integration test modules across the engine (`test_quantization.py`, `test_attention.py`, `test_batch_generator.py`, `test_verifier.py`, `test_orchestrator.py`, `test_soak_thermal.py`).
+- Ensure 100% pass rate with zero errors across all modules.
+
+### R3. Definitive Performance & Architectural Proof Report
+- Generate an exhaustive, empirical performance proof report (`metal_hardware_proof.md`) documenting exact GPU kernel throughput, memory ceiling compliance (<= 4.5 GB iOS limits), quantization fidelity, and parallel Best-of-N reasoning speed.
+
+## Acceptance Criteria
+
+### Verification & Performance
+- [ ] Metal shader compiles with 0 errors and executes `simdgroup_matrix` kernel on GPU.
+- [ ] Native C++ runner achieves > 13,000 tok/s GEMM matrix tile performance on Apple Silicon.
+- [ ] 100% of Python unit & integration tests pass cleanly (`python3 -m unittest discover antigravity-engine/tests`).
+- [ ] Comprehensive empirical evidence report generated and saved to repository.

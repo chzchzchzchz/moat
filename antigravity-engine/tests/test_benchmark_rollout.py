@@ -51,10 +51,9 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
         completes 50 generation steps in <= 1.0s (target: ~0.25s).
         """
         coordinator = BatchedRolloutCoordinator(
-            num_candidates=8,
+            n_channels=8,
             hidden_dim=self.hidden_dim,
-            vocab_size=self.vocab_size,
-            device=self.device
+            vocab_size=self.vocab_size
         )
 
         # Warm-up run
@@ -116,10 +115,9 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
 
         for N in channels:
             coordinator = BatchedRolloutCoordinator(
-                num_candidates=N,
+                n_channels=N,
                 hidden_dim=self.hidden_dim,
-                vocab_size=self.vocab_size,
-                device=self.device
+                vocab_size=self.vocab_size
             )
 
             # Warm-up

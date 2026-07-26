@@ -15,7 +15,6 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from model_loader import (
-    MockWeightReader,
     GGUFWeightReader,
     SafetensorsWeightReader,
     SuperBlockRepacker,
