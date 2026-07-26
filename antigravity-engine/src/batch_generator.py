@@ -301,14 +301,15 @@ class BatchedRolloutCoordinator:
         max_steps: int = 50,
         temperature: float = 0.7,
         prompt_tokens: Optional[List[int]] = None,
-        eos_token_id: int = -1
+        eos_token_id: int = -1,
+        weights: Optional[np.ndarray] = None
     ) -> List[List[int]]:
         """
         Execute multi-step parallel rollout generation across N channels.
         """
         self.reset()
         if weight_matrix is None:
-            weight_matrix = np.random.randn(self.hidden_dim, self.vocab_size).astype(np.float16)
+            weight_matrix = weights if weights is not None else np.random.randn(self.hidden_dim, self.vocab_size).astype(np.float16)
 
         for _ in range(max_steps):
             activations = np.random.randn(self.n_channels, self.hidden_dim).astype(np.float16)
