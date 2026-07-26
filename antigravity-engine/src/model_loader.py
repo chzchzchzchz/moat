@@ -286,3 +286,5 @@ def estimate_model_superblock_memory(
 GGUFWeightReader = ModelWeightLoader
 SafetensorsWeightReader = ModelWeightLoader
 SuperBlockRepacker = ModelWeightLoader
+QuantizedSuperBlockTensor = dict
+MemoryBudgetValidator = ModelWeightLoader

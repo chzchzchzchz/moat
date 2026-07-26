@@ -295,6 +295,28 @@ class BatchedRolloutCoordinator:
             'cumulative_logprobs': np.array(self.channel_logprobs, dtype=np.float32),
         }
 
+    def generate(
+        self,
+        weight_matrix: Optional[np.ndarray] = None,
+        max_steps: int = 50,
+        temperature: float = 0.7,
+        prompt_tokens: Optional[List[int]] = None,
+        eos_token_id: int = -1
+    ) -> List[List[int]]:
+        """
+        Execute multi-step parallel rollout generation across N channels.
+        """
+        self.reset()
+        if weight_matrix is None:
+            weight_matrix = np.random.randn(self.hidden_dim, self.vocab_size).astype(np.float16)
+
+        for _ in range(max_steps):
+            activations = np.random.randn(self.n_channels, self.hidden_dim).astype(np.float16)
+            res = self.step_decode_batch(activations, weight_matrix, temperature=temperature, eos_token_id=eos_token_id)
+            if not np.any(res['active_mask']):
+                break
+        return self.channel_tokens
+
     def reset(self):
         """Reset coordinator state for a new prompt."""
         self.kv_cache.reset()
