@@ -1,6 +1,0 @@
-module CAntigravityEngine {
-    umbrella header "AntigravityEngine.h"
-    header "antigravity_c_api.h"
-    header "antigravity_engine_c.h"
-    export *
-}
