@@ -199,27 +199,62 @@ class ModelWeightLoader:
                     "offset": offset
                 }
 
-        return {"metadata": metadata, "tensors": tensors, "version": version, "n_tensors": n_tensors}
+            # Record end of header and compute aligned tensor data start offset
+            header_offset = f.tell()
+            alignment = int(metadata.get("general.alignment", 32))
+            padding = (alignment - (header_offset % alignment)) % alignment
+            tensor_data_offset = header_offset + padding
+
+
+        return {
+            "metadata": metadata,
+            "tensors": tensors,
+            "version": version,
+            "n_tensors": n_tensors,
+            "tensor_data_offset": tensor_data_offset
+        }
 
     def auto_load_gguf(self, gguf_path: str) -> Dict:
         """
         Zero-config loader: loads a GGUF file directly from path, auto-allocates
         INT4 super-blocks, and maps memory aligned to 128-byte hardware cache lines.
+        Reads actual binary weight payloads from file stream.
         """
         if not os.path.exists(gguf_path):
-            # Fallback to initialized structured weights for demonstration
-            mock_weights = np.random.randn(2048, 2048).astype(np.float16)
-            return self.load_and_repack_layer("model.layers.0", mock_weights)
+            raise FileNotFoundError(f"GGUF model file not found at '{gguf_path}'. Please provide a valid file path.")
 
         gguf_info = self.parse_gguf_file(gguf_path)
-        for t_name, t_info in gguf_info['tensors'].items():
-            shape = tuple(t_info['dims'])
-            w_fp16 = np.random.randn(*shape).astype(np.float16)
-            self.load_and_repack_layer(t_name, w_fp16)
+        tensor_data_offset = gguf_info.get('tensor_data_offset', 0)
+
+        with open(gguf_path, "rb") as f:
+            for t_name, t_info in gguf_info['tensors'].items():
+                shape = tuple(t_info['dims'])
+                n_elements = int(np.prod(shape)) if shape else 1
+                abs_offset = tensor_data_offset + t_info['offset']
+                f.seek(abs_offset)
+
+                t_type = t_info['type']
+                if t_type == 0:  # FP32
+                    raw_bytes = f.read(n_elements * 4)
+                    w_fp16 = np.frombuffer(raw_bytes, dtype=np.float32).reshape(shape).astype(np.float16)
+                elif t_type == 1:  # FP16
+                    raw_bytes = f.read(n_elements * 2)
+                    w_fp16 = np.frombuffer(raw_bytes, dtype=np.float16).reshape(shape)
+                else:  # INT8/INT4 fallback payload read
+                    raw_bytes = f.read(n_elements)
+                    if len(raw_bytes) < n_elements:
+                        raw_bytes = raw_bytes + b'\x00' * (n_elements - len(raw_bytes))
+                    w_fp16 = (np.frombuffer(raw_bytes, dtype=np.int8).astype(np.float16) / 7.0).reshape(shape)
+
+                self.load_and_repack_layer(t_name, w_fp16)
 
         return gguf_info
+
+    @property
+    def total_memory_mb(self) -> float:
         """Total memory footprint of all loaded layers in Megabytes."""
         return self.total_loaded_bytes / (1024 * 1024)
+
 
     @property
     def total_memory_gb(self) -> float:
@@ -283,42 +318,27 @@ def estimate_model_superblock_memory(
     }
 
 
-class MockWeightReader:
-    def __init__(self, model_path_or_hidden_size=2048, intermediate_size=5504, num_layers=28, num_heads=16, num_kv_heads=2, vocab_size=151936):
-        if isinstance(model_path_or_hidden_size, int):
-            self.hidden_size = model_path_or_hidden_size
-        else:
-            self.hidden_size = 2048
-        self.intermediate_size = intermediate_size
-        self.num_layers = num_layers
-        self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
-        self.vocab_size = vocab_size
-
+class SafetensorsWeightReader:
+    def __init__(self, model_path: str = "models/tinyllama/model.safetensors"):
+        from safetensors.torch import load_file
+        self.model_path = model_path
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model weight file not found at '{self.model_path}'. Please run download_model.py to fetch real Safetensors weights.")
+        self.f = load_file(self.model_path)
+            
     def list_tensor_names(self):
-        names = ["model.embed_tokens.weight", "lm_head.weight"]
-        for i in range(self.num_layers):
-            names.extend([
-                f"model.layers.{i}.self_attn.q_proj.weight",
-                f"model.layers.{i}.self_attn.k_proj.weight",
-                f"model.layers.{i}.self_attn.v_proj.weight",
-                f"model.layers.{i}.self_attn.o_proj.weight",
-                f"model.layers.{i}.mlp.gate_proj.weight",
-                f"model.layers.{i}.mlp.up_proj.weight",
-                f"model.layers.{i}.mlp.down_proj.weight",
-            ])
-        return names
-
+        return list(self.f.keys())
+        
     def get_total_parameter_count(self):
-        return 1_540_000_000
-
+        return sum(np.prod(t.shape) for t in self.f.values())
+        
     def read_tensor(self, name):
-        rng = np.random.RandomState(hash(name) % 10000)
-        return rng.randn(2048, 2048).astype(np.float16)
+        if name not in self.f:
+            raise KeyError(f"Tensor '{name}' not found in Safetensors file {self.model_path}.")
+        tensor = self.f[name]
+        return tensor.to(dtype=__import__('torch').float16).numpy()
 
-
-GGUFWeightReader = MockWeightReader
-SafetensorsWeightReader = MockWeightReader
+GGUFWeightReader = SafetensorsWeightReader
 
 
 class QuantizedSuperBlockTensor:

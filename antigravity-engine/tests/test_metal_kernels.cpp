@@ -42,9 +42,12 @@ int main() {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         assert(device != nil && "Metal device required");
 
-        NSString* libPath = [NSString stringWithUTF8String:METALLIB_PATH];
+        NSString* libPath = @"src/shaders/batched_gemm.metallib";
+        if (![[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
+            libPath = @"antigravity-engine/src/shaders/batched_gemm.metallib";
+        }
         NSError* error = nil;
-        id<MTLLibrary> library = [device newLibraryWithFile:libPath error:&error];
+        id<MTLLibrary> library = [device newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&error];
         assert(library != nil && "metallib must exist");
 
         id<MTLFunction> dequantFunc = [library newFunctionWithName:@"dequantize_superblocks_kernel"];

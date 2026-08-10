@@ -50,26 +50,16 @@ def quantize_weights_int4(
         )
 
     n_groups = len(weights_fp16) // group_size
-    weights = weights_fp16.astype(np.float32)  # compute in float32 for precision
+    weights = weights_fp16.astype(np.float32)
     groups = weights.reshape(n_groups, group_size)
 
-    # Per-group max absolute value
-    alphas = np.max(np.abs(groups), axis=1)  # shape: (n_groups,)
+    alphas = np.max(np.abs(groups), axis=1)
+    scales = np.where(alphas == 0, 1.0, alphas / 7.0).astype(np.float16)
+    q_weights = np.clip(np.round(groups / scales[:, None]), -8, 7).astype(np.int8)
 
-    # Scale factors: alpha / 7 (symmetric quantization)
-    # Guard against zero-alpha groups (all-zero weights)
-    scales = np.where(alphas > 0, alphas / 7.0, np.float32(1.0))
+    return q_weights.reshape(-1), scales
 
-    # Quantize: round(w / scale), clamp to [-8, 7]
-    scales_expanded = scales[:, np.newaxis]  # (n_groups, 1)
-    q_float = np.round(groups / scales_expanded)
-    q_clamped = np.clip(q_float, -8, 7).astype(np.int8)
-
-    # Flatten back
-    q_weights = q_clamped.reshape(-1)
-    scales_fp16 = scales.astype(np.float16)
-
-    return q_weights, scales_fp16
+quantize_fp16_to_int4 = quantize_weights_int4
 
 
 # =============================================================================

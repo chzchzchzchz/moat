@@ -28,25 +28,22 @@ class TestWeightReaders(unittest.TestCase):
 
     def test_model_weight_reader_manifest_and_generation(self):
         """Verify ModelWeightReader manifest generation for Qwen2.5-1.5B."""
-        reader = GGUFWeightReader(
-            hidden_size=2048,
-            intermediate_size=5504,
-            num_layers=28,
-            num_heads=16,
-            num_kv_heads=2,
-            vocab_size=151936
-        )
+        model_path = "models/tinyllama/model.safetensors"
+        if not os.path.exists(model_path):
+            self.skipTest("models/tinyllama/model.safetensors does not exist on disk")
+
+        reader = GGUFWeightReader(model_path)
 
         names = reader.list_tensor_names()
         self.assertIn("model.embed_tokens.weight", names)
         self.assertIn("lm_head.weight", names)
         self.assertIn("model.layers.0.self_attn.q_proj.weight", names)
-        self.assertIn("model.layers.27.mlp.gate_proj.weight", names)
+        self.assertIn("model.layers.21.mlp.gate_proj.weight", names)
 
-        # Check total parameter count (~1.54 Billion)
+        # Check total parameter count (~1.1 Billion)
         total_params = reader.get_total_parameter_count()
-        self.assertGreater(total_params, 1_400_000_000)
-        self.assertLess(total_params, 2_000_000_000)
+        self.assertGreater(total_params, 1_000_000_000)
+        self.assertLess(total_params, 1_200_000_000)
 
         # Read tensor and verify dtype and shape
         q_weight = reader.read_tensor("model.layers.0.self_attn.q_proj.weight")
@@ -54,18 +51,17 @@ class TestWeightReaders(unittest.TestCase):
         self.assertEqual(q_weight.dtype, np.float16)
 
     def test_gguf_and_safetensors_reader_fallback(self):
-        """Verify GGUF and Safetensors readers initialize weights when file path is requested."""
-        gguf_reader = GGUFWeightReader("model.gguf")
-        safe_reader = SafetensorsWeightReader("model.safetensors")
+        """Verify Safetensors readers load real weights and raise FileNotFoundError for missing files."""
+        model_path = "models/tinyllama/model.safetensors"
+        if os.path.exists(model_path):
+            safe_reader = SafetensorsWeightReader(model_path)
+            self.assertGreater(len(safe_reader.list_tensor_names()), 0)
+            tensor_name = safe_reader.list_tensor_names()[0]
+            w2 = safe_reader.read_tensor(tensor_name)
+            self.assertIsInstance(w2, np.ndarray)
 
-        self.assertGreater(len(gguf_reader.list_tensor_names()), 0)
-        self.assertGreater(len(safe_reader.list_tensor_names()), 0)
-
-        w1 = gguf_reader.read_tensor("model.layers.0.self_attn.q_proj.weight")
-        w2 = safe_reader.read_tensor("model.layers.0.self_attn.q_proj.weight")
-
-        self.assertEqual(w1.shape, (2048, 2048))
-        self.assertEqual(w2.shape, (2048, 2048))
+        with self.assertRaises(FileNotFoundError):
+            _ = SafetensorsWeightReader("nonexistent_model.safetensors")
 
 
 class TestSuperBlockRepackingAndValidation(unittest.TestCase):

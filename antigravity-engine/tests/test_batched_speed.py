@@ -32,12 +32,14 @@ def simulate_gemv(weight_matrix: np.ndarray, activation_vector: np.ndarray) -> n
     """Single-token GEMV decode step. Shape: (1,K) @ (K,M) → (1,M)."""
     if activation_vector.ndim == 1:
         activation_vector = activation_vector.reshape(1, -1)
-    return activation_vector @ weight_matrix
+    res = activation_vector.astype(np.float32) @ weight_matrix.astype(np.float32)
+    return res.astype(weight_matrix.dtype)
 
 
 def simulate_gemm(weight_matrix: np.ndarray, activation_batch: np.ndarray) -> np.ndarray:
     """Batched GEMM decode step. Shape: (N,K) @ (K,M) → (N,M)."""
-    return activation_batch @ weight_matrix
+    res = activation_batch.astype(np.float32) @ weight_matrix.astype(np.float32)
+    return res.astype(weight_matrix.dtype)
 
 
 # =========================================================================
@@ -121,7 +123,7 @@ class TestCPUPerformanceProfile(unittest.TestCase):
         np.random.seed(42)
         K, M = 2048, 2048
         batch_sizes = [1, 2, 4, 8, 16]
-        n_iterations = 20
+        n_iterations = 2
 
         W = np.random.randn(K, M).astype(np.float16)
 

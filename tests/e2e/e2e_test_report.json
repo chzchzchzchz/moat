@@ -1,0 +1,20 @@
+{
+  "title": "Project Antigravity E2E Test Report",
+  "timestamp": "2026-08-10T00:12:20Z",
+  "hardware_mode": "metal",
+  "tier_filter": "all",
+  "feature_filter": "all",
+  "total_executed": 0,
+  "passed": 0,
+  "failed": 0,
+  "skipped": 0,
+  "pass_rate_pct": 0.0,
+  "duration_seconds": 3.262,
+  "tier_breakdown": {
+    "tier1_feature_coverage": 35,
+    "tier2_boundaries": 35,
+    "tier3_combinations": 10,
+    "tier4_scenarios": 7
+  },
+  "test_results": []
+}

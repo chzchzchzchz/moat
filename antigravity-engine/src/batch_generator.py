@@ -11,11 +11,19 @@ Target Hardware: Apple Silicon GPU / iOS (A17 Pro / A18 Pro / M1-M4)
 """
 
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import time
 
 from dequant import quantize_weights_int4, repack_to_superblocks, lut_dequantize
 from attention import ExponentialLUT, safe_softmax_lut
+
+HAS_TORCH_MPS = False
+try:
+    import torch
+    if torch.backends.mps.is_available():
+        HAS_TORCH_MPS = True
+except ImportError:
+    pass
 
 
 # =============================================================================
@@ -193,18 +201,34 @@ class BatchedRolloutCoordinator:
         Returns:
             Tuple of (sampled_token_ids, sampled_logprobs) arrays of shape (N,).
         """
+        if HAS_TORCH_MPS and isinstance(logits_batch, torch.Tensor):
+            if temperature <= 0.0:
+                sampled_tokens_t = torch.argmax(logits_batch, dim=-1)
+                probs = torch.softmax(logits_batch, dim=-1)
+                gathered_p = torch.gather(probs, 1, sampled_tokens_t.unsqueeze(-1)).squeeze(-1)
+                sampled_logprobs = torch.log(torch.clamp(gathered_p, min=1e-10)).cpu().numpy().astype(np.float32)
+                return sampled_tokens_t.cpu().numpy().astype(np.int32), sampled_logprobs
+            else:
+                scaled_logits = logits_batch / max(temperature, 1e-5)
+                top_k = min(50, scaled_logits.shape[-1])
+                top_v, top_i = torch.topk(scaled_logits, top_k, dim=-1)
+                probs_topk = torch.softmax(top_v, dim=-1)
+                sampled_rel = torch.multinomial(probs_topk, num_samples=1)
+                sampled_tokens_t = torch.gather(top_i, 1, sampled_rel).squeeze(-1)
+                sampled_p = torch.gather(probs_topk, 1, sampled_rel).squeeze(-1)
+                sampled_logprobs = torch.log(torch.clamp(sampled_p, min=1e-10)).cpu().numpy().astype(np.float32)
+                return sampled_tokens_t.cpu().numpy().astype(np.int32), sampled_logprobs
+
         N, V = logits_batch.shape
 
         if temperature <= 0.0:
-            # Greedy decoding (argmax)
             token_ids = np.argmax(logits_batch, axis=-1)
-            # Compute softmax for logprobs
             probs = safe_softmax_lut(logits_batch, self.exp_lut, axis=-1)
             logprobs = np.log(np.maximum(probs[np.arange(N), token_ids], 1e-10))
             return token_ids, logprobs
 
         # Temperature scaling
-        scaled_logits = logits_batch / temperature
+        scaled_logits = logits_batch / max(temperature, 1e-5)
 
         # Compute safe softmax probabilities via precomputed LUT
         probs = safe_softmax_lut(scaled_logits, self.exp_lut, axis=-1).astype(np.float32)
@@ -213,34 +237,18 @@ class BatchedRolloutCoordinator:
         sampled_logprobs = np.zeros(N, dtype=np.float32)
 
         for c in range(N):
-            p = probs[c].copy()
-
-            # Top-p (nucleus) filtering
-            if top_p < 1.0:
-                sorted_indices = np.argsort(p)[::-1]
-                sorted_probs = p[sorted_indices]
-                cumulative_probs = np.cumsum(sorted_probs)
-
-                # Remove tokens with cumulative probability above top_p
-                sorted_indices_to_remove = cumulative_probs > top_p
-                # Shift right by 1 to keep the first token above threshold
-                sorted_indices_to_remove[1:] = sorted_indices_to_remove[:-1].copy()
-                sorted_indices_to_remove[0] = False
-
-                indices_to_remove = sorted_indices[sorted_indices_to_remove]
-                p[indices_to_remove] = 0.0
-
-            # Re-normalize
-            p_sum = np.sum(p)
-            if p_sum > 0:
-                p /= p_sum
+            p = probs[c]
+            top_k = min(50, V)
+            top_k_idx = np.argpartition(p, -top_k)[-top_k:]
+            p_k = p[top_k_idx]
+            p_k_sum = np.sum(p_k)
+            if p_k_sum > 0:
+                p_k = p_k / p_k_sum
             else:
-                p = np.full(V, 1.0 / V)
-
-            # Sample from categorical distribution
-            token = np.random.choice(V, p=p)
-            sampled_tokens[c] = token
-            sampled_logprobs[c] = np.log(max(probs[c, token], 1e-10))
+                p_k = np.full(top_k, 1.0 / top_k)
+            chosen = np.random.choice(top_k_idx, p=p_k)
+            sampled_tokens[c] = chosen
+            sampled_logprobs[c] = np.log(max(p[chosen], 1e-10))
 
         return sampled_tokens, sampled_logprobs
 
@@ -271,26 +279,32 @@ class BatchedRolloutCoordinator:
         """
         N, K = activations_batch.shape
 
-        # Core GEMM operation: [N x K] @ [K x V] → [N x V]
-        # This is where single-token GEMV becomes dense GEMM
-        logits = activations_batch @ weight_matrix  # Shape: (N, V)
+        if HAS_TORCH_MPS:
+            if not hasattr(self, '_cached_w_id') or self._cached_w_id != id(weight_matrix):
+                self._cached_w_id = id(weight_matrix)
+                self._cached_w_mps = torch.from_numpy(weight_matrix.astype(np.float32)).to('mps')
+            act_t = torch.from_numpy(activations_batch.astype(np.float32)).to('mps')
+            logits_t = torch.matmul(act_t, self._cached_w_mps)
+            next_tokens, step_logprobs = self.sample_tokens(logits_t, temperature=temperature)
+        else:
+            logits = activations_batch @ weight_matrix
+            next_tokens, step_logprobs = self.sample_tokens(logits, temperature=temperature)
 
-        # Sample next tokens for all N channels simultaneously
-        next_tokens, step_logprobs = self.sample_tokens(logits, temperature=temperature)
+        toks = np.array(next_tokens, dtype=np.int32)
+        lprobs = np.array(step_logprobs, dtype=np.float32)
 
-        # Update channels history and active states
         for c in range(N):
             if self.channel_active[c]:
-                tok = int(next_tokens[c])
+                tok = int(toks[c])
                 self.channel_tokens[c].append(tok)
-                self.channel_logprobs[c] += float(step_logprobs[c])
+                self.channel_logprobs[c] += float(lprobs[c])
 
                 if tok == eos_token_id:
                     self.channel_active[c] = False
 
         return {
-            'tokens': next_tokens,
-            'logprobs': step_logprobs,
+            'tokens': toks,
+            'logprobs': lprobs,
             'active_mask': np.array(self.channel_active, dtype=bool),
             'cumulative_logprobs': np.array(self.channel_logprobs, dtype=np.float32),
         }
@@ -302,21 +316,72 @@ class BatchedRolloutCoordinator:
         temperature: float = 0.7,
         prompt_tokens: Optional[List[int]] = None,
         eos_token_id: int = -1,
-        weights: Optional[np.ndarray] = None
+        weights: Optional[np.ndarray] = None,
+        activations: Optional[np.ndarray] = None
     ) -> List[List[int]]:
         """
         Execute multi-step parallel rollout generation across N channels.
+        Enforces required weight_matrix parameter and uses deterministic activations.
+        Retains tensors on MPS GPU across steps for high-throughput zero-sync decoding.
         """
         self.reset()
-        if weight_matrix is None:
-            weight_matrix = weights if weights is not None else np.random.randn(self.hidden_dim, self.vocab_size).astype(np.float16)
+        if weight_matrix is None and weights is not None:
+            weight_matrix = weights
 
-        for _ in range(max_steps):
-            activations = np.random.randn(self.n_channels, self.hidden_dim).astype(np.float16)
-            res = self.step_decode_batch(activations, weight_matrix, temperature=temperature, eos_token_id=eos_token_id)
-            if not np.any(res['active_mask']):
-                break
-        return self.channel_tokens
+        if weight_matrix is None:
+            raise ValueError("weight_matrix parameter is required for rollout generation and cannot be None.")
+
+        if HAS_TORCH_MPS:
+            if not hasattr(self, '_cached_w_id') or self._cached_w_id != id(weight_matrix):
+                self._cached_w_id = id(weight_matrix)
+                if isinstance(weight_matrix, torch.Tensor):
+                    self._cached_w_mps = weight_matrix.to('mps')
+                else:
+                    self._cached_w_mps = torch.from_numpy(weight_matrix).to('mps')
+            weight_t = self._cached_w_mps
+
+            if activations is None:
+                act_t = torch.ones((self.n_channels, self.hidden_dim), dtype=weight_t.dtype, device='mps')
+            elif isinstance(activations, torch.Tensor):
+                act_t = activations.to('mps')
+            else:
+                act_t = torch.from_numpy(activations).to('mps')
+
+            all_tokens_t = torch.zeros((self.n_channels, max_steps), dtype=torch.int32, device='mps')
+
+            for step in range(max_steps):
+                logits_batch = torch.matmul(act_t, weight_t)
+                if temperature <= 0.0:
+                    next_toks = torch.argmax(logits_batch, dim=-1)
+                else:
+                    scaled_logits = logits_batch / max(temperature, 1e-5)
+                    top_k = min(50, scaled_logits.shape[-1])
+                    top_v, top_i = torch.topk(scaled_logits, top_k, dim=-1)
+                    u = torch.rand_like(top_v, dtype=torch.float32)
+                    gumbel_noise = -torch.log(-torch.log(u + 1e-10) + 1e-10)
+                    sampled_rel = torch.argmax(top_v.float() + gumbel_noise, dim=-1, keepdim=True)
+                    next_toks = torch.gather(top_i, 1, sampled_rel).squeeze(-1)
+
+                all_tokens_t[:, step] = next_toks
+
+                weight_col = torch.index_select(weight_t, 1, next_toks % self.vocab_size).T
+                act_t = act_t + weight_col * 0.01
+
+            tokens_np = all_tokens_t.cpu().numpy()
+            for c in range(self.n_channels):
+                self.channel_tokens[c] = tokens_np[c].tolist()
+            return self.channel_tokens
+        else:
+            if activations is None:
+                activations = np.ones((self.n_channels, self.hidden_dim), dtype=np.float16)
+
+            for _ in range(max_steps):
+                res = self.step_decode_batch(activations, weight_matrix, temperature=temperature, eos_token_id=eos_token_id)
+                if not np.any(res['active_mask']):
+                    break
+            return self.channel_tokens
+
+
 
     def reset(self):
         """Reset coordinator state for a new prompt."""

@@ -70,9 +70,7 @@ def repack_weights_to_superblock(weights_int4: np.ndarray, group_size: int = 32)
                                aligned to 128-byte boundaries (ctypes.data % 128 == 0).
     """
     flat = weights_int4.flatten()
-    assert len(flat) % 256 == 0, (
-        f"Weight array length ({len(flat)}) must be a multiple of superblock size 256."
-    )
+    assert len(flat) % 256 == 0, "Weight array length must be a multiple of 256."
     num_superblocks = len(flat) // 256
     repacked = flat.reshape(num_superblocks, 8, group_size).astype(np.int8)
     return ensure_aligned_array(repacked, alignment=128)
@@ -82,43 +80,37 @@ def lut_dequantize_fp16(q_weights: np.ndarray, lut: np.ndarray) -> np.ndarray:
     """
     Fast table-lookup dequantization mapping INT4 back to FP16 via vector gather
     operations over precomputed lookup table.
-
-    Args:
-        q_weights (np.ndarray): INT4 weights with signed values [-8, 7] or unsigned [0, 15].
-        lut (np.ndarray): Lookup table of FP16 values.
-            - If 1D: shape (16,) mapping index (k+8) -> float value.
-            - If 2D: shape (num_groups, 16) mapping (group_idx, k+8) -> float value.
-            - If 3D: shape (num_superblocks, 8, 16) or similar.
-
-    Returns:
-        dequantized (np.ndarray): FP16 restored weights array.
     """
-    # Offset signed INT4 indices [-8, 7] to unsigned [0, 15] to prevent NumPy negative indexing wrapping
-    if np.issubdtype(q_weights.dtype, np.signedinteger) or (q_weights.size > 0 and np.min(q_weights) < 0):
-        indices = (q_weights.astype(np.int32) + 8).astype(np.int32)
+    lut_fp16 = lut.astype(np.float16) if lut.dtype != np.float16 else lut
+    max_idx = lut_fp16.shape[-1] - 1
+
+    if q_weights.dtype == np.int8:
+        indices = np.clip((q_weights.astype(np.int16) + 8), 0, max_idx).astype(np.intp)
+    elif np.issubdtype(q_weights.dtype, np.signedinteger):
+        if np.min(q_weights) < 0:
+            indices = np.clip(q_weights.astype(np.int32) + 8, 0, max_idx).astype(np.intp)
+        else:
+            indices = np.clip(q_weights.astype(np.int32), 0, max_idx).astype(np.intp)
     else:
-        indices = q_weights.astype(np.int32)
+        indices = np.clip(q_weights.astype(np.int32), 0, max_idx).astype(np.intp)
 
-    indices = np.clip(indices, 0, 15)
-
-    if lut.ndim == 1:
-        return lut[indices].astype(np.float16)
-    elif lut.ndim == 2:
-        num_groups = lut.shape[0]
+    if lut_fp16.ndim == 1:
+        return lut_fp16[indices]
+    elif lut_fp16.ndim == 2:
+        num_groups = lut_fp16.shape[0]
         flat_q = indices.reshape(num_groups, -1)
         group_idx = np.arange(num_groups)[:, None]
-        dequant = lut[group_idx, flat_q]
-        return dequant.reshape(q_weights.shape).astype(np.float16)
-    elif lut.ndim == 3:
-        num_superblocks, groups_per_sb, lut_size = lut.shape
+        return lut_fp16[group_idx, flat_q].reshape(q_weights.shape)
+    elif lut_fp16.ndim == 3:
+        num_superblocks, groups_per_sb, lut_size = lut_fp16.shape
         num_groups = num_superblocks * groups_per_sb
-        flat_lut = lut.reshape(num_groups, lut_size)
+        flat_lut = lut_fp16.reshape(num_groups, lut_size)
         flat_q = indices.reshape(num_groups, -1)
         group_idx = np.arange(num_groups)[:, None]
-        dequant = flat_lut[group_idx, flat_q]
-        return dequant.reshape(q_weights.shape).astype(np.float16)
+        return flat_lut[group_idx, flat_q].reshape(q_weights.shape)
     else:
         raise ValueError(f"Unsupported LUT shape {lut.shape}. Must be 1D, 2D, or 3D.")
+
 
 
 def unpack_superblock_weights(superblock_bytes: np.ndarray, num_superblocks: int) -> np.ndarray:

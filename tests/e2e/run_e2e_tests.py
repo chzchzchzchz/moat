@@ -18,7 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="Master E2E Test Runner - Project Antigravity")
     parser.add_argument("--tier", choices=["1", "2", "3", "4", "all"], default="all", help="Test tier to execute (default: all)")
     parser.add_argument("--feature", choices=["f1", "f2", "f3", "f4", "f5", "f6", "f7", "all"], default="all", help="Feature subset to filter (default: all)")
-    parser.add_argument("--hardware", choices=["mock", "metal"], default="mock", help="Hardware execution mode (default: mock)")
+    parser.add_argument("--hardware", choices=["metal"], default="metal", help="Hardware execution mode (default: metal)")
     parser.add_argument("--json-report", type=str, default=None, help="Path to write JSON execution report")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
 

@@ -1,0 +1,4 @@
+module CAntigravityEngine {
+    header "antigravity_engine_c.h"
+    export *
+}

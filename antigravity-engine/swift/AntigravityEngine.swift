@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CAntigravityEngine
 
 /// Public configuration for the Antigravity local inference engine.
 public struct EngineConfig {
@@ -56,44 +57,77 @@ public enum AntigravityError: Error {
 
 /// Primary public entry point for Antigravity Engine
 public final class AntigravityEngine {
+    private var engineHandle: antigravity_engine_t?
     private let config: EngineConfig
-    private var isInitialized: Bool = false
 
-    /// Initialize the engine with specified configuration
-    public init(config: EngineConfig = .strict4GBFootprint) throws {
+    /// Initialize the engine with specified configuration and model path
+    public init(modelPath: String = "models/model.gguf", config: EngineConfig = .strict4GBFootprint) throws {
         self.config = config
-        try self.bootstrapEngine()
+        var cConfig = antigravity_config_t(
+            memory_limit_bytes: config.memoryLimitBytes,
+            parallel_channels: UInt32(config.parallelChannels),
+            reflection_threshold: config.reflectionThreshold,
+            enable_lut: config.enableLUTAcceleration
+        )
+        self.engineHandle = antigravity_engine_create(&cConfig, modelPath)
+        guard self.engineHandle != nil else {
+            throw AntigravityError.executionFailed(reason: "Failed to initialize Metal C++ Engine")
+        }
     }
 
-    private func bootstrapEngine() throws {
-        // Internal Metal C++ pipeline initialization
-        self.isInitialized = true
+    deinit {
+        if let handle = engineHandle {
+            antigravity_engine_destroy(handle)
+        }
     }
 
     /// Run an offline parallel Best-of-N reasoning query
-    public func generate(
+    public func generateRollouts(
         prompt: String,
         maxTokens: Int = 50,
         temperature: Float = 0.7
     ) async throws -> AntigravityGenerationResult {
-        guard isInitialized else {
-            throw AntigravityError.executionFailed(reason: "Engine not initialized")
+        guard let handle = engineHandle else {
+            throw AntigravityError.executionFailed(reason: "Engine handle deallocated")
         }
 
-        // Return structured result
+        let resPtr = antigravity_generate_rollouts(handle, prompt, UInt32(maxTokens), temperature)
+        guard let res = resPtr?.pointee else {
+            throw AntigravityError.executionFailed(reason: "Rollout generation returned NULL pointer")
+        }
+
+        defer { antigravity_free_rollout_result(resPtr) }
+
+        let vresPtr = antigravity_verify_candidates(handle, resPtr)
+        guard let vres = vresPtr?.pointee else {
+            throw AntigravityError.executionFailed(reason: "Candidate verification returned NULL pointer")
+        }
+
+        defer { antigravity_free_verification_result(vresPtr) }
+
+        let bestIdx = Int(res.best_candidate_index)
+        guard bestIdx < Int(res.candidate_count), let traceCStr = res.candidates[bestIdx].trace_text else {
+            throw AntigravityError.executionFailed(reason: "Invalid candidate trace output from engine")
+        }
+
+        let bestTrace = String(cString: traceCStr)
+        let score = vres.confidence_score
+
         return AntigravityGenerationResult(
-            bestTraceText: "<think>\nVerified step-by-step logic.\n</think>\nFinal Answer: Verified local output.",
-            verifierScore: 0.88,
-            candidatesEvaluated: config.parallelChannels,
-            reflectionTriggered: false,
-            tokenSavingsPercentage: 75.0,
-            latencyMilliseconds: 245.0,
-            totalTokensGenerated: maxTokens * config.parallelChannels
+            bestTraceText: bestTrace,
+            verifierScore: score,
+            candidatesEvaluated: Int(res.candidate_count),
+            reflectionTriggered: res.reflection_triggered,
+            tokenSavingsPercentage: res.token_savings_pct,
+            latencyMilliseconds: res.total_latency_ms,
+            totalTokensGenerated: Int(res.candidate_count) * maxTokens
         )
     }
 
     /// Zero out all internal Metal buffers for Secure Enclave compliance
     public func sanitizeBuffers() {
-        // Force memory barrier and zero memory
+        if let handle = engineHandle {
+            antigravity_sanitize_buffers(handle)
+        }
     }
 }

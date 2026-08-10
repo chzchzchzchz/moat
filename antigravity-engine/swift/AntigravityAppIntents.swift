@@ -35,7 +35,7 @@ public struct AntigravityReasoningIntent: AppIntent {
         let engine = try AntigravityEngine(config: config)
 
         // Execute local offline Best-of-N query
-        let result = try await engine.generate(prompt: prompt)
+        let result = try await engine.generateRollouts(prompt: prompt)
 
         return .result(value: result.bestTraceText)
     }

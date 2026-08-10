@@ -15,6 +15,8 @@ struct SuperBlock {
 };
 
 int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
     @autoreleasepool {
         std::cout << "=========================================================\n";
         std::cout << "Project Antigravity — Native Metal Compute Shader Runner\n";
@@ -28,16 +30,17 @@ int main(int argc, char** argv) {
         }
         std::cout << "Metal GPU: " << [[device name] UTF8String] << "\n";
 
-        // 2. Load compiled metallib
+        // 2. Load compiled metallib using non-deprecated URL API
         NSString* libPath = [NSString stringWithUTF8String:METALLIB_PATH];
+        NSURL* libURL = [NSURL fileURLWithPath:libPath];
         NSError* error = nil;
-        id<MTLLibrary> library = [device newLibraryWithFile:libPath error:&error];
+        id<MTLLibrary> library = [device newLibraryWithURL:libURL error:&error];
         if (!library) {
             std::cerr << "Error loading metallib: " << [[error localizedDescription] UTF8String] << "\n";
             return 1;
         }
 
-        // 3. Create pipeline states for both kernels
+        // 3. Create pipeline states for kernels
         id<MTLFunction> dequantFunc = [library newFunctionWithName:@"dequantize_superblocks_kernel"];
         id<MTLFunction> gemmFunc    = [library newFunctionWithName:@"batched_gemm_simdgroup"];
 
@@ -56,19 +59,29 @@ int main(int argc, char** argv) {
 
         std::cout << "Matrix Shape: N=" << N << ", K=" << K << ", M=" << M << "\n";
 
-        // 5. Create GPU Buffers
+        // 5. Create Page-Aligned Zero-Copy GPU Buffers (MTLResourceStorageModeShared)
         size_t activation_bytes = N * K * sizeof(uint16_t); // FP16
         size_t weight_bytes     = K * M * sizeof(uint16_t); // FP16
         size_t output_bytes     = N * M * sizeof(uint16_t); // FP16
         size_t n_superblocks    = (K * M) / 256;
         size_t superblock_bytes = n_superblocks * sizeof(SuperBlock);
 
-        id<MTLBuffer> buf_activations = [device newBufferWithLength:activation_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_superblocks = [device newBufferWithLength:superblock_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_weights     = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_output      = [device newBufferWithLength:output_bytes options:MTLResourceStorageModeShared];
+        void* act_mem = nullptr;
+        void* sb_mem = nullptr;
+        void* w_mem = nullptr;
+        void* out_mem = nullptr;
 
-        // 6. Initialize mock super-blocks & activations
+        posix_memalign(&act_mem, 4096, activation_bytes);
+        posix_memalign(&sb_mem, 4096, superblock_bytes);
+        posix_memalign(&w_mem, 4096, weight_bytes);
+        posix_memalign(&out_mem, 4096, output_bytes);
+
+        id<MTLBuffer> buf_activations = [device newBufferWithBytesNoCopy:act_mem length:activation_bytes options:MTLResourceStorageModeShared deallocator:nil];
+        id<MTLBuffer> buf_superblocks = [device newBufferWithBytesNoCopy:sb_mem length:superblock_bytes options:MTLResourceStorageModeShared deallocator:nil];
+        id<MTLBuffer> buf_weights     = [device newBufferWithBytesNoCopy:w_mem length:weight_bytes options:MTLResourceStorageModeShared deallocator:nil];
+        id<MTLBuffer> buf_output      = [device newBufferWithBytesNoCopy:out_mem length:output_bytes options:MTLResourceStorageModeShared deallocator:nil];
+
+        // 6. Initialize synthetic benchmark super-blocks & activations directly in zero-copy host pointers
         SuperBlock* sb_ptr = (SuperBlock*)[buf_superblocks contents];
         for (size_t i = 0; i < n_superblocks; i++) {
             for (int g = 0; g < 8; g++) {
@@ -143,6 +156,12 @@ int main(int argc, char** argv) {
         std::cout << "  Tokens / Second:    " << (1000.0 / per_token_ms) << " tok/s\n";
         std::cout << "=========================================================\n";
         std::cout << "✅ SIMD Matrix Tile GEMM successfully executed and benchmarked!\n";
+
+        free(act_mem);
+        free(sb_mem);
+        free(w_mem);
+        free(out_mem);
     }
     return 0;
 }
+

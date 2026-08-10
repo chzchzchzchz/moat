@@ -66,6 +66,17 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
         )
 
         # Measured benchmark run
+        # Warmup run to pre-cache Metal PSOs and GPU allocations
+        _ = coordinator.generate(
+            prompt_tokens=self.prompt,
+            weights=self.weights,
+            max_steps=2,
+            temperature=0.7,
+            eos_token_id=-1
+        )
+        if HAS_MPS:
+            torch.mps.synchronize()
+
         start_time = time.perf_counter()
         results = coordinator.generate(
             prompt_tokens=self.prompt,
@@ -74,6 +85,8 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
             temperature=0.7,
             eos_token_id=-1
         )
+        if HAS_MPS:
+            torch.mps.synchronize()
         elapsed_s = time.perf_counter() - start_time
 
         total_tokens = 8 * self.num_steps
@@ -85,7 +98,7 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
         print(f"  BENCHMARK REQUIREMENT 2: N=8 50-Step Latency Check ({self.device.upper()})")
         print(f"{'='*70}")
         print(f"  Total Wall Time:      {elapsed_s:.4f} s (Budget: <= 1.000s, Target: ~0.250s)")
-        print(f"  Total Steps:          {results['total_steps']}")
+        print(f"  Total Steps:          {self.num_steps}")
         print(f"  Avg Step Latency:     {step_latency_ms:.3f} ms/step")
         print(f"  Per-Token Latency:    {per_tok_latency_ms:.3f} ms/token")
         print(f"  Total Throughput:     {tok_s:.2f} tok/s")
@@ -138,6 +151,8 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
                 temperature=0.7,
                 eos_token_id=-1
             )
+            if HAS_MPS:
+                torch.mps.synchronize()
             wall_time = time.perf_counter() - t0
 
             total_toks = N * self.num_steps
@@ -178,6 +193,12 @@ class TestBatchedRolloutBenchmark(unittest.TestCase):
         print(f"  Throughput Speedup Ratio (N=8 vs N=1): {n8['tp_scaling']:.2f}x")
         print(f"  Per-Token Latency Efficiency Ratio:   {per_tok_speedup:.2f}x")
         print(f"{'='*75}\n")
+
+        min_threshold = 2.0 if HAS_MPS else 1.5
+        self.assertGreater(
+            n8['tp_scaling'], min_threshold,
+            f"N=8 throughput scaling {n8['tp_scaling']:.2f}x is below minimum {min_threshold}x threshold"
+        )
 
 
 if __name__ == '__main__':
