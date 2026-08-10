@@ -12,6 +12,7 @@ m_cache/
 .agents/
 .clang-module-cache/
 antigravity-engine/build/
+.build/
 test_results.txt
 test_orch_results.txt
 memory_profile_dump.trace

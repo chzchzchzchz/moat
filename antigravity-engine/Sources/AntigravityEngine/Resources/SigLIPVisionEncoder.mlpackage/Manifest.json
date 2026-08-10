@@ -1,0 +1,12 @@
+{
+  "fileFormatVersion": "1.0.0",
+  "itemInfoEntries": {
+    "root": {
+      "author": "Project Antigravity",
+      "description": "SigLIP/CLIP Vision Transformer Patch Encoder for Apple Neural Engine (ANE)",
+      "license": "Commercial",
+      "name": "SigLIPVisionEncoder",
+      "path": "com.apple.CoreML/model.mlmodel"
+    }
+  }
+}

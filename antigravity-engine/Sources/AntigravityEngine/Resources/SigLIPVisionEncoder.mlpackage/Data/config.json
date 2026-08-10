@@ -1,0 +1,22 @@
+{
+  "inputSchema": {
+    "pixel_values": {
+      "type": "Image",
+      "width": 224,
+      "height": 224,
+      "colorSpace": "RGB"
+    }
+  },
+  "outputSchema": {
+    "patch_embeddings": {
+      "type": "MultiArray",
+      "shape": [
+        256,
+        2048
+      ],
+      "dataType": "Float16"
+    }
+  },
+  "targetDevice": "AppleNeuralEngine",
+  "minimumDeploymentTarget": "iOS16.0"
+}

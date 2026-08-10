@@ -29,7 +29,10 @@ let package = Package(
         .target(
             name: "AntigravityEngine",
             dependencies: ["CAntigravityEngine"],
-            path: "Sources/AntigravityEngine"
+            path: "Sources/AntigravityEngine",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "AntigravityEngineTests",
