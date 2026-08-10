@@ -127,6 +127,7 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     };
     
     gemmPipeline_      = makePipeline(gemmLib_, @"batched_gemm_simdgroup");
+    gemvPipeline_      = makePipeline(opsLib_, @"gemv_kernel");
     rmsnormPipeline_   = makePipeline(opsLib_, @"rmsnorm_kernel");
     ropePipeline_      = makePipeline(opsLib_, @"rope_kernel");
     attnScoresPipeline_ = makePipeline(opsLib_, @"gqa_attention_scores_kernel");
@@ -361,7 +362,7 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     const char* raw_data = file_data.data() + data_start;
     
     // Helper: load a tensor into a Metal buffer as FP16
-    auto loadTensor = [&](const std::string& name) -> id<MTLBuffer> {
+    auto loadTensor = [&](const std::string& name, bool transpose_2d = false) -> id<MTLBuffer> {
         auto it = tensors.find(name);
         if (it == tensors.end()) {
             // Try with "model." prefix
@@ -385,14 +386,26 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         
         bool is_bf16 = (info.dtype == "BF16" || info.dtype == "bf16" || info.dtype == "bfloat16");
         
-        if (is_bf16) {
-            // Convert BFloat16 → Float16
-            for (size_t i = 0; i < num_elements; i++) {
-                dest[i] = bf16_to_fp16(src[i]);
+        if (transpose_2d && info.shape.size() == 2) {
+            size_t rows = info.shape[0]; // out_features
+            size_t cols = info.shape[1]; // in_features
+            for (size_t r = 0; r < rows; r++) {
+                for (size_t c = 0; c < cols; c++) {
+                    uint16_t val = src[r * cols + c];
+                    if (is_bf16) val = bf16_to_fp16(val);
+                    dest[c * rows + r] = val;
+                }
             }
         } else {
-            // Already FP16 or compatible, direct copy
-            std::memcpy(dest, src, std::min(fp16_bytes, (size_t)(info.offset_end - info.offset_start)));
+            if (is_bf16) {
+                // Convert BFloat16 → Float16
+                for (size_t i = 0; i < num_elements; i++) {
+                    dest[i] = bf16_to_fp16(src[i]);
+                }
+            } else {
+                // Already FP16 or compatible, direct copy
+                std::memcpy(dest, src, std::min(fp16_bytes, (size_t)(info.offset_end - info.offset_start)));
+            }
         }
         
         allocatedBytes_ += fp16_bytes;
@@ -400,9 +413,9 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     };
     
     // ---- Load Embedding & Output Head ----
-    embedWeights_ = loadTensor("embed_tokens.weight");
-    finalNorm_ = loadTensor("norm.weight");
-    lmHead_ = loadTensor("lm_head.weight");
+    embedWeights_ = loadTensor("embed_tokens.weight", false);
+    finalNorm_ = loadTensor("norm.weight", false);
+    lmHead_ = loadTensor("lm_head.weight", true);
     
     if (!embedWeights_ || !finalNorm_ || !lmHead_) {
         std::cerr << "[loadWeights] Failed to load embedding/norm/lm_head" << std::endl;
@@ -414,15 +427,15 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     for (int i = 0; i < config_.n_layers; i++) {
         std::string prefix = "layers." + std::to_string(i) + ".";
         
-        layerWeights_[i].input_norm  = loadTensor(prefix + "input_layernorm.weight");
-        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight");
-        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight");
-        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight");
-        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight");
-        layerWeights_[i].post_attn_norm = loadTensor(prefix + "post_attention_layernorm.weight");
-        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight");
-        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight");
-        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight");
+        layerWeights_[i].input_norm  = loadTensor(prefix + "input_layernorm.weight", false);
+        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true);
+        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true);
+        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true);
+        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true);
+        layerWeights_[i].post_attn_norm = loadTensor(prefix + "post_attention_layernorm.weight", false);
+        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true);
+        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true);
+        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true);
         
         // Validate all loaded
         if (!layerWeights_[i].input_norm || !layerWeights_[i].q_proj || !layerWeights_[i].k_proj ||
@@ -452,6 +465,23 @@ void MetalTransformerEngine::dispatchGEMM(
     id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C,
     uint32_t M, uint32_t K, uint32_t N
 ) {
+    if (M == 1 && gemvPipeline_) {
+        [enc setComputePipelineState:gemvPipeline_];
+        [enc setBuffer:A offset:0 atIndex:0];   // vector x [K]
+        [enc setBuffer:B offset:0 atIndex:1];   // matrix B [K x N]
+        [enc setBuffer:C offset:0 atIndex:2];   // output vector y [N]
+        
+        uint32_t uK = K, uN = N;
+        [enc setBytes:&uK length:sizeof(uint32_t) atIndex:3];
+        [enc setBytes:&uN length:sizeof(uint32_t) atIndex:4];
+        
+        uint32_t threadsPerTG = std::min(N, (uint32_t)256);
+        MTLSize tgGroups = MTLSizeMake((N + threadsPerTG - 1) / threadsPerTG, 1, 1);
+        MTLSize threadsTG = MTLSizeMake(threadsPerTG, 1, 1);
+        [enc dispatchThreadgroups:tgGroups threadsPerThreadgroup:threadsTG];
+        return;
+    }
+
     if (!gemmPipeline_) return;
     
     [enc setComputePipelineState:gemmPipeline_];

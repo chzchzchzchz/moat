@@ -264,25 +264,24 @@ kernel void embedding_lookup_kernel(
     out[batch_idx * hidden_dim + dim_idx] = embed_table[token_id * hidden_dim + dim_idx];
 }
 
-// 9. kv_cache_append_kernel
-// Appends new Key/Value to the cache.
-kernel void kv_cache_append_kernel(
-    device const half* new_k [[buffer(0)]],
-    device half* k_cache [[buffer(1)]],
-    constant uint& n_kv_heads [[buffer(2)]],
-    constant uint& max_seq [[buffer(3)]],
-    constant uint& head_dim [[buffer(4)]],
-    constant uint& write_pos [[buffer(5)]],
-    uint3 gid [[thread_position_in_grid]]
+// 10. gemv_kernel
+// Vector-Matrix multiplication for single-token decode mode (M=1).
+// Computes y[N] = x[K] * B[K x N] safely without 8x8 matrix tile out-of-bounds overflow.
+kernel void gemv_kernel(
+    device const half* x [[buffer(0)]],        // [K]
+    device const half* B [[buffer(1)]],        // [K x N]
+    device half* y [[buffer(2)]],              // [N]
+    constant uint& K_dim [[buffer(3)]],
+    constant uint& N_dim [[buffer(4)]],
+    uint col [[thread_position_in_grid]]
 ) {
-    uint batch_idx = gid.x;
-    uint kv_head_idx = gid.y;
-    uint dim_idx = gid.z;
+    if (col >= N_dim) return;
     
-    if (kv_head_idx >= n_kv_heads || dim_idx >= head_dim) return;
+    float sum = 0.0f;
+    for (uint k = 0; k < K_dim; k++) {
+        sum += (float)x[k] * (float)B[k * N_dim + col];
+    }
     
-    uint new_k_idx = (batch_idx * n_kv_heads + kv_head_idx) * head_dim + dim_idx;
-    uint cache_idx = ((batch_idx * n_kv_heads + kv_head_idx) * max_seq + write_pos) * head_dim + dim_idx;
-    
-    k_cache[cache_idx] = new_k[new_k_idx];
+    y[col] = (half)sum;
 }
+

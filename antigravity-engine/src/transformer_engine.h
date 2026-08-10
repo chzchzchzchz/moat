@@ -75,6 +75,7 @@ private:
     
     // Compute pipelines for each kernel
     id<MTLComputePipelineState> gemmPipeline_;
+    id<MTLComputePipelineState> gemvPipeline_;
     id<MTLComputePipelineState> rmsnormPipeline_;
     id<MTLComputePipelineState> ropePipeline_;
     id<MTLComputePipelineState> attnScoresPipeline_;
