@@ -33,3 +33,20 @@ antigravity-engine/src/test_c_api_client
 *.xcuserdata
 DerivedData/
 *.xcframework/
+
+# Secrets / credentials (never commit these)
+.env
+.env.*
+*.pem
+*.key
+!*.pub.key
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.json
+*.pfx
+*.p12
+secrets.yaml
+secrets.yml
+secrets.json
