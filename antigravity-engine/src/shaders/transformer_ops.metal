@@ -47,7 +47,7 @@ kernel void rmsnorm_kernel(
 }
 
 // 2. rope_kernel
-// Applies Rotary Position Embeddings to Q and K.
+// Applies LLaMA Rotary Position Embeddings (RoPE) to Q and K.
 kernel void rope_kernel(
     device half* q [[buffer(0)]],
     device half* k [[buffer(1)]],
@@ -62,35 +62,36 @@ kernel void rope_kernel(
 ) {
     uint batch_seq_idx = gid.x;
     uint head_idx = gid.y;
-    uint dim_idx = gid.z * 2;
+    uint i = gid.z;
     
-    if (dim_idx >= head_dim) return;
+    uint half_dim = head_dim / 2;
+    if (i >= half_dim) return;
     
     uint seq_pos = batch_seq_idx % seq_len;
     uint absolute_pos = start_pos + seq_pos;
     
-    float f_cos = (float)freqs_cos[absolute_pos * (head_dim / 2) + (dim_idx / 2)];
-    float f_sin = (float)freqs_sin[absolute_pos * (head_dim / 2) + (dim_idx / 2)];
+    float f_cos = (float)freqs_cos[absolute_pos * half_dim + i];
+    float f_sin = (float)freqs_sin[absolute_pos * half_dim + i];
     
     if (head_idx < n_heads) {
-        uint q_idx = (batch_seq_idx * n_heads + head_idx) * head_dim + dim_idx;
-        float q0 = (float)q[q_idx];
-        float q1 = (float)q[q_idx + 1];
-        q[q_idx] = (half)(q0 * f_cos - q1 * f_sin);
-        q[q_idx + 1] = (half)(q0 * f_sin + q1 * f_cos);
+        uint base = (batch_seq_idx * n_heads + head_idx) * head_dim;
+        float q0 = (float)q[base + i];
+        float q1 = (float)q[base + i + half_dim];
+        q[base + i]            = (half)(q0 * f_cos - q1 * f_sin);
+        q[base + i + half_dim] = (half)(q1 * f_cos + q0 * f_sin);
     }
     
     if (head_idx < n_kv_heads) {
-        uint k_idx = (batch_seq_idx * n_kv_heads + head_idx) * head_dim + dim_idx;
-        float k0 = (float)k[k_idx];
-        float k1 = (float)k[k_idx + 1];
-        k[k_idx] = (half)(k0 * f_cos - k1 * f_sin);
-        k[k_idx + 1] = (half)(k0 * f_sin + k1 * f_cos);
+        uint base = (batch_seq_idx * n_kv_heads + head_idx) * head_dim;
+        float k0 = (float)k[base + i];
+        float k1 = (float)k[base + i + half_dim];
+        k[base + i]            = (half)(k0 * f_cos - k1 * f_sin);
+        k[base + i + half_dim] = (half)(k1 * f_cos + k0 * f_sin);
     }
 }
 
 // 3. gqa_attention_scores_kernel
-// Computes unnormalized attention scores with GQA support.
+// Computes unnormalized attention scores with GQA support and max_seq cache stride.
 kernel void gqa_attention_scores_kernel(
     device const half* q [[buffer(0)]],
     device const half* k_cache [[buffer(1)]],
@@ -99,6 +100,7 @@ kernel void gqa_attention_scores_kernel(
     constant uint& n_kv_heads [[buffer(4)]],
     constant uint& head_dim [[buffer(5)]],
     constant uint& seq_len [[buffer(6)]],
+    constant uint& max_seq [[buffer(7)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     uint batch_idx = gid.x;
@@ -110,7 +112,7 @@ kernel void gqa_attention_scores_kernel(
     uint kv_head_idx = head_idx / (n_heads / n_kv_heads);
     
     device const half* q_h = q + (batch_idx * n_heads + head_idx) * head_dim;
-    device const half* k_h = k_cache + ((batch_idx * n_kv_heads + kv_head_idx) * seq_len + seq_idx) * head_dim;
+    device const half* k_h = k_cache + ((batch_idx * n_kv_heads + kv_head_idx) * max_seq + seq_idx) * head_dim;
     
     float score = 0.0;
     for (uint i = 0; i < head_dim; i++) {
@@ -182,7 +184,7 @@ kernel void softmax_kernel(
 }
 
 // 5. attention_value_kernel
-// Computes context values by weighting V cache with attention probabilities.
+// Computes context values by weighting V cache with attention probabilities and max_seq stride.
 kernel void attention_value_kernel(
     device const half* probs [[buffer(0)]],
     device const half* v_cache [[buffer(1)]],
@@ -191,6 +193,7 @@ kernel void attention_value_kernel(
     constant uint& n_kv_heads [[buffer(4)]],
     constant uint& seq_len [[buffer(5)]],
     constant uint& head_dim [[buffer(6)]],
+    constant uint& max_seq [[buffer(7)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     uint batch_idx = gid.x;
@@ -206,7 +209,7 @@ kernel void attention_value_kernel(
     float val = 0.0;
     for (uint seq_idx = 0; seq_idx < seq_len; seq_idx++) {
         float p = (float)probs_h[seq_idx];
-        float v = (float)v_cache[((batch_idx * n_kv_heads + kv_head_idx) * seq_len + seq_idx) * head_dim + dim_idx];
+        float v = (float)v_cache[((batch_idx * n_kv_heads + kv_head_idx) * max_seq + seq_idx) * head_dim + dim_idx];
         val += p * v;
     }
     
@@ -285,3 +288,26 @@ kernel void gemv_kernel(
     y[col] = (half)sum;
 }
 
+// 9. kv_cache_append_kernel
+// Appends K or V token slice into the KV Cache tensor
+kernel void kv_cache_append_kernel(
+    device const half* slice [[buffer(0)]],      // [1, n_kv_heads, head_dim]
+    device half* cache [[buffer(1)]],            // [n_kv_heads, max_seq, head_dim]
+    constant uint& n_kv_heads [[buffer(2)]],
+    constant uint& head_dim [[buffer(3)]],
+    constant uint& max_seq [[buffer(4)]],
+    constant uint& seq_pos [[buffer(5)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    uint batch_idx = gid.x;
+    (void)batch_idx;
+    uint head_idx = gid.y;
+    uint dim_idx = gid.z;
+    
+    if (head_idx >= n_kv_heads || dim_idx >= head_dim) return;
+    
+    uint slice_idx = head_idx * head_dim + dim_idx;
+    uint cache_idx = (head_idx * max_seq + seq_pos) * head_dim + dim_idx;
+    
+    cache[cache_idx] = slice[slice_idx];
+}

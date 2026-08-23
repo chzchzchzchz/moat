@@ -478,9 +478,9 @@ int32_t AntigravityEngineNativeGenerateMultimodal(
 void AntigravityEngineUnloadWeights(AntigravityEngineContext* ctx) {
     if (!ctx) return;
 
-    // Sanitize all GPU buffers (zeroes scratch + KV caches)
     if (ctx->nativeEngine) {
-        ctx->nativeEngine->sanitizeBuffers();
+        delete ctx->nativeEngine;
+        ctx->nativeEngine = nullptr;
     }
 
     // Release the GEMM activation/weight/output shared buffers

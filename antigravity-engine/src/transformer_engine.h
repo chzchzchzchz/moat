@@ -62,6 +62,7 @@ public:
     
     uint64_t getAllocatedBytes() const;
     void sanitizeBuffers();
+    void print_l2_norm(id<MTLBuffer> buf, uint32_t elements, const std::string& name);
 
     // Public state — accessed by C API bridge
     bool weightsLoaded_;
@@ -78,6 +79,8 @@ private:
     id<MTLComputePipelineState> gemvPipeline_;
     id<MTLComputePipelineState> rmsnormPipeline_;
     id<MTLComputePipelineState> ropePipeline_;
+    id<MTLComputePipelineState> deltanetPipeline_;
+    id<MTLComputePipelineState> moeRouterPipeline_;
     id<MTLComputePipelineState> attnScoresPipeline_;
     id<MTLComputePipelineState> softmaxPipeline_;
     id<MTLComputePipelineState> attnValuePipeline_;
@@ -119,6 +122,7 @@ private:
     id<MTLBuffer> scratch1_;  // general purpose [n_channels, hidden_dim]
     id<MTLBuffer> scratch2_;
     id<MTLBuffer> scratch3_;
+    id<MTLBuffer> scratchV_;
     id<MTLBuffer> scratchLogits_; // [n_channels, vocab_size]
     id<MTLBuffer> scratchAttn_;   // [n_channels, n_heads, max_seq_len]
     
@@ -129,9 +133,18 @@ private:
     void dispatchGEMM(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C, uint32_t M, uint32_t K, uint32_t N);
     void dispatchRMSNorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> input, id<MTLBuffer> weight, id<MTLBuffer> output, uint32_t batch, uint32_t dim);
     void dispatchRoPE(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> q, id<MTLBuffer> k, uint32_t start_pos, uint32_t batch);
-    void forwardLayer(id<MTLComputeCommandEncoder> enc, int layer_idx, id<MTLBuffer> input, id<MTLBuffer> output, int channel, uint32_t seq_pos);
+    void forwardLayer(
+        id<MTLCommandBuffer> cmdBuf,
+        id<MTLComputeCommandEncoder> enc,
+        int layer_idx,
+        id<MTLBuffer> input,
+        id<MTLBuffer> output,
+        uint32_t batch_size,
+        uint32_t seq_pos
+    );
     int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p, std::mt19937& rng);
     
     // Safetensors parser
     bool parseSafetensors(const std::string& path);
+    void reinitBuffersAndRoPE();
 };

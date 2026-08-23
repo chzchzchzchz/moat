@@ -12,16 +12,21 @@
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
-#include "transformer_engine.h"
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <map>
 #include <cmath>
 #include <chrono>
-#include <algorithm>
 #include <cstring>
-#include <numeric>
+#include <algorithm>
+#include <iostream>
+#include <fstream>
+#include <cstdlib>
+#include <random>
+#include <sstream>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <map>
+#include "transformer_engine.h"
 
 // BFloat16 → Float16 conversion helper
 static inline uint16_t bf16_to_fp16(uint16_t bf16) {
@@ -76,6 +81,8 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     
     // ---- Load Shader Libraries ----
     NSError* err = nil;
+
+    
     
     // Try compiled metallib first, fall back to runtime compilation
     NSArray<NSString*>* gemmPaths = @[
@@ -130,6 +137,19 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     gemvPipeline_      = makePipeline(opsLib_, @"gemv_kernel");
     rmsnormPipeline_   = makePipeline(opsLib_, @"rmsnorm_kernel");
     ropePipeline_      = makePipeline(opsLib_, @"rope_kernel");
+    
+    // Load Qwen 3.5 4B Hybrid Shaders
+    
+    NSURL* deltaUrl = [NSURL fileURLWithPath:@"src/shaders/deltanet.metallib"];
+    id<MTLLibrary> deltaLib = [device_ newLibraryWithURL:deltaUrl error:&err];
+    if (deltaLib) {
+        deltanetPipeline_ = makePipeline(deltaLib, @"deltanet_forward");
+    }
+    NSURL* moeUrl = [NSURL fileURLWithPath:@"src/shaders/moe.metallib"];
+    id<MTLLibrary> moeLib = [device_ newLibraryWithURL:moeUrl error:&err];
+    if (moeLib) {
+        moeRouterPipeline_ = makePipeline(moeLib, @"moe_router");
+    }
     attnScoresPipeline_ = makePipeline(opsLib_, @"gqa_attention_scores_kernel");
     softmaxPipeline_   = makePipeline(opsLib_, @"softmax_kernel");
     attnValuePipeline_ = makePipeline(opsLib_, @"attention_value_kernel");
@@ -138,8 +158,18 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     embedPipeline_     = makePipeline(opsLib_, @"embedding_lookup_kernel");
     kvAppendPipeline_  = makePipeline(opsLib_, @"kv_cache_append_kernel");
     
+    reinitBuffersAndRoPE();
+    
+    std::cout << "[MetalTransformerEngine] Initialized with " 
+              << (allocatedBytes_ / (1024*1024)) << " MB allocated ("
+              << config_.n_channels << " channels, " << config_.n_layers << " layers)" 
+              << std::endl;
+}
+
+void MetalTransformerEngine::reinitBuffersAndRoPE() {
     // ---- Allocate KV Caches ----
     size_t kv_size = config_.n_kv_heads * config_.max_seq_len * config_.head_dim * sizeof(uint16_t);
+    kvCaches_.clear();
     kvCaches_.resize(config_.n_layers);
     for (int l = 0; l < config_.n_layers; l++) {
         kvCaches_[l].resize(config_.n_channels);
@@ -169,53 +199,21 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     }
     
     // ---- Allocate Scratch Buffers ----
-    // We need several intermediate buffers for the forward pass per-channel
     size_t hidden_bytes = config_.hidden_dim * sizeof(uint16_t);
     size_t inter_bytes  = config_.intermediate_dim * sizeof(uint16_t);
-    size_t q_bytes      = config_.n_heads * config_.head_dim * sizeof(uint16_t);     // = hidden_dim
-    size_t kv_proj_bytes = config_.n_kv_heads * config_.head_dim * sizeof(uint16_t); // = 256*2
     size_t logits_bytes = config_.vocab_size * sizeof(uint16_t);
     size_t attn_scores_bytes = config_.n_heads * config_.max_seq_len * sizeof(uint16_t);
-    size_t attn_out_bytes = config_.n_heads * config_.head_dim * sizeof(uint16_t);   // = hidden_dim
 
-    // Per-channel scratch (we process one channel at a time during decode)
-    scratch1_ = [device_ newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];  // norm output
-    scratch2_ = [device_ newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];  // attn output / mlp temp
-    scratch3_ = [device_ newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];  // residual store
+    size_t max_rows = std::max((size_t)8, (size_t)((config_.n_channels + 7) & ~7));
+
+    scratch1_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratch2_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratch3_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratchV_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratchAttn_ = [device_ newBufferWithLength:std::max((size_t)(max_rows * inter_bytes), max_rows * attn_scores_bytes) options:MTLResourceStorageModeShared];
+    scratchLogits_ = [device_ newBufferWithLength:max_rows * logits_bytes options:MTLResourceStorageModeShared];
     
-    // Additional scratch for attention and MLP
-    // Q projection output: [n_heads * head_dim] = [2048]
-    id<MTLBuffer> scratchQ_ = [device_ newBufferWithLength:q_bytes options:MTLResourceStorageModeShared];
-    // K projection output: [n_kv_heads * head_dim] = [256]
-    id<MTLBuffer> scratchK_ = [device_ newBufferWithLength:kv_proj_bytes options:MTLResourceStorageModeShared];
-    // V projection output
-    id<MTLBuffer> scratchV_ = [device_ newBufferWithLength:kv_proj_bytes options:MTLResourceStorageModeShared];
-    // Attention scores: [n_heads * max_seq_len]
-    scratchAttn_ = [device_ newBufferWithLength:attn_scores_bytes options:MTLResourceStorageModeShared];
-    // Logits: [vocab_size]
-    scratchLogits_ = [device_ newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
-    
-    // Gate/Up MLP scratch
-    id<MTLBuffer> scratchGate_ = [device_ newBufferWithLength:inter_bytes options:MTLResourceStorageModeShared];
-    id<MTLBuffer> scratchUp_ = [device_ newBufferWithLength:inter_bytes options:MTLResourceStorageModeShared];
-    
-    allocatedBytes_ += hidden_bytes * 3 + q_bytes + kv_proj_bytes * 2 + attn_scores_bytes + logits_bytes + inter_bytes * 2;
-    
-    (void)attn_out_bytes;
-    (void)scratchQ_;
-    (void)scratchK_;
-    (void)scratchV_;
-    (void)scratchGate_;
-    (void)scratchUp_;
-    
-    // Store extra scratch pointers as ivars via a simple approach
-    // We'll access them through the existing scratch buffers or add to header later
-    // For now, store gate/up/q/k/v in a member vector
-    
-    std::cout << "[MetalTransformerEngine] Initialized with " 
-              << (allocatedBytes_ / (1024*1024)) << " MB allocated ("
-              << config_.n_channels << " channels, " << config_.n_layers << " layers)" 
-              << std::endl;
+    allocatedBytes_ += max_rows * (std::max(hidden_bytes, inter_bytes) * 4 + std::max(inter_bytes, attn_scores_bytes) + logits_bytes);
 }
 
 MetalTransformerEngine::~MetalTransformerEngine() {
@@ -350,16 +348,80 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     
     std::cout << "[loadWeights] Parsed " << tensors.size() << " tensors from Safetensors" << std::endl;
     
+    // Auto-detect architecture parameters from parsed tensor metadata
+    int max_layer = 0;
+    for (const auto& kv : tensors) {
+        if (kv.first.find("layers.") != std::string::npos) {
+            size_t p1 = kv.first.find("layers.");
+            size_t p2 = kv.first.find('.', p1 + 7);
+            if (p2 != std::string::npos) {
+                int l_idx = std::stoi(kv.first.substr(p1 + 7, p2 - p1 - 7));
+                if (l_idx + 1 > max_layer) max_layer = l_idx + 1;
+            }
+        }
+    }
+    if (max_layer > 0) config_.n_layers = max_layer;
+
+    auto it_emb = tensors.find("model.language_model.embed_tokens.weight");
+    if (it_emb == tensors.end()) it_emb = tensors.find("embed_tokens.weight");
+    if (it_emb != tensors.end() && it_emb->second.shape.size() == 2) {
+        config_.vocab_size = (int32_t)it_emb->second.shape[0];
+        config_.hidden_dim = (int32_t)it_emb->second.shape[1];
+    }
+
+    auto it_gate = tensors.find("model.layers.0.mlp.gate_proj.weight");
+    if (it_gate == tensors.end()) it_gate = tensors.find("layers.0.mlp.gate_proj.weight");
+    if (it_gate != tensors.end() && it_gate->second.shape.size() == 2) {
+        config_.intermediate_dim = (int32_t)it_gate->second.shape[0];
+    }
+
+    auto it_k = tensors.find("model.layers.0.self_attn.k_proj.weight");
+    if (it_k == tensors.end()) it_k = tensors.find("layers.0.self_attn.k_proj.weight");
+    if (it_k != tensors.end() && it_k->second.shape.size() == 2) {
+        int32_t k_out = (int32_t)it_k->second.shape[0];
+        if (config_.vocab_size > 32000) {
+            config_.n_heads = 12;
+            config_.head_dim = 128;
+            config_.n_kv_heads = k_out / config_.head_dim;
+            config_.norm_eps = 1e-6f;
+        }
+    }
+
+    std::cout << "[loadWeights] Auto-configured architecture: "
+              << config_.n_layers << " layers, hidden_dim=" << config_.hidden_dim
+              << ", inter_dim=" << config_.intermediate_dim
+              << ", n_heads=" << config_.n_heads
+              << ", n_kv_heads=" << config_.n_kv_heads
+              << ", head_dim=" << config_.head_dim << std::endl;
+    
+    // Re-initialize scratch buffers, KV cache arrays, and RoPE frequency tables for auto-detected architecture
+    reinitBuffersAndRoPE();
+    
     // Memory-map the raw data section
-    file.seekg(0, std::ios::end);
-    size_t file_size = file.tellg();
-    file.seekg(0, std::ios::beg);
+    file.close(); // Close fstream as we will use raw fd for mmap
     
-    std::vector<char> file_data(file_size);
-    file.read(file_data.data(), file_size);
-    file.close();
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        std::cerr << "[loadWeights] Cannot open for mmap: " << path << std::endl;
+        return false;
+    }
     
-    const char* raw_data = file_data.data() + data_start;
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        std::cerr << "[loadWeights] Cannot stat file: " << path << std::endl;
+        close(fd);
+        return false;
+    }
+    size_t file_size = sb.st_size;
+    
+    const char* mapped_data = (const char*)mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapped_data == MAP_FAILED) {
+        std::cerr << "[loadWeights] mmap failed for: " << path << std::endl;
+        close(fd);
+        return false;
+    }
+    
+    const char* raw_data = mapped_data + data_start;
     
     // Helper: load a tensor into a Metal buffer as FP16
     auto loadTensor = [&](const std::string& name, bool transpose_2d = false) -> id<MTLBuffer> {
@@ -367,6 +429,7 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         if (it == tensors.end()) {
             // Try with "model." prefix
             it = tensors.find("model." + name);
+            if (it == tensors.end()) it = tensors.find("model.language_model." + name);
             if (it == tensors.end()) {
                 std::cerr << "[loadWeights] Missing tensor: " << name << std::endl;
                 return nil;
@@ -374,6 +437,10 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         }
         
         const TensorInfo& info = it->second;
+        std::cout << "[loadTensor] " << name << " -> key=" << it->first << " dtype=" << info.dtype 
+                  << " shape=[" << (info.shape.size() > 0 ? info.shape[0] : 0) 
+                  << (info.shape.size() > 1 ? "," + std::to_string(info.shape[1]) : "") << "]"
+                  << " offset=" << info.offset_start << std::endl;
         size_t num_elements = 1;
         for (auto d : info.shape) num_elements *= d;
         
@@ -416,6 +483,10 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     embedWeights_ = loadTensor("embed_tokens.weight", false);
     finalNorm_ = loadTensor("norm.weight", false);
     lmHead_ = loadTensor("lm_head.weight", true);
+    if (!lmHead_ && embedWeights_) {
+        std::cout << "[loadWeights] lm_head.weight tied to embed_tokens.weight" << std::endl;
+        lmHead_ = embedWeights_;
+    }
     
     if (!embedWeights_ || !finalNorm_ || !lmHead_) {
         std::cerr << "[loadWeights] Failed to load embedding/norm/lm_head" << std::endl;
@@ -446,8 +517,11 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         }
     }
     
+    munmap((void*)mapped_data, file_size);
+    close(fd);
+    
+    std::cout << "[loadWeights] All weights loaded: " << (allocatedBytes_ / 1024 / 1024) << " MB total" << std::endl;
     weightsLoaded_ = true;
-    std::cout << "[loadWeights] All weights loaded: " << (allocatedBytes_ / (1024*1024)) << " MB total" << std::endl;
     return true;
 }
 
@@ -564,166 +638,156 @@ void MetalTransformerEngine::dispatchRoPE(
 // ============================================================================
 
 void MetalTransformerEngine::forwardLayer(
+    id<MTLCommandBuffer> cmdBuf,
     id<MTLComputeCommandEncoder> enc,
     int layer_idx,
-    id<MTLBuffer> input,    // [1, hidden_dim] — current hidden state
-    id<MTLBuffer> output,   // [1, hidden_dim] — output hidden state
-    int channel,
-    uint32_t seq_pos        // current position in the sequence (for KV cache write)
+    id<MTLBuffer> input,    // [batch_size, hidden_dim]
+    id<MTLBuffer> output,   // [batch_size, hidden_dim]
+    uint32_t batch_size,
+    uint32_t seq_pos        // current position in the sequence
 ) {
     const auto& lw = layerWeights_[layer_idx];
     uint32_t H = config_.hidden_dim;         // 2048
     uint32_t I = config_.intermediate_dim;   // 5632
-    uint32_t KV_DIM = config_.n_kv_heads * config_.head_dim;  // 4 * 64 = 256
-    
-    // scratch1_ = RMSNorm(input, input_norm)
-    dispatchRMSNorm(enc, input, lw.input_norm, scratch1_, 1, H);
-    
-    // ---- Attention Block ----
-    // Q = scratch1_ @ q_proj.T → [1, 2048] × [2048, 2048] → [1, 2048]
-    // Note: Safetensors weights are stored as [out_dim, in_dim], so q_proj is [2048, 2048]
-    // For GEMM: A=[1, H] × B=[H, H] → C=[1, H]
-    // But our GEMM kernel does C = A × B row-major, and weights are [out, in] so B^T = [in, out]
-    // We need to transpose: GEMM(scratch1_[1,H], q_proj_T[H,H], Q[1,H])
-    // Since q_proj is stored as [H,H] and is square, we can use it directly with swapped dims
-    dispatchGEMM(enc, scratch1_, lw.q_proj, scratch2_, 1, H, H);    // Q → scratch2_
-    dispatchGEMM(enc, scratch1_, lw.k_proj, scratch3_, 1, H, KV_DIM);  // K → scratch3_
-    
-    // Allocate temp V buffer from one part of scratchAttn_
-    // V projection: [1, H] × [H, KV_DIM] → [1, KV_DIM]
-    // We need a separate buffer for V — use the end of scratchAttn_ temporarily
-    id<MTLBuffer> v_temp = scratchAttn_;  // Reuse: V is small (256 elements = 512 bytes)
-    dispatchGEMM(enc, scratch1_, lw.v_proj, v_temp, 1, H, KV_DIM);   // V → v_temp
-    
-    // Apply RoPE to Q and K
-    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, 1);
-    
-    // Append K, V to KV cache at position seq_pos
-    if (kvAppendPipeline_) {
-        [enc setComputePipelineState:kvAppendPipeline_];
-        
-        // Append K
-        [enc setBuffer:scratch3_ offset:0 atIndex:0];  // new K [1, n_kv_heads, head_dim]
-        [enc setBuffer:kvCaches_[layer_idx][channel].k_cache offset:0 atIndex:1];
-        uint32_t nkv = config_.n_kv_heads;
-        uint32_t maxseq = config_.max_seq_len;
-        uint32_t hdim = config_.head_dim;
-        uint32_t wpos = seq_pos;
-        [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:2];
-        [enc setBytes:&maxseq length:sizeof(uint32_t) atIndex:3];
-        [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:4];
-        [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
-        MTLSize grid = MTLSizeMake(1, nkv, hdim);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-        
-        // Append V
-        [enc setBuffer:v_temp offset:0 atIndex:0];
-        [enc setBuffer:kvCaches_[layer_idx][channel].v_cache offset:0 atIndex:1];
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    uint32_t KV_DIM = config_.n_kv_heads * config_.head_dim;  // 256
+    uint32_t M = batch_size;
+
+    // 1. RMSNorm on input hidden state -> scratch1_
+    dispatchRMSNorm(enc, input, lw.input_norm, scratch1_, M, H);
+
+    // 2. Batched GEMM Projections (Q, K, V) across all M channels simultaneously
+    dispatchGEMM(enc, scratch1_, lw.q_proj, scratch2_, M, H, H);        // Q [M, H] -> scratch2_
+    dispatchGEMM(enc, scratch1_, lw.k_proj, scratch3_, M, H, KV_DIM);   // K [M, KV_DIM] -> scratch3_
+    dispatchGEMM(enc, scratch1_, lw.v_proj, scratchV_, M, H, KV_DIM);   // V [M, KV_DIM] -> scratchV_
+
+    // 3. Apply RoPE to Q and K for all M channels
+    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, M);
+
+    // 4. Per-channel KV cache append and Attention calculation
+    for (uint32_t c = 0; c < M; c++) {
+        size_t k_offset = c * KV_DIM * sizeof(_Float16);
+        size_t v_offset = c * KV_DIM * sizeof(_Float16);
+        size_t q_offset = c * H * sizeof(_Float16);
+        size_t attn_out_offset = c * H * sizeof(_Float16);
+        size_t attn_score_offset = c * config_.n_heads * config_.max_seq_len * sizeof(_Float16);
+
+        if (kvAppendPipeline_) {
+            [enc setComputePipelineState:kvAppendPipeline_];
+            // Append K
+            [enc setBuffer:scratch3_ offset:k_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
+            uint32_t nkv = config_.n_kv_heads, maxseq = config_.max_seq_len, hdim = config_.head_dim, wpos = seq_pos;
+            [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:2];
+            [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&maxseq length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
+            MTLSize grid = MTLSizeMake(1, nkv, hdim);
+            MTLSize tg = MTLSizeMake(1, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+
+            // Append V
+            [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        }
+
+        uint32_t cur_seq_len = seq_pos + 1;
+        if (attnScoresPipeline_) {
+            [enc setComputePipelineState:attnScoresPipeline_];
+            [enc setBuffer:scratch2_ offset:q_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:2];
+            uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads, hd = config_.head_dim;
+            uint32_t sl = cur_seq_len, ms = config_.max_seq_len;
+            [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&hd length:sizeof(uint32_t) atIndex:5];
+            [enc setBytes:&sl length:sizeof(uint32_t) atIndex:6];
+            [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
+            MTLSize grid = MTLSizeMake(1, nh, sl);
+            MTLSize tg = MTLSizeMake(1, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        }
+
+        if (softmaxPipeline_) {
+            [enc setComputePipelineState:softmaxPipeline_];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:0];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:1];
+            uint32_t sl = cur_seq_len;
+            [enc setBytes:&sl length:sizeof(uint32_t) atIndex:2];
+            uint32_t threadsPerTG = std::min(cur_seq_len, (uint32_t)256);
+            MTLSize tg_count = MTLSizeMake(config_.n_heads, 1, 1);
+            MTLSize tg_size = MTLSizeMake(threadsPerTG, 1, 1);
+            [enc dispatchThreadgroups:tg_count threadsPerThreadgroup:tg_size];
+        }
+
+        if (attnValuePipeline_) {
+            [enc setComputePipelineState:attnValuePipeline_];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
+            [enc setBuffer:scratch2_ offset:attn_out_offset atIndex:2];
+            uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads;
+            uint32_t sl = cur_seq_len, hd = config_.head_dim, ms = config_.max_seq_len;
+            [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&sl length:sizeof(uint32_t) atIndex:5];
+            [enc setBytes:&hd length:sizeof(uint32_t) atIndex:6];
+            [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
+            MTLSize grid = MTLSizeMake(1, nh, hd);
+            MTLSize tg = MTLSizeMake(1, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        }
     }
-    
-    // Compute attention scores: Q[1, n_heads, head_dim] @ K_cache[n_kv_heads, seq_pos+1, head_dim]^T
-    uint32_t cur_seq_len = seq_pos + 1;
-    if (attnScoresPipeline_) {
-        [enc setComputePipelineState:attnScoresPipeline_];
-        [enc setBuffer:scratch2_ offset:0 atIndex:0];   // Q [1, n_heads * head_dim]
-        [enc setBuffer:kvCaches_[layer_idx][channel].k_cache offset:0 atIndex:1];  // K cache
-        [enc setBuffer:scratchAttn_ offset:0 atIndex:2];  // scores output [n_heads, seq_len]
-        uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads, hd = config_.head_dim;
-        uint32_t sl = cur_seq_len;
-        [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
-        [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
-        [enc setBytes:&hd length:sizeof(uint32_t) atIndex:5];
-        [enc setBytes:&sl length:sizeof(uint32_t) atIndex:6];
-        MTLSize grid = MTLSizeMake(1, nh, sl);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-    }
-    
-    // Softmax over attention scores
-    if (softmaxPipeline_) {
-        [enc setComputePipelineState:softmaxPipeline_];
-        [enc setBuffer:scratchAttn_ offset:0 atIndex:0];  // scores (in-place scores)
-        [enc setBuffer:scratchAttn_ offset:0 atIndex:1];  // probs (overwrite in-place)
-        uint32_t sl = cur_seq_len;
-        [enc setBytes:&sl length:sizeof(uint32_t) atIndex:2];
-        uint32_t threadsPerTG = std::min(cur_seq_len, (uint32_t)256);
-        MTLSize tg_count = MTLSizeMake(config_.n_heads, 1, 1);  // one TG per head
-        MTLSize tg_size = MTLSizeMake(threadsPerTG, 1, 1);
-        [enc dispatchThreadgroups:tg_count threadsPerThreadgroup:tg_size];
-    }
-    
-    // Compute attention output: probs[n_heads, seq_len] @ V_cache[n_kv_heads, seq_len, head_dim]
-    if (attnValuePipeline_) {
-        [enc setComputePipelineState:attnValuePipeline_];
-        [enc setBuffer:scratchAttn_ offset:0 atIndex:0];  // probs
-        [enc setBuffer:kvCaches_[layer_idx][channel].v_cache offset:0 atIndex:1];
-        [enc setBuffer:scratch2_ offset:0 atIndex:2];  // output [n_heads * head_dim]
-        uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads;
-        uint32_t sl = cur_seq_len, hd = config_.head_dim;
-        [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
-        [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
-        [enc setBytes:&sl length:sizeof(uint32_t) atIndex:5];
-        [enc setBytes:&hd length:sizeof(uint32_t) atIndex:6];
-        MTLSize grid = MTLSizeMake(1, nh, hd);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-    }
-    
-    // O projection: [1, 2048] → [1, 2048]
-    dispatchGEMM(enc, scratch2_, lw.o_proj, scratch1_, 1, H, H);
-    
-    // Residual: output = input + attn_output (scratch1_)
+
+    // 5. O Projection (Batched GEMM M x H @ H x H)
+    dispatchGEMM(enc, scratch2_, lw.o_proj, scratch1_, M, H, H);
+
+    // 6. Residual Add 1: scratch3_ = input + scratch1_ (attn_out)
     if (residualPipeline_) {
         [enc setComputePipelineState:residualPipeline_];
         [enc setBuffer:scratch1_ offset:0 atIndex:0];
         [enc setBuffer:input offset:0 atIndex:1];
-        [enc setBuffer:scratch3_ offset:0 atIndex:2];  // scratch3_ = residual sum
-        uint32_t size = H;
-        [enc setBytes:&size length:sizeof(uint32_t) atIndex:3];
-        MTLSize grid = MTLSizeMake(H, 1, 1);
+        [enc setBuffer:scratch3_ offset:0 atIndex:2];
+        uint32_t total_size = M * H;
+        [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(total_size, 1, 1);
         MTLSize tg = MTLSizeMake(1, 1, 1);
         [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
     }
-    
-    // ---- MLP Block ----
-    // RMSNorm: scratch1_ = RMSNorm(scratch3_, post_attn_norm)
-    dispatchRMSNorm(enc, scratch3_, lw.post_attn_norm, scratch1_, 1, H);
-    
-    // Gate projection: [1, H] → [1, I]
-    dispatchGEMM(enc, scratch1_, lw.gate_proj, scratch2_, 1, H, I);  // gate → scratch2_
-    
-    // Up projection: [1, H] → [1, I]
-    // Need a temp buffer for up — reuse scratchAttn_ which is large enough
-    id<MTLBuffer> up_buf = scratchAttn_;  // attn scratch no longer needed
-    dispatchGEMM(enc, scratch1_, lw.up_proj, up_buf, 1, H, I);    // up → up_buf
-    
-    // SiLU(gate) * up → scratch2_
+
+    // 7. MLP RMSNorm: scratch1_ = RMSNorm(scratch3_, post_attn_norm)
+    dispatchRMSNorm(enc, scratch3_, lw.post_attn_norm, scratch1_, M, H);
+
+    // 8. Gate and Up Projections (Batched GEMM M x H @ H x I)
+    dispatchGEMM(enc, scratch1_, lw.gate_proj, scratch2_, M, H, I);
+    id<MTLBuffer> up_buf = scratchAttn_;
+    dispatchGEMM(enc, scratch1_, lw.up_proj, up_buf, M, H, I);
+
+    // 9. SiLU(Gate) * Up -> scratch2_
     if (siluMulPipeline_) {
         [enc setComputePipelineState:siluMulPipeline_];
-        [enc setBuffer:scratch2_ offset:0 atIndex:0];  // gate
-        [enc setBuffer:up_buf offset:0 atIndex:1];      // up
-        [enc setBuffer:scratch2_ offset:0 atIndex:2];   // output (in-place over gate)
-        uint32_t size = I;
-        [enc setBytes:&size length:sizeof(uint32_t) atIndex:3];
-        MTLSize grid = MTLSizeMake(I, 1, 1);
+        [enc setBuffer:scratch2_ offset:0 atIndex:0];
+        [enc setBuffer:up_buf offset:0 atIndex:1];
+        [enc setBuffer:scratch2_ offset:0 atIndex:2];
+        uint32_t total_inter = M * I;
+        [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(total_inter, 1, 1);
         MTLSize tg = MTLSizeMake(1, 1, 1);
         [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
     }
-    
-    // Down projection: [1, I] → [1, H]
-    dispatchGEMM(enc, scratch2_, lw.down_proj, scratch1_, 1, I, H);
-    
-    // Final residual: output = scratch3_ + scratch1_
+
+    // 10. Down Projection (Batched GEMM M x I @ I x H)
+    dispatchGEMM(enc, scratch2_, lw.down_proj, scratch1_, M, I, H);
+
+    // 11. Final residual: output = scratch3_ + scratch1_
     if (residualPipeline_) {
         [enc setComputePipelineState:residualPipeline_];
         [enc setBuffer:scratch1_ offset:0 atIndex:0];
         [enc setBuffer:scratch3_ offset:0 atIndex:1];
         [enc setBuffer:output offset:0 atIndex:2];
-        uint32_t size = H;
-        [enc setBytes:&size length:sizeof(uint32_t) atIndex:3];
-        MTLSize grid = MTLSizeMake(H, 1, 1);
+        uint32_t total_size = M * H;
+        [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(total_size, 1, 1);
         MTLSize tg = MTLSizeMake(1, 1, 1);
         [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
     }
@@ -743,6 +807,7 @@ int32_t MetalTransformerEngine::sampleToken(
     
     // Temperature scaling
     float inv_temp = 1.0f / std::max(temperature, 1e-6f);
+    
     for (int i = 0; i < vocab_size; i++) {
         probs[i] = (float)logits[i] * inv_temp;
         if (probs[i] > max_logit) max_logit = probs[i];
@@ -819,124 +884,114 @@ GenerationResult MetalTransformerEngine::generate(
     }
     
     const uint32_t H = config_.hidden_dim;
-    const int EOS_TOKEN = 2;
+    const uint32_t C = config_.n_channels;
+    const bool is_qwen = (config_.vocab_size > 32000);
+    const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
+    const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
     
-    std::vector<std::mt19937> channel_rngs(config_.n_channels);
-    for (int c = 0; c < config_.n_channels; c++) {
+    std::vector<std::mt19937> channel_rngs(C);
+    for (uint32_t c = 0; c < C; c++) {
         channel_rngs[c].seed(1337 + c * 10007);
     }
     
     // Track active channels (not yet hit EOS)
-    std::vector<bool> channel_active(config_.n_channels, true);
+    std::vector<bool> channel_active(C, true);
     
-    // Allocate per-channel hidden state buffers  
-    size_t hidden_bytes = H * sizeof(uint16_t);
-    std::vector<id<MTLBuffer>> hidden_bufs(config_.n_channels);
-    std::vector<id<MTLBuffer>> hidden_bufs2(config_.n_channels);
-    for (int c = 0; c < config_.n_channels; c++) {
-        hidden_bufs[c] = [device_ newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
-        hidden_bufs2[c] = [device_ newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
-    }
+    // Allocate unified hidden state buffers holding all C channels contiguously
+    size_t batch_hidden_bytes = C * H * sizeof(uint16_t);
+    id<MTLBuffer> batch_hidden_1 = [device_ newBufferWithLength:batch_hidden_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> batch_hidden_2 = [device_ newBufferWithLength:batch_hidden_bytes options:MTLResourceStorageModeShared];
     
     auto t_start = std::chrono::high_resolution_clock::now();
     bool ttft_recorded = false;
     double sum_decode_ms = 0;
     int decode_steps = 0;
     
-    // ---- Prefill: Process prompt tokens one at a time through all layers ----
-    // (For simplicity, process each prompt token sequentially through the full model
-    //  to build up the KV cache. A production implementation would process all at once.)
-    
-    for (int t = 0; t < prompt_len; t++) {
-        for (int c = 0; c < config_.n_channels; c++) {
-            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-            
-            // Embedding lookup for this token
-            if (embedPipeline_) {
-                [enc setComputePipelineState:embedPipeline_];
-                // Write token ID to a small temp buffer
-                uint32_t tok = (uint32_t)prompt_tokens[t];
-                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    // ---- Prefill: Process prompt tokens 0..prompt_len-2 into KV cache ----
+    for (int t = 0; t < prompt_len - 1; t++) {
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        
+        // Embedding lookup for prompt token t for all C channels
+        if (embedPipeline_) {
+            [enc setComputePipelineState:embedPipeline_];
+            uint32_t tok = (uint32_t)prompt_tokens[t];
+            id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+            for (uint32_t c = 0; c < C; c++) {
                 [enc setBuffer:tokBuf offset:0 atIndex:0];
                 [enc setBuffer:embedWeights_ offset:0 atIndex:1];
-                [enc setBuffer:hidden_bufs[c] offset:0 atIndex:2];
+                [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
                 uint32_t hdim = H;
                 [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                 MTLSize grid = MTLSizeMake(1, H, 1);
                 MTLSize tg = MTLSizeMake(1, 1, 1);
                 [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
             }
-            
-            // Forward through all 22 layers
-            for (int l = 0; l < config_.n_layers; l++) {
-                id<MTLBuffer> in_buf  = (l % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
-                id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
-                forwardLayer(enc, l, in_buf, out_buf, c, t);
-            }
-            
-            [enc endEncoding];
-            [cmdBuf commit];
-            [cmdBuf waitUntilCompleted];
         }
+        
+        // Forward through all layers with batch_size = C
+        for (int l = 0; l < config_.n_layers; l++) {
+            id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+            id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+            forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
+        }
+        
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
     }
     
-    // ---- Decode: Autoregressive generation ----
+    // ---- Decode: Autoregressive generation starting from prompt_tokens[prompt_len - 1] ----
     for (int step = 0; step < max_new_tokens; step++) {
         auto t_step_start = std::chrono::high_resolution_clock::now();
+        uint32_t seq_pos = prompt_len - 1 + step;
         
-        for (int c = 0; c < config_.n_channels; c++) {
-            if (!channel_active[c]) continue;
-            
-            // Determine current token to process
-            int32_t cur_token;
-            if (step == 0) {
-                cur_token = prompt_tokens[prompt_len - 1];  // Last prompt token
-            } else {
-                cur_token = result.channel_tokens[c].back();
-            }
-            
-            uint32_t seq_pos = prompt_len + step;
-            
-            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-            
-            // Embedding lookup
-            if (embedPipeline_) {
-                [enc setComputePipelineState:embedPipeline_];
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        
+        // Lookup embeddings for each active channel
+        if (embedPipeline_) {
+            [enc setComputePipelineState:embedPipeline_];
+            for (uint32_t c = 0; c < C; c++) {
+                if (!channel_active[c]) continue;
+                int32_t cur_token = (step == 0) ? prompt_tokens[prompt_len - 1] : result.channel_tokens[c].back();
                 uint32_t tok = (uint32_t)cur_token;
                 id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
                 [enc setBuffer:tokBuf offset:0 atIndex:0];
                 [enc setBuffer:embedWeights_ offset:0 atIndex:1];
-                [enc setBuffer:hidden_bufs[c] offset:0 atIndex:2];
+                [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
                 uint32_t hdim = H;
                 [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                 MTLSize grid = MTLSizeMake(1, H, 1);
                 MTLSize tg = MTLSizeMake(1, 1, 1);
                 [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
             }
+        }
+        
+        // Unified forward pass through all layers
+        for (int l = 0; l < config_.n_layers; l++) {
+            id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+            id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+            forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, seq_pos);
+        }
+        
+        // Final RMSNorm across all C channels [C, H]
+        id<MTLBuffer> final_hidden = (config_.n_layers % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+        dispatchRMSNorm(enc, final_hidden, finalNorm_, scratch1_, C, H);
+        
+        // Batched LM Head projection: GEMM(hidden[C, H], lm_head[H, V], logits[C, V]) with M = C
+        dispatchGEMM(enc, scratch1_, lmHead_, scratchLogits_, C, H, config_.vocab_size);
+        
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+        
+        // CPU-side sampling from logits for each active channel
+        const _Float16* logits_base = (const _Float16*)[scratchLogits_ contents];
+        for (uint32_t c = 0; c < C; c++) {
+            if (!channel_active[c]) continue;
             
-            // Forward through all layers
-            for (int l = 0; l < config_.n_layers; l++) {
-                id<MTLBuffer> in_buf  = (l % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
-                id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
-                forwardLayer(enc, l, in_buf, out_buf, c, seq_pos);
-            }
-            
-            // Final RMSNorm
-            id<MTLBuffer> final_hidden = (config_.n_layers % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
-            dispatchRMSNorm(enc, final_hidden, finalNorm_, scratch1_, 1, H);
-            
-            // LM Head projection: [1, H] × [H, V] → [1, V]
-            // lm_head weight is [V, H], so we transpose: GEMM(hidden[1,H], lm_head[H,V], logits[1,V])
-            dispatchGEMM(enc, scratch1_, lmHead_, scratchLogits_, 1, H, config_.vocab_size);
-            
-            [enc endEncoding];
-            [cmdBuf commit];
-            [cmdBuf waitUntilCompleted];
-            
-            // CPU-side sampling from logits
-            const _Float16* logits = (const _Float16*)[scratchLogits_ contents];
+            const _Float16* logits = logits_base + c * config_.vocab_size;
             int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p, channel_rngs[c]);
             
             // Accumulate log-probability
@@ -955,8 +1010,7 @@ GenerationResult MetalTransformerEngine::generate(
             result.channel_tokens[c].push_back(next_token);
             result.total_tokens++;
             
-            // Check EOS
-            if (next_token == EOS_TOKEN) {
+            if (next_token == EOS_TOKEN_1 || next_token == EOS_TOKEN_2 || next_token == 2) {
                 channel_active[c] = false;
             }
         }
@@ -972,9 +1026,8 @@ GenerationResult MetalTransformerEngine::generate(
             decode_steps++;
         }
         
-        // Check if all channels finished
         bool all_done = true;
-        for (int c = 0; c < config_.n_channels; c++) {
+        for (uint32_t c = 0; c < C; c++) {
             if (channel_active[c]) { all_done = false; break; }
         }
         if (all_done) break;
@@ -984,10 +1037,9 @@ GenerationResult MetalTransformerEngine::generate(
     result.total_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     result.tpot_ms = (decode_steps > 0) ? (sum_decode_ms / decode_steps) : 0;
     
-    // Determine best channel by logprob
     result.best_channel = 0;
     result.best_score = result.channel_logprobs[0];
-    for (int c = 1; c < config_.n_channels; c++) {
+    for (uint32_t c = 1; c < C; c++) {
         if (result.channel_logprobs[c] > result.best_score) {
             result.best_score = result.channel_logprobs[c];
             result.best_channel = c;
@@ -1085,7 +1137,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             for (int l = 0; l < config_.n_layers; l++) {
                 id<MTLBuffer> in_buf  = (l % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
                 id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
-                forwardLayer(enc, l, in_buf, out_buf, c, t);
+                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, t);
             }
 
             [enc endEncoding];
@@ -1130,7 +1182,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             for (int l = 0; l < config_.n_layers; l++) {
                 id<MTLBuffer> in_buf  = (l % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
                 id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
-                forwardLayer(enc, l, in_buf, out_buf, c, seq_pos);
+                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, seq_pos);
             }
 
             id<MTLBuffer> final_hidden = (config_.n_layers % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];

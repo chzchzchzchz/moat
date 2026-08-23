@@ -150,9 +150,11 @@ class TransformerBlock(torch.nn.Module):
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        layer_idx: int = -1
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        attn_out, new_kv = self.self_attn(self.input_layernorm(x), freqs_cis, mask, kv_cache=kv_cache)
+        h_norm = self.input_layernorm(x)
+        attn_out, new_kv = self.self_attn(h_norm, freqs_cis, mask, kv_cache=kv_cache)
         h = x + attn_out
         out = h + self.mlp(self.post_attention_layernorm(h))
         return out, new_kv
@@ -217,8 +219,10 @@ class TinyLlamaModel(torch.nn.Module):
         new_kv_caches = []
         for i, layer in enumerate(self.layers):
             layer_kv = kv_caches[i] if kv_caches is not None else None
-            h, new_kv = layer(h, freqs_cis, mask, kv_cache=layer_kv)
-            new_kv_caches.append(new_kv)
+            h, new_layer_kv = layer(h, freqs_cis, mask, layer_kv, layer_idx=i)
+            new_kv_caches.append(new_layer_kv)
+            if i == 0:
+                print("PyTorch Layer 0 Final Output:", h[0, -1, :10].tolist())
 
         h = self.norm(h)
         logits = self.lm_head(h)

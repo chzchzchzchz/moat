@@ -21,7 +21,13 @@ int main() {
 
     AntigravityEngineContext* ctx = AntigravityEngineCreate(&config);
     assert(ctx != nullptr);
-    std::cout << "✅ AntigravityEngine created successfully.\n";
+    std::cout << "Loading model weights from models/tinyllama/model.safetensors...\n";
+    int load_res = AntigravityEngineLoadModel(ctx, "models/tinyllama/model.safetensors");
+    if (load_res != 0) {
+        std::cerr << "FATAL ERROR: Failed to load safetensors model file!\n";
+        return 1;
+    }
+    std::cout << "✅ Model weights loaded successfully into Metal VRAM.\n";
 
     uint64_t mem = AntigravityEngineGetAllocatedMemoryBytes(ctx);
     std::cout << "  • Zero-Copy Shared VRAM Allocated: " << mem / 1024 << " KB\n";

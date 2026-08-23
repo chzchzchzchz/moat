@@ -283,7 +283,11 @@ class BatchedRolloutCoordinator:
             if not hasattr(self, '_cached_w_id') or self._cached_w_id != id(weight_matrix):
                 self._cached_w_id = id(weight_matrix)
                 self._cached_w_mps = torch.from_numpy(weight_matrix.astype(np.float32)).to('mps')
-            act_t = torch.from_numpy(activations_batch.astype(np.float32)).to('mps')
+            if isinstance(activations_batch, torch.Tensor):
+                act_t = activations_batch.to('mps')
+            else:
+                act_t = torch.from_numpy(activations_batch.astype(np.float32)).to('mps')
+            act_t = act_t.to(self._cached_w_mps.dtype)
             logits_t = torch.matmul(act_t, self._cached_w_mps)
             next_tokens, step_logprobs = self.sample_tokens(logits_t, temperature=temperature)
         else:

@@ -89,8 +89,11 @@ class NativeMetalEngine:
 
         # ---- Load model weights if path provided ----
         self._model_loaded = False
-        if model_path and os.path.exists(model_path):
-            self.load_weights(model_path)
+        if model_path:
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Safetensors weight file not found: {model_path}")
+            if not self.load_weights(model_path):
+                raise RuntimeError(f"Failed to load Safetensors weights from {model_path}")
 
     def _bind_functions(self):
         """Declare C function argtypes and restypes for type safety."""
