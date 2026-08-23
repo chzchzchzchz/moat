@@ -475,6 +475,44 @@ int32_t AntigravityEngineNativeGenerateMultimodal(
     return 0;
 }
 
+int32_t AntigravityEngineNativeMCTSGenerate(
+    AntigravityEngineContext* ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    const AntigravityMCTSConfig* mcts_config,
+    int32_t* out_tokens,
+    AntigravityMCTSResult* out_result
+) {
+    if (!ctx || !prompt_tokens || prompt_len <= 0 || !out_tokens) return -2;
+    if (!ctx->nativeEngine) return -1;
+
+    MCTSConfig cfg;
+    if (mcts_config) {
+        cfg.chunk_tokens = mcts_config->chunk_tokens > 0 ? mcts_config->chunk_tokens : 30;
+        cfg.num_chunks = mcts_config->num_chunks > 0 ? mcts_config->num_chunks : 4;
+        cfg.branches_per_chunk = mcts_config->branches_per_chunk > 0 ? mcts_config->branches_per_chunk : 3;
+        cfg.temperature = mcts_config->temperature > 0.0f ? mcts_config->temperature : 0.8f;
+        cfg.top_p = mcts_config->top_p > 0.0f ? mcts_config->top_p : 0.9f;
+    }
+
+    MCTSResult res = ctx->nativeEngine->generateMCTS(prompt_tokens, prompt_len, cfg);
+
+    int n_toks = (int)res.best_tokens.size();
+    for (int t = 0; t < n_toks; t++) {
+        out_tokens[t] = res.best_tokens[t];
+    }
+
+    if (out_result) {
+        out_result->total_tokens_generated = n_toks;
+        out_result->total_tokens_evaluated = res.total_tokens_evaluated;
+        out_result->chunks_expanded = res.chunks_expanded;
+        out_result->execution_wall_time_ms = res.total_ms;
+        out_result->best_score = res.best_score;
+    }
+
+    return 0;
+}
+
 void AntigravityEngineUnloadWeights(AntigravityEngineContext* ctx) {
     if (!ctx) return;
 

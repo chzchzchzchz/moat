@@ -50,6 +50,21 @@ int main() {
     std::cout << "  • Best Candidate Channel:  " << best_channel << "\n";
     std::cout << "  • Best Candidate Score:    " << scores[best_channel] << "\n";
 
+    std::cout << "\nTesting Native C++ MCTS Tree Search with Process Reward Branch Pruning...\n";
+    std::vector<int32_t> prompt = {1, 15043, 29892, 1125}; // "Prove that"
+    AntigravityMCTSConfig mcts_cfg = {16, 3, 4, 0.8f, 0.9f};
+    AntigravityMCTSResult mcts_res;
+    std::vector<int32_t> mcts_out(128, 0);
+
+    int mcts_ret = AntigravityEngineNativeMCTSGenerate(ctx, prompt.data(), (int32_t)prompt.size(), &mcts_cfg, mcts_out.data(), &mcts_res);
+    assert(mcts_ret == 0);
+    std::cout << "✅ AntigravityEngineNativeMCTSGenerate executed:\n";
+    std::cout << "  • Winning Tokens Generated: " << mcts_res.total_tokens_generated << "\n";
+    std::cout << "  • Evaluated Tokens Across Branches: " << mcts_res.total_tokens_evaluated << "\n";
+    std::cout << "  • Chunks Expanded:          " << mcts_res.chunks_expanded << "\n";
+    std::cout << "  • Best Tree Score:          " << mcts_res.best_score << "\n";
+    std::cout << "  • Total Search Time:        " << mcts_res.execution_wall_time_ms << " ms\n";
+
     AntigravityEngineSanitizeBuffers(ctx);
     std::cout << "✅ AntigravityEngineSanitizeBuffers executed successfully.\n";
 

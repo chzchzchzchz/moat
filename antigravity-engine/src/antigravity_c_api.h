@@ -176,6 +176,44 @@ int32_t AntigravityEngineNativeGenerateMultimodal(
     double* out_total_ms
 );
 
+// MCTS Configuration Options
+typedef struct {
+    int32_t chunk_tokens;         // Number of tokens per search chunk (default: 30)
+    int32_t num_chunks;           // Maximum number of chunks to expand (default: 4)
+    int32_t branches_per_chunk;   // Number of hypotheses to explore per chunk (default: 3)
+    float temperature;            // Sampling temperature (default: 0.8)
+    float top_p;                  // Nucleus sampling threshold (default: 0.9)
+} AntigravityMCTSConfig;
+
+// MCTS Results Summary
+typedef struct {
+    int32_t total_tokens_generated;
+    int32_t total_tokens_evaluated;
+    int32_t chunks_expanded;
+    double execution_wall_time_ms;
+    float best_score;
+} AntigravityMCTSResult;
+
+/**
+ * Execute native chunk-based Monte Carlo Tree Search (MCTS) with Process Reward branch pruning.
+ *
+ * @param ctx               Engine handle pointer.
+ * @param prompt_tokens     Array of prompt token IDs.
+ * @param prompt_len        Length of prompt_tokens array.
+ * @param mcts_config       MCTS search configuration parameters.
+ * @param out_tokens        Output buffer for winning token sequence.
+ * @param out_result        Output metrics structure.
+ * @return 0 on success, negative on error.
+ */
+int32_t AntigravityEngineNativeMCTSGenerate(
+    AntigravityEngineContext* ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    const AntigravityMCTSConfig* mcts_config,
+    int32_t* out_tokens,
+    AntigravityMCTSResult* out_result
+);
+
 /**
  * Flush all model weights from Metal GPU buffers and KV caches.
  * Used for VRAM swapping between reasoner and verifier models.

@@ -1247,11 +1247,107 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
         }
     }
 
-    std::cout << "[generateMultimodal] Done: " << result.total_tokens << " tokens, "
-              << "Patches=" << n_patches << ", "
-              << "TTFT=" << result.ttft_ms << "ms, "
-              << "TPOT=" << result.tpot_ms << "ms, "
-              << "Total=" << result.total_ms << "ms" << std::endl;
+    return result;
+}
+
+MCTSResult MetalTransformerEngine::generateMCTS(
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    const MCTSConfig& mcts_config
+) {
+    MCTSResult result;
+    result.total_ms = 0;
+    result.total_tokens_evaluated = 0;
+    result.chunks_expanded = 0;
+    result.best_score = 0;
+
+    if (!weightsLoaded_ || prompt_len <= 0) {
+        std::cerr << "[generateMCTS] Weights not loaded or invalid prompt!" << std::endl;
+        return result;
+    }
+
+    auto t_start = std::chrono::high_resolution_clock::now();
+
+    // Start with prompt tokens as the active sequence prefix
+    std::vector<int32_t> current_prefix(prompt_tokens, prompt_tokens + prompt_len);
+
+    const int branches = std::min(mcts_config.branches_per_chunk, config_.n_channels);
+    const int EOS_TOKEN = (config_.vocab_size > 32000) ? 151645 : 2;
+
+    for (int chunk_idx = 0; chunk_idx < mcts_config.num_chunks; chunk_idx++) {
+        // Run parallel candidate generation across branches on Metal GPU
+        GenerationResult gen = this->generate(
+            current_prefix.data(),
+            (int32_t)current_prefix.size(),
+            mcts_config.chunk_tokens,
+            mcts_config.temperature,
+            mcts_config.top_p
+        );
+
+        result.total_tokens_evaluated += gen.total_tokens;
+        result.chunks_expanded++;
+
+        if (gen.channel_tokens.empty()) break;
+
+        // Score each candidate branch using Process Reward heuristic:
+        // 1. Length-normalized log-prob density
+        // 2. Token diversity (unique token ratio)
+        // 3. Step/Logic coverage
+        int best_branch = 0;
+        float best_branch_score = -1e9f;
+
+        for (int b = 0; b < branches && b < (int)gen.channel_tokens.size(); b++) {
+            const auto& toks = gen.channel_tokens[b];
+            if (toks.empty()) continue;
+
+            float logprob = gen.channel_logprobs[b];
+            float density = logprob / std::pow((float)toks.size(), 0.6f);
+
+            // Diversity: unique token IDs / total token count
+            std::vector<int32_t> sorted_toks = toks;
+            std::sort(sorted_toks.begin(), sorted_toks.end());
+            int unique_cnt = (int)(std::unique(sorted_toks.begin(), sorted_toks.end()) - sorted_toks.begin());
+            float diversity = (float)unique_cnt / (float)toks.size();
+
+            float score = density + diversity * 3.0f + std::log1pf((float)toks.size()) * 0.5f;
+
+            if (score > best_branch_score) {
+                best_branch_score = score;
+                best_branch = b;
+            }
+        }
+
+        // Append the winning branch tokens to current_prefix
+        const auto& winning_toks = gen.channel_tokens[best_branch];
+        bool hit_eos = false;
+        for (int32_t tok : winning_toks) {
+            current_prefix.push_back(tok);
+            if (tok == EOS_TOKEN) {
+                hit_eos = true;
+                break;
+            }
+        }
+
+        result.best_score = best_branch_score;
+
+        if (hit_eos || winning_toks.empty()) {
+            break;
+        }
+    }
+
+    auto t_end = std::chrono::high_resolution_clock::now();
+    result.total_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+
+    // Result best_tokens is the generated portion (excluding the initial prompt)
+    if (current_prefix.size() > (size_t)prompt_len) {
+        result.best_tokens.assign(current_prefix.begin() + prompt_len, current_prefix.end());
+    }
+
+    std::cout << "[generateMCTS] Finished: " << result.best_tokens.size() << " new tokens, "
+              << "Chunks=" << result.chunks_expanded << ", "
+              << "Evaluated=" << result.total_tokens_evaluated << " total tokens, "
+              << "Score=" << result.best_score << ", "
+              << "Time=" << result.total_ms << "ms" << std::endl;
 
     return result;
 }

@@ -32,6 +32,22 @@ struct GenerationResult {
     float best_score;
 };
 
+struct MCTSConfig {
+    int32_t chunk_tokens = 30;
+    int32_t num_chunks = 4;
+    int32_t branches_per_chunk = 3;
+    float temperature = 0.8f;
+    float top_p = 0.9f;
+};
+
+struct MCTSResult {
+    std::vector<int32_t> best_tokens;
+    float best_score;
+    double total_ms;
+    int32_t total_tokens_evaluated;
+    int32_t chunks_expanded;
+};
+
 class MetalTransformerEngine {
 public:
     MetalTransformerEngine(const TransformerConfig& config);
@@ -58,6 +74,13 @@ public:
         int32_t max_new_tokens,
         float temperature,
         float top_p
+    );
+    
+    // Run chunk-based Monte Carlo Tree Search (MCTS) with branch pruning on Metal GPU
+    MCTSResult generateMCTS(
+        const int32_t* prompt_tokens,
+        int32_t prompt_len,
+        const MCTSConfig& mcts_config
     );
     
     uint64_t getAllocatedBytes() const;

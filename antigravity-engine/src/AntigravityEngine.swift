@@ -48,6 +48,46 @@ public struct AntigravityGenerationResult {
     public let totalTokensGenerated: Int
 }
 
+/// MCTS Search Configuration
+public struct MCTSConfig {
+    public let chunkTokens: Int
+    public let numChunks: Int
+    public let branchesPerChunk: Int
+    public let temperature: Float
+    public let topP: Float
+
+    public static let standard = MCTSConfig(
+        chunkTokens: 30,
+        numChunks: 4,
+        branchesPerChunk: 3,
+        temperature: 0.8,
+        topP: 0.9
+    )
+
+    public init(
+        chunkTokens: Int = 30,
+        numChunks: Int = 4,
+        branchesPerChunk: Int = 3,
+        temperature: Float = 0.8,
+        topP: Float = 0.9
+    ) {
+        self.chunkTokens = chunkTokens
+        self.numChunks = numChunks
+        self.branchesPerChunk = branchesPerChunk
+        self.temperature = temperature
+        self.topP = topP
+    }
+}
+
+/// MCTS Search Result returned by the Antigravity Engine
+public struct AntigravityMCTSExecutionResult {
+    public let winningTokensGenerated: Int
+    public let totalTokensEvaluated: Int
+    public let chunksExpanded: Int
+    public let bestVerificationScore: Float
+    public let executionWallTimeMs: Double
+}
+
 /// Error types for Antigravity Engine
 public enum AntigravityError: Error {
     case memoryBudgetExceeded(requestedBytes: Int64, ceilingBytes: Int64)
