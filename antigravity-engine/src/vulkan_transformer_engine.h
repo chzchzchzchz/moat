@@ -1,3 +1,5 @@
+#include <vulkan/vulkan.h>
+
 #pragma once
 #include "transformer_engine_interface.h"
 #include "transformer_engine.h" // for TransformerConfig
