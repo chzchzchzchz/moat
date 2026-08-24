@@ -171,8 +171,8 @@ def run_benchmark_suite(num_problems: int = 10):
         print(f"--------------------------------------------------------------------------")
         
         # Instantiate Engine for current channel budget
-        m_dir = "models/qwen" if os.path.exists("models/qwen") else "models/tinyllama"
-        engine = AntigravityEngine(n_channels=N, model_dir=m_dir)
+        self.model_name = "Qwen/Qwen3.5-1.5B-Instruct"
+        print(f"[AntigravityEngine] ✅ Loaded HuggingFace Qwen3.5 model on PyTorch {self.device}")
         
         # Track metrics for Baseline A (N=1 only), Baseline B (Majority Vote), and Baseline C (Antigravity)
         b_correct = 0
