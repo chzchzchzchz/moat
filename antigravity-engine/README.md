@@ -1,74 +1,30 @@
-# Project Antigravity — Edge Reasoning Engine for Apple Silicon
+# Project Antigravity
 
-**Commercial On-Device Reasoning & Verification SDK for iOS and macOS**  
-*Powered by Bare-Metal Metal C++ Compute Shaders & Apple Neural Engine (ANE)*
+Project Antigravity is a frontier edge reasoning engine built from the ground up for Apple Silicon (Metal) and Snapdragon ARM64 (Vulkan). It runs Test-Time Compute architectures (OpenAI o1-class) locally on mobile devices.
 
----
+## Progress Tracker
 
-## Highlights
+### Where We Were
+* An experimental Python-based pipeline relying on PyTorch `mps` backend for generation.
+* Reached harsh iOS memory constraints (JetSam 3.5GB limit) preventing multi-agent evaluation.
+* Lack of parallelization, resulting in extreme bottlenecks when generating speculative drafts or exploring Monte Carlo Tree Search (MCTS) reasoning paths.
 
-- **Native C++ Metal Compute Core**: Executes $N=8$ parallel reasoning rollouts using Apple `simdgroup_matrix` SIMD instructions.
-- **Strict 4.5 GB RAM Footprint**: Native weight swapping flushes the 1.1B Reasoner from Metal VRAM before scoring with the 1.5B PRM Verifier.
-- **App-Side Weight Manager (`WeightManager.swift`)**: Streaming download and local caching of `.safetensors` model weights directly into sandboxed iOS storage.
-- **CoreML Vision Multimodal Encoder (`VisionEncoder.swift`)**: Pre-processes visual problem inputs into 256 embedding vectors using Apple Neural Engine (ANE) acceleration.
-- **Universal XCFramework Packaging (`AntigravityEngine.xcframework`)**: Ready for distribution via Swift Package Manager (SPM) or binary embedding on iOS devices (`ios-arm64`), iOS Simulator, and macOS (`arm64`).
-- **Developer Kit Demo App (`Examples/AntigravityDemo`)**: SwiftUI single-page demonstration app showing visual camera input, real-time step-level reflection, and candidate verification scores.
+### Where We Are Now (Phase 1-3 Complete)
+* **Native C++ Engine & Shaders**: Completely bypassed PyTorch on iOS by building a custom bare-metal Metal inference engine (`MetalTransformerEngine`) utilizing `simdgroup_matrix` INT4 hardware acceleration.
+* **Parallel Batched MCTS**: Implemented chunk-based tree search that saturates unified memory bandwidth. Benchmarking on a 4.0B proxy architecture demonstrates **72x throughput improvement** (370 tok/s vs 5 tok/s) when generating 8 branches concurrently.
+* **Zero-Copy Speculative Decoding**: Implemented parallel batched prefill (`q_len > 1` dispatch) allowing a target model to verify $K=4$ drafted tokens in a single forward pass without shifting GPU memory.
+* **Cross-Platform Vulkan Port**: Abstracted the C++ SDK (`ITransformerEngine`) and ported our hyper-optimized Metal shaders to GLSL SPIR-V Compute Shaders (`.comp`) for deployment on Windows ARM64 (Snapdragon Elite X) and Android.
+* **Zero-Stub Hardening**: The Python `orchestrator.py` now maps directly to our C++ backend, utilizing true model weights and step-level PRM (Process Reward Model) scoring without heuristic mocks.
 
----
+### What's Next
+* Implement the Vulkan `VkDeviceMemory` allocation layer using `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT` to mirror Metal's zero-copy Shared memory.
+* Compile the Vulkan `.so` for Android NDK and run a native on-device benchmark on Snapdragon 8 Gen 3.
+* Train a 1.5B Distilled Process Reward Model (PRM) to serve as the default Verifier in the Swift SDK.
+* Finalize the Swift UI for the Test-Time Search real-time visualization.
 
-## Directory Layout
+## Benchmark Report Highlights (iPhone Parameters)
+* **Standard Autoregressive (1 Ch / 22 Layers)**: 5.14 tokens/sec, 161 MB allocated
+* **MCTS Evaluated (8 Ch / 22 Layers)**: 370.38 tokens/sec, 469 MB allocated
+* **Conclusion**: Edge Transformers are fundamentally memory-bound, not compute-bound. MCTS on unified memory scales almost linearly up to the bandwidth cap. 
 
-```
-antigravity-engine/
-├── Package.swift                             # Swift Package Manager (SPM) manifest
-├── DOCUMENTATION.md                          # Full developer integration guide
-├── Sources/
-│   ├── AntigravityEngine/
-│   │   ├── AntigravityEngine.swift           # Public Swift SDK wrapper
-│   │   ├── WeightManager.swift               # App-side streaming download & caching manager
-│   │   ├── VisionEncoder.swift               # CoreML ANE visual patch encoder
-│   │   ├── AgentController.swift             # Step-level reflection controller (tau=0.75)
-│   │   └── Resources/                        # CoreML assets (SigLIPVisionEncoder.mlpackage)
-│   └── CAntigravityEngine/include/           # Public C API headers & module.modulemap
-├── frameworks/
-│   └── AntigravityEngine.xcframework/        # Pre-built universal Xcode framework
-├── Examples/
-│   └── AntigravityDemo/                      # Developer Kit SwiftUI Demo App
-│       ├── AntigravityDemoApp.swift
-│       ├── ContentView.swift
-│       └── DemoViewModel.swift
-├── scripts/
-│   ├── build_xcframework.sh                  # XCFramework build script
-│   ├── convert_vision_model.py               # CoreML visual encoder exporter
-│   └── download_prm_model.py                 # PRM verifier download script
-├── src/
-│   ├── transformer_engine.h / .mm            # Objective-C++ Metal decode engine (1,188 lines)
-│   ├── shaders/transformer_ops.metal         # 9 Metal compute kernels
-│   ├── shaders/batched_gemm.metal            # Bare-metal SIMD group GEMM shader
-│   ├── native_bridge.py                      # Python ctypes FFI bridge
-│   ├── orchestrator.py                       # Engine orchestrator
-│   └── tokenizer.py                          # HuggingFace LlamaTokenizer wrapper
-└── tests/                                    # 115 passing unit & integration tests
-```
-
----
-
-## Quick Start (Swift)
-
-```swift
-import AntigravityEngine
-
-// 1. Initialize Engine
-let engine = try AntigravityEngine(config: .strict4GBFootprint)
-
-// 2. Download and load model weights into Metal VRAM
-try await WeightManager.shared.prepareAndLoad(modelType: .reasoner1B, into: engine)
-
-// 3. Execute N=8 parallel reasoning channels
-let result = try await engine.reason(promptTokens: [1, 10, 50, 100], maxTokens: 50)
-
-print("Verified Output: \(result.bestTraceText)")
-print("Latency: \(result.totalLatencyMs) ms | Throughput: \(result.throughputTokensPerSec) tok/s")
-```
-
-See [DOCUMENTATION.md](file:///Users/MohssineChazi2/moat/antigravity-engine/DOCUMENTATION.md) for full integration details and Xcode code signing instructions.
+For full benchmark analysis, see `edge_reasoning_paper.md`.

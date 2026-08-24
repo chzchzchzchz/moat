@@ -5,6 +5,7 @@
 
 #include "antigravity_c_api.h"
 #include "transformer_engine.h"
+#include "vulkan_transformer_engine.h"
 #include <vector>
 #include <cmath>
 #include <chrono>
@@ -30,8 +31,8 @@ struct AntigravityEngineContext {
     
     uint64_t totalAllocatedBytes;
     
-    // Native C++ Metal Transformer Engine
-    MetalTransformerEngine* nativeEngine = nullptr;
+    // Native C++ Transformer Engine Abstraction
+    ITransformerEngine* nativeEngine = nullptr;
 };
 
 extern "C" {
@@ -125,7 +126,12 @@ int32_t AntigravityEngineLoadModel(AntigravityEngineContext* ctx, const char* mo
         t_cfg.vocab_size = ctx->config.vocab_size > 0 ? ctx->config.vocab_size : 32000;
         t_cfg.hidden_dim = ctx->config.hidden_dim > 0 ? ctx->config.hidden_dim : 2048;
         t_cfg.max_seq_len = ctx->config.max_seq_len > 0 ? ctx->config.max_seq_len : 2048;
-        ctx->nativeEngine = new MetalTransformerEngine(t_cfg);
+        
+        if (ctx->config.use_metal_gpu) {
+            ctx->nativeEngine = new MetalTransformerEngine(t_cfg);
+        } else {
+            ctx->nativeEngine = new VulkanTransformerEngine(t_cfg);
+        }
     }
 
     bool ok = ctx->nativeEngine->loadWeights(std::string(model_path));
@@ -422,6 +428,45 @@ int32_t AntigravityEngineNativeGenerate(
             } else {
                 out_tokens[c * max_new_tokens + t] = 0;  // pad
             }
+        }
+    }
+
+    if (out_ttft_ms)  *out_ttft_ms  = gen.ttft_ms;
+    if (out_total_ms) *out_total_ms = gen.total_ms;
+
+    return 0;
+}
+
+int32_t AntigravityEngineNativeGenerateSpeculative(
+    AntigravityEngineContext* ctx,
+    AntigravityEngineContext* draft_ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    int32_t max_new_tokens,
+    int32_t k_draft,
+    float temperature,
+    float top_p,
+    int32_t* out_tokens,
+    int32_t* out_token_counts,
+    double* out_ttft_ms,
+    double* out_total_ms
+) {
+    if (!ctx || !draft_ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
+    if (!ctx->nativeEngine || !draft_ctx->nativeEngine) return -1;
+    if (!ctx->nativeEngine->weightsLoaded_ || !draft_ctx->nativeEngine->weightsLoaded_) return -1;
+
+    GenerationResult gen = ctx->nativeEngine->generateSpeculative(
+        draft_ctx->nativeEngine, prompt_tokens, prompt_len, max_new_tokens, k_draft, temperature, top_p
+    );
+
+    int n_toks = (int)gen.channel_tokens[0].size();
+    if (out_token_counts) *out_token_counts = n_toks;
+
+    for (int t = 0; t < max_new_tokens; t++) {
+        if (t < n_toks) {
+            out_tokens[t] = gen.channel_tokens[0][t];
+        } else {
+            out_tokens[t] = 0;
         }
     }
 

@@ -143,6 +143,38 @@ int32_t AntigravityEngineNativeGenerate(
 );
 
 /**
+ * Execute native Speculative Decoding decode using a Draft Engine.
+ *
+ * @param ctx               Target Engine handle pointer (e.g. 4.0B model).
+ * @param draft_ctx         Draft Engine handle pointer (e.g. 0.5B model).
+ * @param prompt_tokens     Array of prompt token IDs.
+ * @param prompt_len        Length of prompt_tokens array.
+ * @param max_new_tokens    Maximum new tokens to generate.
+ * @param k_draft           Number of draft tokens per speculative step.
+ * @param temperature       Sampling temperature.
+ * @param top_p             Nucleus sampling probability threshold.
+ * @param out_tokens        Output buffer [max_new_tokens] for generated tokens.
+ * @param out_token_counts  Output pointer for actual tokens generated.
+ * @param out_ttft_ms       Output: time to first token in milliseconds.
+ * @param out_total_ms      Output: total wall time in milliseconds.
+ * @return 0 on success, -1 if weights not loaded, -2 on other error.
+ */
+int32_t AntigravityEngineNativeGenerateSpeculative(
+    AntigravityEngineContext* ctx,
+    AntigravityEngineContext* draft_ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    int32_t max_new_tokens,
+    int32_t k_draft,
+    float temperature,
+    float top_p,
+    int32_t* out_tokens,
+    int32_t* out_token_counts,
+    double* out_ttft_ms,
+    double* out_total_ms
+);
+
+/**
  * Execute native multimodal autoregressive decode (text tokens + vision patch embeddings).
  *
  * @param ctx               Engine handle pointer.

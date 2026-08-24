@@ -205,15 +205,16 @@ void MetalTransformerEngine::reinitBuffersAndRoPE() {
     size_t attn_scores_bytes = config_.n_heads * config_.max_seq_len * sizeof(uint16_t);
 
     size_t max_rows = std::max((size_t)8, (size_t)((config_.n_channels + 7) & ~7));
+    size_t max_q_rows = max_rows * config_.q_len_max;
 
-    scratch1_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
-    scratch2_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
-    scratch3_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
-    scratchV_ = [device_ newBufferWithLength:max_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
-    scratchAttn_ = [device_ newBufferWithLength:std::max((size_t)(max_rows * inter_bytes), max_rows * attn_scores_bytes) options:MTLResourceStorageModeShared];
-    scratchLogits_ = [device_ newBufferWithLength:max_rows * logits_bytes options:MTLResourceStorageModeShared];
+    scratch1_ = [device_ newBufferWithLength:max_q_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratch2_ = [device_ newBufferWithLength:max_q_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratch3_ = [device_ newBufferWithLength:max_q_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratchV_ = [device_ newBufferWithLength:max_q_rows * std::max(hidden_bytes, inter_bytes) options:MTLResourceStorageModeShared];
+    scratchAttn_ = [device_ newBufferWithLength:std::max((size_t)(max_q_rows * inter_bytes), max_q_rows * attn_scores_bytes) options:MTLResourceStorageModeShared];
+    scratchLogits_ = [device_ newBufferWithLength:max_q_rows * logits_bytes options:MTLResourceStorageModeShared];
     
-    allocatedBytes_ += max_rows * (std::max(hidden_bytes, inter_bytes) * 4 + std::max(inter_bytes, attn_scores_bytes) + logits_bytes);
+    allocatedBytes_ += max_q_rows * (std::max(hidden_bytes, inter_bytes) * 4 + std::max(inter_bytes, attn_scores_bytes) + logits_bytes);
 }
 
 MetalTransformerEngine::~MetalTransformerEngine() {
@@ -224,6 +225,33 @@ MetalTransformerEngine::~MetalTransformerEngine() {
 // ============================================================================
 // Safetensors Parser & Weight Loader
 // ============================================================================
+
+void MetalTransformerEngine::allocateDummyWeights() {
+    reinitBuffersAndRoPE();
+    
+    size_t H = config_.hidden_dim;
+    size_t I = config_.intermediate_dim;
+    size_t KV_DIM = config_.n_kv_heads * config_.head_dim;
+    
+    layerWeights_.resize(config_.n_layers);
+    for (int l = 0; l < config_.n_layers; l++) {
+        layerWeights_[l].input_norm = [device_ newBufferWithLength:H * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].q_proj = [device_ newBufferWithLength:H * H * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].k_proj = [device_ newBufferWithLength:H * KV_DIM * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].v_proj = [device_ newBufferWithLength:H * KV_DIM * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].o_proj = [device_ newBufferWithLength:H * H * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].post_attn_norm = [device_ newBufferWithLength:H * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].gate_proj = [device_ newBufferWithLength:H * I * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].up_proj = [device_ newBufferWithLength:H * I * 2 options:MTLResourceStorageModeShared];
+        layerWeights_[l].down_proj = [device_ newBufferWithLength:I * H * 2 options:MTLResourceStorageModeShared];
+    }
+    
+    embedWeights_ = [device_ newBufferWithLength:config_.vocab_size * H * 2 options:MTLResourceStorageModeShared];
+    finalNorm_ = [device_ newBufferWithLength:H * 2 options:MTLResourceStorageModeShared];
+    lmHead_ = [device_ newBufferWithLength:config_.vocab_size * H * 2 options:MTLResourceStorageModeShared];
+    
+    weightsLoaded_ = true;
+}
 
 bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
@@ -793,6 +821,155 @@ void MetalTransformerEngine::forwardLayer(
     }
 }
 
+void MetalTransformerEngine::forwardBatched(
+    id<MTLCommandBuffer> cmdBuf,
+    id<MTLComputeCommandEncoder> enc,
+    int layer_idx,
+    id<MTLBuffer> input,    // [batch_size * q_len, hidden_dim]
+    id<MTLBuffer> output,   // [batch_size * q_len, hidden_dim]
+    uint32_t batch_size,
+    uint32_t q_len,
+    uint32_t seq_pos        // position of the start of this chunk in the KV cache
+) {
+    const auto& lw = layerWeights_[layer_idx];
+    uint32_t H = config_.hidden_dim;
+    uint32_t I = config_.intermediate_dim;
+    uint32_t KV_DIM = config_.n_kv_heads * config_.head_dim;
+    uint32_t M = batch_size * q_len;
+
+    dispatchRMSNorm(enc, input, lw.input_norm, scratch1_, M, H);
+
+    dispatchGEMM(enc, scratch1_, lw.q_proj, scratch2_, M, H, H);
+    dispatchGEMM(enc, scratch1_, lw.k_proj, scratch3_, M, H, KV_DIM);
+    dispatchGEMM(enc, scratch1_, lw.v_proj, scratchV_, M, H, KV_DIM);
+
+    // RoPE takes q_len as its sequence length dimension
+    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, M);
+
+    for (uint32_t c = 0; c < batch_size; c++) {
+        size_t k_offset = c * q_len * KV_DIM * sizeof(_Float16);
+        size_t v_offset = c * q_len * KV_DIM * sizeof(_Float16);
+        size_t q_offset = c * q_len * H * sizeof(_Float16);
+        size_t attn_out_offset = c * q_len * H * sizeof(_Float16);
+        size_t attn_score_offset = c * q_len * config_.n_heads * config_.max_seq_len * sizeof(_Float16);
+
+        if (kvAppendPipeline_) {
+            [enc setComputePipelineState:kvAppendPipeline_];
+            [enc setBuffer:scratch3_ offset:k_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
+            uint32_t nkv = config_.n_kv_heads, maxseq = config_.max_seq_len, hdim = config_.head_dim, wpos = seq_pos;
+            uint32_t ql = q_len;
+            [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:2];
+            [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&maxseq length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
+            [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
+            MTLSize grid = MTLSizeMake(ql, nkv, hdim);
+            MTLSize tg = MTLSizeMake(1, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+
+            [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        }
+
+        uint32_t cur_seq_len = seq_pos + q_len;
+        if (attnScoresPipeline_) {
+            [enc setComputePipelineState:attnScoresPipeline_];
+            [enc setBuffer:scratch2_ offset:q_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:2];
+            uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads, hd = config_.head_dim;
+            uint32_t sl = cur_seq_len, ms = config_.max_seq_len, ql = q_len;
+            [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&hd length:sizeof(uint32_t) atIndex:5];
+            [enc setBytes:&sl length:sizeof(uint32_t) atIndex:6];
+            [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
+            [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
+            MTLSize grid = MTLSizeMake(1 * nh, ql, sl);
+            MTLSize tg = MTLSizeMake(1, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        }
+
+        if (softmaxPipeline_) {
+            [enc setComputePipelineState:softmaxPipeline_];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:0];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:1];
+            uint32_t sl = cur_seq_len;
+            [enc setBytes:&sl length:sizeof(uint32_t) atIndex:2];
+            uint32_t threadsPerTG = std::min(cur_seq_len, (uint32_t)256);
+            MTLSize tg_count = MTLSizeMake(1 * config_.n_heads * q_len, 1, 1);
+            MTLSize tg_size = MTLSizeMake(threadsPerTG, 1, 1);
+            [enc dispatchThreadgroups:tg_count threadsPerThreadgroup:tg_size];
+        }
+
+        if (attnValuePipeline_) {
+            [enc setComputePipelineState:attnValuePipeline_];
+            [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:0];
+            [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
+            [enc setBuffer:scratch2_ offset:attn_out_offset atIndex:2];
+            uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads;
+            uint32_t sl = cur_seq_len, hd = config_.head_dim, ms = config_.max_seq_len, ql = q_len;
+            [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&sl length:sizeof(uint32_t) atIndex:5];
+            [enc setBytes:&hd length:sizeof(uint32_t) atIndex:6];
+            [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
+            [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
+            MTLSize grid = MTLSizeMake(1 * nh, ql, hd);
+            MTLSize tg = MTLSizeMake(1, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        }
+    }
+
+    dispatchGEMM(enc, scratch2_, lw.o_proj, scratch1_, M, H, H);
+
+    if (residualPipeline_) {
+        [enc setComputePipelineState:residualPipeline_];
+        [enc setBuffer:scratch1_ offset:0 atIndex:0];
+        [enc setBuffer:input offset:0 atIndex:1];
+        [enc setBuffer:scratch3_ offset:0 atIndex:2];
+        uint32_t total_size = M * H;
+        [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(total_size, 1, 1);
+        MTLSize tg = MTLSizeMake(1, 1, 1);
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    }
+
+    dispatchRMSNorm(enc, scratch3_, lw.post_attn_norm, scratch1_, M, H);
+
+    dispatchGEMM(enc, scratch1_, lw.gate_proj, scratch2_, M, H, I);
+    id<MTLBuffer> up_buf = scratchAttn_;
+    dispatchGEMM(enc, scratch1_, lw.up_proj, up_buf, M, H, I);
+
+    if (siluMulPipeline_) {
+        [enc setComputePipelineState:siluMulPipeline_];
+        [enc setBuffer:scratch2_ offset:0 atIndex:0];
+        [enc setBuffer:up_buf offset:0 atIndex:1];
+        [enc setBuffer:scratch2_ offset:0 atIndex:2];
+        uint32_t total_inter = M * I;
+        [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(total_inter, 1, 1);
+        MTLSize tg = MTLSizeMake(1, 1, 1);
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    }
+
+    dispatchGEMM(enc, scratch2_, lw.down_proj, scratch1_, M, I, H);
+
+    if (residualPipeline_) {
+        [enc setComputePipelineState:residualPipeline_];
+        [enc setBuffer:scratch1_ offset:0 atIndex:0];
+        [enc setBuffer:scratch3_ offset:0 atIndex:1];
+        [enc setBuffer:output offset:0 atIndex:2];
+        uint32_t total_size = M * H;
+        [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(total_size, 1, 1);
+        MTLSize tg = MTLSizeMake(1, 1, 1);
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    }
+}
+
 
 // ============================================================================
 // CPU-Side Token Sampling (Top-P Nucleus Sampling)
@@ -861,6 +1038,203 @@ int32_t MetalTransformerEngine::sampleToken(
 // ============================================================================
 // Full Autoregressive Generation — The Core Decode Loop
 // ============================================================================
+
+void MetalTransformerEngine::rollbackKVCache(uint32_t step) {
+    // No-op for now. KV cache state is determined purely by the `seq_pos` parameter 
+    // passed to forwardBatched / forwardLayer during generation. When we rollback, 
+    // we simply decrement `seq_pos` and overwrite the rejected tokens.
+}
+
+GenerationResult MetalTransformerEngine::generateSpeculative(
+    ITransformerEngine* abstract_draft_engine,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    int32_t max_new_tokens,
+    int32_t k_draft,
+    float temperature,
+    float top_p
+) {
+    MetalTransformerEngine* draft_engine = dynamic_cast<MetalTransformerEngine*>(abstract_draft_engine);
+    if (!draft_engine) {
+        std::cerr << "[generateSpeculative] Draft engine must be of type MetalTransformerEngine!" << std::endl;
+        return GenerationResult();
+    }
+
+    if (!weightsLoaded_ || !draft_engine->weightsLoaded_) {
+        std::cerr << "[generateSpeculative] Weights not loaded!" << std::endl;
+        return GenerationResult();
+    }
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    std::mt19937 rng(42);
+
+    GenerationResult res;
+    res.channel_tokens.resize(1); // Speculative decoding prototype is 1-channel for now
+    for (int i = 0; i < prompt_len; i++) {
+        res.channel_tokens[0].push_back(prompt_tokens[i]);
+    }
+    res.channel_logprobs.resize(1, 0.0f);
+
+    uint32_t seq_pos = 0;
+    uint32_t draft_seq_pos = 0;
+
+    // 1. Prefill both models
+    int32_t current_token = prompt_tokens[0];
+    for (int t = 0; t < prompt_len - 1; t++) {
+        id<MTLCommandBuffer> cmdBufDraft = [draft_engine->queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encDraft = [cmdBufDraft computeCommandEncoder];
+        
+        [encDraft setComputePipelineState:draft_engine->embedPipeline_];
+        [encDraft setBytes:&current_token length:sizeof(int32_t) atIndex:0];
+        [encDraft setBuffer:draft_engine->embedWeights_ offset:0 atIndex:1];
+        [encDraft setBuffer:draft_engine->scratch1_ offset:0 atIndex:2];
+        uint32_t H_draft = draft_engine->config_.hidden_dim;
+        [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
+        MTLSize gridD = MTLSizeMake(1, H_draft, 1);
+        MTLSize tgD = MTLSizeMake(1, 1, 1);
+        [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+
+        for (int l = 0; l < draft_engine->config_.n_layers; l++) {
+            draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos);
+        }
+        [encDraft endEncoding];
+        [cmdBufDraft commit];
+        [cmdBufDraft waitUntilCompleted];
+        
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        
+        [enc setComputePipelineState:embedPipeline_];
+        [enc setBytes:&current_token length:sizeof(int32_t) atIndex:0];
+        [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+        [enc setBuffer:scratch1_ offset:0 atIndex:2];
+        uint32_t H = config_.hidden_dim;
+        [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(1, H, 1);
+        MTLSize tg = MTLSizeMake(1, 1, 1);
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+
+        for (int l = 0; l < config_.n_layers; l++) {
+            forwardLayer(cmdBuf, enc, l, scratch1_, scratch1_, 1, seq_pos);
+        }
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+
+        current_token = prompt_tokens[t + 1];
+        seq_pos++;
+        draft_seq_pos++;
+    }
+
+    auto first_token_time = std::chrono::high_resolution_clock::now();
+    res.ttft_ms = std::chrono::duration<double, std::milli>(first_token_time - start_time).count();
+
+    // 2. Generation Loop
+    int tokens_generated = 0;
+    while (tokens_generated < max_new_tokens) {
+        // A. Draft Phase: Generate K tokens using Draft Engine
+        std::vector<int32_t> draft_tokens;
+        int32_t draft_current_token = current_token;
+        
+        for (int k = 0; k < k_draft; k++) {
+            id<MTLCommandBuffer> cmdBufDraft = [draft_engine->queue_ commandBuffer];
+            id<MTLComputeCommandEncoder> encDraft = [cmdBufDraft computeCommandEncoder];
+            
+            [encDraft setComputePipelineState:draft_engine->embedPipeline_];
+            [encDraft setBytes:&draft_current_token length:sizeof(int32_t) atIndex:0];
+            [encDraft setBuffer:draft_engine->embedWeights_ offset:0 atIndex:1];
+            [encDraft setBuffer:draft_engine->scratch1_ offset:0 atIndex:2];
+            uint32_t H_draft = draft_engine->config_.hidden_dim;
+            [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
+            MTLSize gridD = MTLSizeMake(1, H_draft, 1);
+            MTLSize tgD = MTLSizeMake(1, 1, 1);
+            [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+
+            for (int l = 0; l < draft_engine->config_.n_layers; l++) {
+                draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos + k);
+            }
+            
+            draft_engine->dispatchRMSNorm(encDraft, draft_engine->scratch1_, draft_engine->finalNorm_, draft_engine->scratch2_, 1, H_draft);
+            draft_engine->dispatchGEMM(encDraft, draft_engine->scratch2_, draft_engine->lmHead_, draft_engine->scratchLogits_, 1, H_draft, draft_engine->config_.vocab_size);
+            
+            [encDraft endEncoding];
+            [cmdBufDraft commit];
+            [cmdBufDraft waitUntilCompleted];
+            
+            _Float16* d_logits = (_Float16*)[draft_engine->scratchLogits_ contents];
+            // Force greedy for draft
+            int32_t next_t = draft_engine->sampleToken(d_logits, draft_engine->config_.vocab_size, 0.0f, 1.0f, rng);
+            draft_tokens.push_back(next_t);
+            draft_current_token = next_t;
+        }
+
+        // B. Verification Phase: Target Engine evaluates K+1 tokens in parallel
+        // The input to Target is: [current_token, draft_tokens[0], ..., draft_tokens[k-1]]
+        std::vector<int32_t> eval_tokens = {current_token};
+        eval_tokens.insert(eval_tokens.end(), draft_tokens.begin(), draft_tokens.end());
+        uint32_t q_len = eval_tokens.size(); // k + 1
+
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        
+        [enc setComputePipelineState:embedPipeline_];
+        [enc setBytes:eval_tokens.data() length:q_len * sizeof(int32_t) atIndex:0];
+        [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+        [enc setBuffer:scratch1_ offset:0 atIndex:2];
+        uint32_t H = config_.hidden_dim;
+        [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
+        MTLSize grid = MTLSizeMake(q_len, H, 1);
+        MTLSize tg = MTLSizeMake(1, 1, 1);
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+
+        for (int l = 0; l < config_.n_layers; l++) {
+            forwardBatched(cmdBuf, enc, l, scratch1_, scratch1_, 1, q_len, seq_pos);
+        }
+        
+        dispatchRMSNorm(enc, scratch1_, finalNorm_, scratch2_, q_len, H);
+        dispatchGEMM(enc, scratch2_, lmHead_, scratchLogits_, q_len, H, config_.vocab_size);
+        
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+        
+        _Float16* t_logits = (_Float16*)[scratchLogits_ contents];
+        
+        // C. Acceptance logic (Greedy)
+        int accepted = 0;
+        for (int i = 0; i < q_len; i++) {
+            _Float16* row_logits = t_logits + i * config_.vocab_size;
+            int32_t target_tok = sampleToken(row_logits, config_.vocab_size, 0.0f, 1.0f, rng);
+            
+            res.channel_tokens[0].push_back(target_tok);
+            tokens_generated++;
+            current_token = target_tok;
+            
+            if (i < k_draft && target_tok == draft_tokens[i]) {
+                accepted++;
+            } else {
+                break;
+            }
+        }
+        
+        // D. Rollback seq_pos based on rejected tokens
+        seq_pos += (accepted + 1);
+        draft_seq_pos = seq_pos; // sync draft seq pos
+        
+        if (current_token == 2) { // EOS
+            break;
+        }
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    res.total_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    res.tpot_ms = (res.total_ms - res.ttft_ms) / std::max(1, tokens_generated);
+    res.total_tokens = tokens_generated;
+    res.best_channel = 0;
+    res.best_score = 0.0f;
+
+    return res;
+}
 
 GenerationResult MetalTransformerEngine::generate(
     const int32_t* prompt_tokens,

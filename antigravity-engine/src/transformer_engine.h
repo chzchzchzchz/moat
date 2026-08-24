@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdint>
 #include <random>
+#include "transformer_engine_interface.h"
 
 // TinyLlama-1.1B architecture constants
 struct TransformerConfig {
@@ -19,42 +20,19 @@ struct TransformerConfig {
     float norm_eps = 1e-5f;
     float rope_theta = 10000.0f;
     int32_t n_channels = 8;  // parallel reasoning channels
+    int32_t q_len_max = 64;  // Max draft sequence length for parallel prefill
 };
 
-struct GenerationResult {
-    std::vector<std::vector<int32_t>> channel_tokens;  // [n_channels][seq_len]
-    std::vector<float> channel_logprobs;  // [n_channels]
-    double ttft_ms;   // Time to first token
-    double tpot_ms;   // Time per output token (avg)
-    double total_ms;  // Total wall time
-    int32_t total_tokens;
-    int32_t best_channel;
-    float best_score;
-};
-
-struct MCTSConfig {
-    int32_t chunk_tokens = 30;
-    int32_t num_chunks = 4;
-    int32_t branches_per_chunk = 3;
-    float temperature = 0.8f;
-    float top_p = 0.9f;
-};
-
-struct MCTSResult {
-    std::vector<int32_t> best_tokens;
-    float best_score;
-    double total_ms;
-    int32_t total_tokens_evaluated;
-    int32_t chunks_expanded;
-};
-
-class MetalTransformerEngine {
+class MetalTransformerEngine : public ITransformerEngine {
 public:
     MetalTransformerEngine(const TransformerConfig& config);
-    ~MetalTransformerEngine();
+    ~MetalTransformerEngine() override;
 
     // Load real model weights from Safetensors file into Metal GPU buffers
-    bool loadWeights(const std::string& safetensors_path);
+    bool loadWeights(const std::string& safetensors_path) override;
+    
+    // Allocate dummy weights for compute throughput benchmarking
+    void allocateDummyWeights() override;
     
     // Run full autoregressive decode: prompt tokens in, N channels of generated tokens out
     GenerationResult generate(
@@ -63,29 +41,43 @@ public:
         int32_t max_new_tokens,
         float temperature,
         float top_p
-    );
+    ) override;
+
+    // Run Speculative Decoding decode using a Draft Engine
+    GenerationResult generateSpeculative(
+        ITransformerEngine* draft_engine,
+        const int32_t* prompt_tokens,
+        int32_t prompt_len,
+        int32_t max_new_tokens,
+        int32_t k_draft,
+        float temperature,
+        float top_p
+    ) override;
 
     // Run multimodal autoregressive decode (text tokens + vision patch embeddings)
     GenerationResult generateMultimodal(
         const int32_t* text_tokens,
         int32_t text_len,
         const float* image_embeddings,
-        int32_t n_patches,
+        int32_t n_image_patches,
         int32_t max_new_tokens,
         float temperature,
         float top_p
-    );
+    ) override;
     
-    // Run chunk-based Monte Carlo Tree Search (MCTS) with branch pruning on Metal GPU
+    // Run chunk-based Monte Carlo Tree Search
     MCTSResult generateMCTS(
         const int32_t* prompt_tokens,
         int32_t prompt_len,
-        const MCTSConfig& mcts_config
-    );
+        const MCTSConfig& cfg
+    ) override;
     
-    uint64_t getAllocatedBytes() const;
-    void sanitizeBuffers();
+    // Query physical memory usage
+    uint64_t getAllocatedBytes() const override;
+    
+    void sanitizeBuffers() override;
     void print_l2_norm(id<MTLBuffer> buf, uint32_t elements, const std::string& name);
+    void rollbackKVCache(uint32_t step); // Allows reverting KV cache for speculative rollback
 
     // Public state — accessed by C API bridge
     bool weightsLoaded_;
@@ -163,6 +155,16 @@ private:
         id<MTLBuffer> input,
         id<MTLBuffer> output,
         uint32_t batch_size,
+        uint32_t seq_pos
+    );
+    void forwardBatched(
+        id<MTLCommandBuffer> cmdBuf,
+        id<MTLComputeCommandEncoder> enc,
+        int layer_idx,
+        id<MTLBuffer> input,
+        id<MTLBuffer> output,
+        uint32_t batch_size,
+        uint32_t q_len,
         uint32_t seq_pos
     );
     int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p, std::mt19937& rng);

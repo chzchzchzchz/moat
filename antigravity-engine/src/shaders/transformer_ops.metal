@@ -92,6 +92,7 @@ kernel void rope_kernel(
 
 // 3. gqa_attention_scores_kernel
 // Computes unnormalized attention scores with GQA support and max_seq cache stride.
+// Supports q_len > 1 for parallel prefill.
 kernel void gqa_attention_scores_kernel(
     device const half* q [[buffer(0)]],
     device const half* k_cache [[buffer(1)]],
@@ -101,17 +102,25 @@ kernel void gqa_attention_scores_kernel(
     constant uint& head_dim [[buffer(5)]],
     constant uint& seq_len [[buffer(6)]],
     constant uint& max_seq [[buffer(7)]],
+    constant uint& q_len [[buffer(8)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
-    uint batch_idx = gid.x;
-    uint head_idx = gid.y;
+    uint batch_head_idx = gid.x;
+    uint q_idx = gid.y;
     uint seq_idx = gid.z;
     
-    if (head_idx >= n_heads || seq_idx >= seq_len) return;
+    uint batch_idx = batch_head_idx / n_heads;
+    uint head_idx = batch_head_idx % n_heads;
+    
+    if (q_idx >= q_len || seq_idx >= seq_len) return;
     
     uint kv_head_idx = head_idx / (n_heads / n_kv_heads);
     
-    device const half* q_h = q + (batch_idx * n_heads + head_idx) * head_dim;
+    // Q is [batch, q_len, n_heads, head_dim] -> we'll layout as [batch * q_len, n_heads, head_dim] in C++
+    // Actually, C++ forwardLayer currently lays out Q as: Q [M, H] which is [batch, n_heads * head_dim].
+    // If q_len > 1, Q will be [batch * q_len, n_heads * head_dim].
+    uint q_row = batch_idx * q_len + q_idx;
+    device const half* q_h = q + (q_row * n_heads + head_idx) * head_dim;
     device const half* k_h = k_cache + ((batch_idx * n_kv_heads + kv_head_idx) * max_seq + seq_idx) * head_dim;
     
     float score = 0.0;
@@ -121,7 +130,18 @@ kernel void gqa_attention_scores_kernel(
     
     score /= sqrt((float)head_dim);
     
-    scores[(batch_idx * n_heads + head_idx) * seq_len + seq_idx] = (half)score;
+    // Apply causal mask during prefill
+    // Absolute position of Q is (start_pos + q_idx). Absolute position of K is (seq_idx).
+    // If seq_idx > start_pos + q_idx, mask it out.
+    // We don't have start_pos here easily, but seq_len = start_pos + q_len.
+    // So Q's pos is `seq_len - q_len + q_idx`. K's pos is `seq_idx`.
+    uint q_pos = seq_len - q_len + q_idx;
+    if (seq_idx > q_pos) {
+        score = -1e9;
+    }
+    
+    // scores shape: [batch * n_heads, q_len, seq_len]
+    scores[(batch_head_idx * q_len + q_idx) * seq_len + seq_idx] = (half)score;
 }
 
 // 4. softmax_kernel
@@ -194,17 +214,22 @@ kernel void attention_value_kernel(
     constant uint& seq_len [[buffer(5)]],
     constant uint& head_dim [[buffer(6)]],
     constant uint& max_seq [[buffer(7)]],
+    constant uint& q_len [[buffer(8)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
-    uint batch_idx = gid.x;
-    uint head_idx = gid.y;
+    uint batch_head_idx = gid.x;
+    uint q_idx = gid.y;
     uint dim_idx = gid.z;
     
-    if (head_idx >= n_heads || dim_idx >= head_dim) return;
+    uint batch_idx = batch_head_idx / n_heads;
+    uint head_idx = batch_head_idx % n_heads;
+    
+    if (q_idx >= q_len || dim_idx >= head_dim) return;
     
     uint kv_head_idx = head_idx / (n_heads / n_kv_heads);
     
-    device const half* probs_h = probs + (batch_idx * n_heads + head_idx) * seq_len;
+    // probs shape: [batch * n_heads, q_len, seq_len]
+    device const half* probs_h = probs + (batch_head_idx * q_len + q_idx) * seq_len;
     
     float val = 0.0;
     for (uint seq_idx = 0; seq_idx < seq_len; seq_idx++) {
@@ -213,7 +238,9 @@ kernel void attention_value_kernel(
         val += p * v;
     }
     
-    out[(batch_idx * n_heads + head_idx) * head_dim + dim_idx] = (half)val;
+    // Output shape is Q shape: [batch * q_len, n_heads, head_dim]
+    uint q_row = batch_idx * q_len + q_idx;
+    out[(q_row * n_heads + head_idx) * head_dim + dim_idx] = (half)val;
 }
 
 // 6. silu_elementwise_mul_kernel
@@ -291,23 +318,23 @@ kernel void gemv_kernel(
 // 9. kv_cache_append_kernel
 // Appends K or V token slice into the KV Cache tensor
 kernel void kv_cache_append_kernel(
-    device const half* slice [[buffer(0)]],      // [1, n_kv_heads, head_dim]
+    device const half* slice [[buffer(0)]],      // [q_len, n_kv_heads, head_dim]
     device half* cache [[buffer(1)]],            // [n_kv_heads, max_seq, head_dim]
     constant uint& n_kv_heads [[buffer(2)]],
     constant uint& head_dim [[buffer(3)]],
     constant uint& max_seq [[buffer(4)]],
     constant uint& seq_pos [[buffer(5)]],
+    constant uint& q_len [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
-    uint batch_idx = gid.x;
-    (void)batch_idx;
+    uint q_idx = gid.x;
     uint head_idx = gid.y;
     uint dim_idx = gid.z;
     
-    if (head_idx >= n_kv_heads || dim_idx >= head_dim) return;
+    if (q_idx >= q_len || head_idx >= n_kv_heads || dim_idx >= head_dim) return;
     
-    uint slice_idx = head_idx * head_dim + dim_idx;
-    uint cache_idx = (head_idx * max_seq + seq_pos) * head_dim + dim_idx;
+    uint slice_idx = (q_idx * n_kv_heads + head_idx) * head_dim + dim_idx;
+    uint cache_idx = (head_idx * max_seq + seq_pos + q_idx) * head_dim + dim_idx;
     
     cache[cache_idx] = slice[slice_idx];
 }

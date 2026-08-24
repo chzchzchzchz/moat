@@ -1,0 +1,12 @@
+{
+  "hardware": "Apple M-Series Unified Memory",
+  "standard_autoregressive": {
+    "tokens_per_sec": 5.13763
+  },
+  "speculative_decoding_worst_case": {
+    "tokens_per_sec": 1.58814
+  },
+  "mcts_parallel_expansion": {
+    "evaluations_per_sec": 370.382
+  }
+}
