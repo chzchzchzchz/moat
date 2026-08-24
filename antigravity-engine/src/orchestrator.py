@@ -158,7 +158,7 @@ class AntigravityEngine:
                 self.hf_model = AutoModelForCausalLM.from_pretrained(model_base, dtype=torch.float16).to(self.device)
                 self.vocab_size = getattr(self.hf_tokenizer, "vocab_size", 151936)
                 self.hidden_dim = 1536
-                print(f"[AntigravityEngine] ✅ Loaded HuggingFace Qwen2.5 model on PyTorch {self.device}")
+                print(f"[AntigravityEngine] ✅ Loaded HuggingFace Qwen3.5 model on PyTorch {self.device}")
             except Exception as e:
                 print(f"[AntigravityEngine] Notice: HF Qwen load failed ({e})")
 
