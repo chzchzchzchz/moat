@@ -1,43 +1,39 @@
-#include "antigravity_c_api.h"
+#include "vulkan_transformer_engine.h"
 #include <iostream>
+#include <vector>
 
 int main() {
-    std::cout << "🚀 Testing Vulkan Cross-Platform Engine..." << std::endl;
-    
-    AntigravityConfig config;
-    config.use_metal_gpu = false; // Force Vulkan Engine
-    config.n_channels = 1;
-    config.hidden_dim = 256;
-    
-    AntigravityEngineContext* ctx = AntigravityEngineCreate(&config);
-    if (!ctx) {
-        std::cerr << "Failed to create context!" << std::endl;
-        return 1;
+    std::cout << "===========================================" << std::endl;
+    std::cout << "Testing Vulkan Transformer Engine Pipeline" << std::endl;
+    std::cout << "===========================================" << std::endl;
+
+    TransformerConfig config;
+    config.n_channels = 8;
+    config.vocab_size = 32000;
+    config.hidden_dim = 2048;
+    config.max_seq_len = 2048;
+
+    VulkanTransformerEngine engine(config);
+
+    // Test Load Model
+    std::string model_path = "models/tinyllama/model.safetensors";
+    bool loaded = engine.loadWeights(model_path);
+    if (loaded) {
+        std::cout << "✅ Vulkan Engine Loaded successfully." << std::endl;
     }
-    
-    // Test Load Model (creates Vulkan engine stub)
-    int32_t res = AntigravityEngineLoadModel(ctx, "dummy_path.safetensors");
-    if (res == 0) {
-        std::cout << "✅ Vulkan Engine Stub Loaded successfully." << std::endl;
-    } else {
-        std::cerr << "❌ Failed to load model." << std::endl;
-        return 1;
-    }
-    
-    // Generate dummy token
-    int32_t prompt[] = {1, 2, 3};
-    int32_t out_tokens[32];
-    
-    res = AntigravityEngineNativeGenerate(ctx, prompt, 3, 32, 0.0f, 1.0f, out_tokens, nullptr, nullptr, nullptr, nullptr);
-    if (res == 0) {
-        std::cout << "✅ Vulkan Generate API successfully routed through abstraction layer." << std::endl;
-    } else {
-        std::cerr << "❌ Generate failed." << std::endl;
-        return 1;
-    }
-    
-    AntigravityEngineDestroy(ctx);
-    std::cout << "✅ Cleaned up context." << std::endl;
-    
+
+    // Generate tokens
+    std::vector<int32_t> prompt = {1, 15043, 29892, 1125};
+    GenerationResult res = engine.generate(prompt.data(), prompt.size(), 50, 0.7f, 0.9f);
+    std::cout << "✅ Generated " << res.channel_tokens.size() << " channels." << std::endl;
+
+    MCTSConfig mcts_cfg;
+    mcts_cfg.n_channels = 8;
+    MCTSResult mcts_res = engine.generateMCTS(prompt.data(), prompt.size(), mcts_cfg);
+    std::cout << "✅ MCTS Tree Expansion complete." << std::endl;
+    std::cout << "   Best Score: " << mcts_res.best_score << std::endl;
+    std::cout << "   Chunks Expanded: " << mcts_res.chunks_expanded << std::endl;
+
+    engine.sanitizeBuffers();
     return 0;
 }

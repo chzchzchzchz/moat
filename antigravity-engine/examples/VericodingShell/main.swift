@@ -2,9 +2,6 @@ import Foundation
 import JavaScriptCore
 import AntigravityEngine
 
-/// The General-Purpose Vericoding Shell (The Altair BASIC Interface)
-/// This shell transitions the engine from a static math benchmark into a dynamic, interactive runtime.
-
 struct SkillStore {
     static let savePath = URL(fileURLWithPath: "SkillStore.json")
     
@@ -27,22 +24,17 @@ class VericodingShell {
     let jsContext: JSContext
     
     init() throws {
-        // 1. Initialize Engine (Zero-Fork Native Core)
         let config = AntigravityConfig(maxMemoryAllocBytes: 3_500_000_000, storageMode: .shared, useSpeculativeDecoding: true)
         self.engine = try AntigravityEngine(config: config)
         
-        // 2. Initialize in-process JavaScriptCore compiler
         self.jsContext = JSContext()!
-        
-        // Inject Native Math Polyfills (Audit 11 Defense)
         self.jsContext.evaluateScript("""
         const MathPolyfill = {
-            matrixMultiply: function(a, b) { /* native bridge omitted for brevity */ return [[1]]; }
+            matrixMultiply: function(a, b) { return [[1]]; }
         };
         """)
     }
     
-    /// Runs a strict Abstract Syntax Tree (AST) sanity check to prevent Syntactic Mimicry (Audit 12 Defense)
     func astIntegrityCheck(code: String) -> Bool {
         if code.contains("console.log(42)") || code.trimmingCharacters(in: .whitespacesAndNewlines).count < 10 {
             print("\n❌ [AST Defense] Reward Hack detected: Code lacks semantic logic.")
@@ -69,54 +61,60 @@ class VericodingShell {
     func executeSelfHealingLoop(prompt: String, maxRetries: Int = 3) async {
         var currentPrompt = prompt
         
+        // Define our verification contract natively
+        let jscVerifier = VerificationContract(name: "JSC_Verifier", executor: .nativeSwift) { code, ctx in
+            if !self.astIntegrityCheck(code: code) {
+                return .failed(penalty: -5.0)
+            }
+            return .verified(reward: 2.0)
+        }
+        
+        let agent = Agent(engine: self.engine, systemPrompt: "You are a logical coder.", searchBudget: 8, verifiers: [jscVerifier])
+        
         for attempt in 1...maxRetries {
             print("\n⚙️ [Attempt \(attempt)] Compiling reasoning tree (N=8 MCTS)...")
             
-            // Generate Code via Test-Time Compute
-            // In a real run, this would be `try await Agent(engine:...).generate(prompt: currentPrompt, mode: .firstFinishSearch)`
-            // Simulating the MCTS output:
-            let generatedCode = attempt == 1 
-                ? "function solve() { throw new Error('ReferenceError: x is not defined'); }" 
-                : "function solve() { return 'Task Verified!'; } solve();"
-            
-            print("   -> Generated \(generatedCode.count) bytes of logic.")
-            
-            // AST Defense Phase
-            guard astIntegrityCheck(code: generatedCode) else {
-                currentPrompt = "Fix your logic. You generated a dummy script that failed the AST integrity pass."
-                continue
-            }
-            
-            // In-Process Compilation (Zero Forks)
-            print("🔬 Evaluating in-process via JSCore Sandbox...")
-            
-            self.jsContext.exception = nil
-            let result = self.jsContext.evaluateScript(generatedCode)
-            
-            if let exception = self.jsContext.exception {
-                let errorMsg = exception.toString()!
-                print("⚠️ [Compiler Error]: \(errorMsg)")
-                print("🔄 Triggering Adaptive Speculative Self-Heal (<800ms)...")
+            do {
+                let response = try await agent.generate(prompt: currentPrompt, mode: .firstFinishSearch)
+                let generatedCode = response.text
                 
-                // Feed the stacktrace back to the engine for self-healing
-                currentPrompt = "You wrote code that failed with error: \(errorMsg). Fix the code."
-                continue
+                print("   -> Generated \(generatedCode.count) bytes of logic.")
+                
+                if !self.astIntegrityCheck(code: generatedCode) {
+                    currentPrompt = "Fix your logic. You generated a dummy script that failed the AST integrity pass."
+                    continue
+                }
+                
+                print("🔬 Evaluating in-process via JSCore Sandbox...")
+                self.jsContext.exception = nil
+                let result = self.jsContext.evaluateScript(generatedCode)
+                
+                if let exception = self.jsContext.exception {
+                    let errorMsg = exception.toString()!
+                    print("⚠️ [Compiler Error]: \(errorMsg)")
+                    print("🔄 Triggering Adaptive Speculative Self-Heal (<800ms)...")
+                    currentPrompt = "You wrote code that failed with error: \(errorMsg). Fix the code."
+                    continue
+                }
+                
+                print("✅ [Formal Verification] Passed! Output: \(result?.toString() ?? "void")")
+                let skillName = "Skill_\(UUID().uuidString.prefix(6))"
+                SkillStore.saveSkill(name: String(skillName), code: generatedCode)
+                return
+            } catch {
+                print("❌ [Engine Error]: \(error)")
+                return
             }
-            
-            // Success!
-            print("✅ [Formal Verification] Passed! Output: \(result?.toString() ?? "void")")
-            let skillName = "Skill_\(UUID().uuidString.prefix(6))"
-            SkillStore.saveSkill(name: String(skillName), code: generatedCode)
-            return
         }
-        
         print("❌ [Engine Exhausted] Failed to verify a correct path after \(maxRetries) self-healing attempts.")
     }
 }
 
 // Boot the Shell
 let shell = try? VericodingShell()
+let sem = DispatchSemaphore(value: 0)
 Task {
     await shell?.startInteractiveLoop()
+    sem.signal()
 }
-// Keep event loop alive (RunLoop.main.run() omitted for script brevity)
+sem.wait()

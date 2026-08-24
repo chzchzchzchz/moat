@@ -7,7 +7,6 @@ struct ContentView: View {
     @State private var result: String = "Awaiting input..."
     @State private var isReasoning: Bool = false
     
-    // We instantiate the engine in the view model for a real app, but keep it simple here.
     @State private var agent: Agent?
 
     var body: some View {
@@ -54,7 +53,6 @@ struct ContentView: View {
             )
             let engine = try AntigravityEngine(config: config)
             
-            // Define the strict Formal Verification Contract
             let safetyContract = VerificationContract(
                 name: "DosageLimitCheck",
                 executor: .nativeSwift
@@ -63,17 +61,25 @@ struct ContentView: View {
                       let weight = Double(weightStr) else {
                     return .failed(penalty: -5.0)
                 }
-                let maxSafeDose = weight * 4.5 // e.g. 10mg/kg approx
+                let maxSafeDose = weight * 4.5 // 10mg/kg approx
                 
-                // Here we would natively parse the generated code to extract the model's calculated dose.
-                // For this example, we assume we extracted the dose.
-                let extractedDose = 200.0 
-                
-                if extractedDose <= maxSafeDose {
-                    return .verified(reward: 2.0)
-                } else {
-                    return .failed(penalty: -10.0)
+                // Actual extraction logic using Regex
+                let pattern = "dose(?:\\s*=|:)\\s*([0-9]*\\.?[0-9]+)"
+                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                   let match = regex.firstMatch(in: generatedCode, options: [], range: NSRange(location: 0, length: generatedCode.utf16.count)) {
+                    
+                    if let range = Range(match.range(at: 1), in: generatedCode),
+                       let extractedDose = Double(generatedCode[range]) {
+                        
+                        if extractedDose <= maxSafeDose {
+                            return .verified(reward: 2.0)
+                        } else {
+                            return .failed(penalty: -10.0)
+                        }
+                    }
                 }
+                // Could not parse dose
+                return .failed(penalty: -1.0)
             }
             
             self.agent = Agent(
@@ -95,7 +101,6 @@ struct ContentView: View {
         
         do {
             let prompt = "Calculate the correct pediatric \(medication) dosage for a \(weightLbs)lb child."
-            // Execute the on-device MCTS Search
             let response = try await agent.generate(prompt: prompt, mode: .firstFinishSearch)
             
             result = """
