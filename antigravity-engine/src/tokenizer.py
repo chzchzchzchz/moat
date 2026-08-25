@@ -26,6 +26,8 @@ class LlamaTokenizer:
 
     @property
     def vocab_size(self) -> int:
+        if self.use_auto:
+            return len(self.auto_tok)
         return self.tokenizer.get_vocab_size()
 
     @property

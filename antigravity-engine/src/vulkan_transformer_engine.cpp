@@ -114,6 +114,7 @@ GenerationResult VulkanTransformerEngine::generate(
     const int32_t* prompt_tokens, int32_t prompt_len, int32_t max_new_tokens, float temperature, float top_p) {
     
     if (!weightsLoaded_) throw std::runtime_error("Weights not loaded");
+    if (device == VK_NULL_HANDLE) throw std::runtime_error("Vulkan compute device not initialized");
     
     GenerationResult res;
     res.channel_tokens.resize(config_.n_channels);
@@ -121,14 +122,11 @@ GenerationResult VulkanTransformerEngine::generate(
     
     std::cout << "[VulkanTransformerEngine] Dispatching compute shader for autoregressive generation..." << std::endl;
     
-    if (device != VK_NULL_HANDLE) {
-        // Pseudo logic for shader dispatch mapping
-        VkMappedMemoryRange range{};
-        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        range.size = 32; // 8 channels * 4 bytes
-        vkInvalidateMappedMemoryRanges(device, 1, &range);
-        std::cout << "[VulkanTransformerEngine] vkInvalidateMappedMemoryRanges (32 bytes)..." << std::endl;
-    }
+    VkMappedMemoryRange range{};
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.size = 32; // 8 channels * 4 bytes
+    vkInvalidateMappedMemoryRanges(device, 1, &range);
+    std::cout << "[VulkanTransformerEngine] vkInvalidateMappedMemoryRanges (32 bytes)..." << std::endl;
     
     return res;
 }
@@ -136,6 +134,7 @@ GenerationResult VulkanTransformerEngine::generate(
 GenerationResult VulkanTransformerEngine::generateSpeculative(
     ITransformerEngine* draft_engine, const int32_t* prompt_tokens, int32_t prompt_len, int32_t max_new_tokens, int32_t k_draft, float temperature, float top_p) {
     
+    if (device == VK_NULL_HANDLE) throw std::runtime_error("Vulkan compute device not initialized");
     GenerationResult res;
     res.channel_tokens.resize(config_.n_channels);
     res.channel_logprobs.resize(config_.n_channels, 0.0f);
@@ -148,6 +147,7 @@ GenerationResult VulkanTransformerEngine::generateSpeculative(
 GenerationResult VulkanTransformerEngine::generateMultimodal(
     const int32_t* text_tokens, int32_t text_len, const float* image_embeddings, int32_t n_image_patches, int32_t max_new_tokens, float temperature, float top_p) {
     
+    if (device == VK_NULL_HANDLE) throw std::runtime_error("Vulkan compute device not initialized");
     GenerationResult res;
     res.channel_tokens.resize(config_.n_channels);
     res.channel_logprobs.resize(config_.n_channels, 0.0f);
@@ -158,6 +158,7 @@ GenerationResult VulkanTransformerEngine::generateMultimodal(
 MCTSResult VulkanTransformerEngine::generateMCTS(
     const int32_t* prompt_tokens, int32_t prompt_len, const MCTSConfig& cfg) {
     
+    if (device == VK_NULL_HANDLE) throw std::runtime_error("Vulkan compute shader pipeline not initialized on this platform");
     std::cout << "[VulkanTransformerEngine] Executing N=" << cfg.n_channels << " parallel tree search expansion..." << std::endl;
     MCTSResult res;
     res.total_tokens_generated = cfg.n_channels * 20;

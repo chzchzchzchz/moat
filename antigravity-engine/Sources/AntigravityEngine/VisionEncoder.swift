@@ -77,20 +77,56 @@ public final class VisionEncoder: @unchecked Sendable {
             }
         }
 
-        // --- Accelerated vDSP / Visual Patch Projection Fallback ---
+        // --- Direct Pixel Sampling & Spatial Patch Projection ---
         var embeddings = [Float](repeating: 0.0, count: patchCount * hiddenDim)
         let side = imageSize / patchSize
+
+        // Extract raw pixel data from CGImage
+        guard let dataProvider = image.dataProvider,
+              let pixelData = dataProvider.data,
+              let ptr = CFDataGetBytePtr(pixelData) else {
+            return embeddings
+        }
+
+        let imgWidth = image.width
+        let imgHeight = image.height
+        let bytesPerPixel = image.bitsPerPixel / 8
+        let bytesPerRow = image.bytesPerRow
 
         for p in 0..<patchCount {
             let row = p / side
             let col = p % side
-            let normRow = Float(row) / Float(side)
-            let normCol = Float(col) / Float(side)
+            let startX = (col * imgWidth) / side
+            let startY = (row * imgHeight) / side
+            let endX = min(startX + max(1, imgWidth / side), imgWidth)
+            let endY = min(startY + max(1, imgHeight / side), imgHeight)
+
+            // Compute mean RGB color for the spatial patch
+            var rSum: Float = 0
+            var gSum: Float = 0
+            var bSum: Float = 0
+            var sampleCount: Float = 0
+
+            for y in startY..<endY {
+                for x in startX..<endX {
+                    let offset = y * bytesPerRow + x * bytesPerPixel
+                    if offset + 2 < CFDataGetLength(pixelData) {
+                        rSum += Float(ptr[offset]) / 255.0
+                        gSum += Float(ptr[offset + 1]) / 255.0
+                        bSum += Float(ptr[offset + 2]) / 255.0
+                        sampleCount += 1.0
+                    }
+                }
+            }
+
+            let meanR = sampleCount > 0 ? rSum / sampleCount : 0.5
+            let meanG = sampleCount > 0 ? gSum / sampleCount : 0.5
+            let meanB = sampleCount > 0 ? bSum / sampleCount : 0.5
 
             for k in 0..<hiddenDim {
-                let freq = Float(k % 64) * 0.1
-                let val = sinf(normRow * freq + normCol) * cosf(normCol * freq)
-                embeddings[p * hiddenDim + k] = val * 0.05
+                let channelWeight = (k % 3 == 0) ? meanR : ((k % 3 == 1) ? meanG : meanB)
+                let posWeight = Float(p) / Float(patchCount)
+                embeddings[p * hiddenDim + k] = (channelWeight * 0.8 + posWeight * 0.2) - 0.5
             }
         }
 

@@ -82,16 +82,30 @@ public struct AgentResponse {
     public let ttft: Double
 }
 
+public struct AntigravityNativeConfig {
+    public var n_channels: Int32 = 8
+    public var vocab_size: Int32 = 32000
+    public var hidden_dim: Int32 = 2048
+    public var max_seq_len: Int32 = 2048
+    public var use_metal_gpu: Bool = true
+}
+
 public final class AntigravityEngine {
     private var engineHandle: UnsafeMutableRawPointer?
     private let config: AntigravityConfig
 
     public init(config: AntigravityConfig) throws {
         self.config = config
-        // Actually instantiate the real C-API backend!
-        var cConfig: [Int64] = [8, 1000, 256, 2048, 1] // Native configuration mapping
-        self.engineHandle = cConfig.withUnsafeBufferPointer { ptr in
-            return AntigravityEngineCreate(ptr.baseAddress!)
+        // Actually instantiate the real C-API backend with properly aligned 32-bit struct
+        var nativeCfg = AntigravityNativeConfig(
+            n_channels: 8,
+            vocab_size: 32000,
+            hidden_dim: 2048,
+            max_seq_len: 2048,
+            use_metal_gpu: true
+        )
+        self.engineHandle = withUnsafePointer(to: &nativeCfg) { ptr in
+            return AntigravityEngineCreate(ptr)
         }
     }
 
@@ -172,10 +186,6 @@ public final class Agent {
             }
         }
         
-        if finalCode.isEmpty {
-            finalCode = "function solve() { return 'Task Verified!'; }"
-        }
-        
         var score: Float = mctsRes.best_score
         
         for verifier in verifiers {
@@ -188,6 +198,6 @@ public final class Agent {
             }
         }
         
-        return AgentResponse(text: finalCode, prmScore: score, ttft: mctsRes.execution_wall_time_ms > 0 ? mctsRes.execution_wall_time_ms : 23.9)
+        return AgentResponse(text: finalCode, prmScore: score, ttft: mctsRes.execution_wall_time_ms)
     }
 }

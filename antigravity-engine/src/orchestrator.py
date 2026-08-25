@@ -248,14 +248,18 @@ class AntigravityEngine:
         # Report active generation path
         if self.native_engine and self.native_engine.is_ready:
             self._generation_mode = "native_metal"
+        elif self.hf_model is not None:
+            self._generation_mode = "huggingface_qwen"
         elif self.real_model is not None:
             self._generation_mode = "pytorch_mps"
         else:
-            self._generation_mode = "pipeline_validator"
+            self._generation_mode = "uninitialized"
 
     def _build_vocab(self, vocab_size: int) -> List[str]:
         """Build generic token vocabulary with special tokens and numbered entries."""
         special = ["<pad>", "<bos>", "<eos>", "<think>", "</think>"]
+        vocab = list(special)
+        while len(vocab) < vocab_size:
             vocab.append(f"tok_{len(vocab)}")
         return vocab
 

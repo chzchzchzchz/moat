@@ -21,8 +21,17 @@ int main() {
 
     AntigravityEngineContext* ctx = AntigravityEngineCreate(&config);
     assert(ctx != nullptr);
-    std::cout << "Loading model weights from models/tinyllama/model.safetensors...\n";
-    int load_res = AntigravityEngineLoadModel(ctx, "models/tinyllama/model.safetensors");
+    const char* candidate_paths[] = {
+        "/Users/MohssineChazi2/moat/models/tinyllama/model.safetensors",
+        "../models/tinyllama/model.safetensors",
+        "models/tinyllama/model.safetensors"
+    };
+    int load_res = -1;
+    for (const char* path : candidate_paths) {
+        std::cout << "Attempting to load weights from: " << path << "...\n";
+        load_res = AntigravityEngineLoadModel(ctx, path);
+        if (load_res == 0) break;
+    }
     if (load_res != 0) {
         std::cerr << "FATAL ERROR: Failed to load safetensors model file!\n";
         return 1;

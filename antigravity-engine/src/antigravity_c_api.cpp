@@ -5,7 +5,9 @@
 
 #include "antigravity_c_api.h"
 #include "transformer_engine.h"
+#if defined(USE_VULKAN) && __has_include(<vulkan/vulkan.h>)
 #include "vulkan_transformer_engine.h"
+#endif
 #include <vector>
 #include <cmath>
 #include <chrono>
@@ -130,7 +132,11 @@ int32_t AntigravityEngineLoadModel(AntigravityEngineContext* ctx, const char* mo
         if (ctx->config.use_metal_gpu) {
             ctx->nativeEngine = new MetalTransformerEngine(t_cfg);
         } else {
+#if defined(USE_VULKAN) && __has_include(<vulkan/vulkan.h>)
             ctx->nativeEngine = new VulkanTransformerEngine(t_cfg);
+#else
+            ctx->nativeEngine = new MetalTransformerEngine(t_cfg);
+#endif
         }
     }
 

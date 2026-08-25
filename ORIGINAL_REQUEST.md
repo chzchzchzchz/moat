@@ -70,4 +70,31 @@ Execute full multi-layer transformer forward passes (TinyLlama-1.1B, 22 layers, 
 
 What is your current status? What have you completed and what remains? Please provide a summary of all work done.
 
+## 2026-08-25T18:47:36Z
+
+# Teamwork Project Prompt — Draft
+
+> Status: Ready for launch — awaiting user approval
+> Goal: Craft prompt → get user approval → delegate to teamwork_preview
+> Requested team: Very large team of agents
+
+Use a very large team of agents. Conduct a comprehensive, file-by-file manual code review of the entire Antigravity repository to determine if the implementation is coherent, physically functional, and free of logical stubs, rather than relying on keyword searches.
+
+Working directory: /Users/MohssineChazi2/moat/antigravity-engine
+Integrity mode: development
+
+## Requirements
+
+### R1. Deep Code Coherence Audit
+Agents must manually read and trace the logic in the C++, Swift, Python, and Metal files to verify that the math, memory allocations, and execution paths are physically implemented and not just hardcoded bypasses or functional stubs without explicit "mock" keywords.
+
+### R2. Tabular Reporting
+Output a comprehensive audit report detailing which files were reviewed, the depth of the implementation, and any discovered logical gaps or unimplemented architecture.
+
+## Acceptance Criteria
+
+### Audit Coverage
+- [ ] The agent team must analyze the actual logic and execution flow of the C++, Python, and Swift bridging layers.
+- [ ] The report must identify any non-trivial functions that return hardcoded values, drop execution, or simulate physics without explicitly using mock keywords.
+
 

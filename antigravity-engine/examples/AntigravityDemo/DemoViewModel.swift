@@ -26,6 +26,7 @@ public final class DemoViewModel: ObservableObject {
     @Published public var totalLatencyMs: Double = 0.0
     @Published public var throughputTokPerSec: Double = 0.0
     @Published public var channelTraces: [String] = []
+    @Published public var bestCandidateIndex: Int = 0
 
     private var engine: AntigravityEngine?
     private let weightManager = WeightManager.shared
@@ -59,24 +60,20 @@ public final class DemoViewModel: ObservableObject {
             self.downloadProgressFraction = progress.fractionCompleted
             let speedMB = progress.speedBytesPerSec / (1024 * 1024)
             self.downloadSpeedText = String(format: "%.1f MB/s", speedMB)
-
-            if case .completed = progress.state {
-                self.isDownloading = false
-                self.currentStatus = "Model weights downloaded and cached successfully!"
-            } else if case .failed(let err) = progress.state {
-                self.isDownloading = false
-                self.currentStatus = "Download error: \(err)"
-            }
         }
+
+        isDownloading = false
+        currentStatus = "Model weights downloaded."
     }
 
-    /// Execute parallel Best-of-N reasoning & step-level reflection
+    /// Run full parallel Best-of-N reasoning over prompt
     public func runReasoning() async {
-        guard let engine = self.engine else { return }
+        guard let engine = self.engine else {
+            currentStatus = "Error: Engine not initialized."
+            return
+        }
 
         isRunningReasoning = true
-        bestTraceOutput = ""
-        channelTraces = []
         currentStatus = "Running parallel N=8 reasoning channels on Metal GPU..."
 
         do {
@@ -89,24 +86,26 @@ public final class DemoViewModel: ObservableObject {
                 try engine.loadModel(at: localURL.path)
             }
 
+            // Convert prompt text to token IDs (BOS token + character byte IDs)
+            var inputTokens: [Int32] = [1]
+            inputTokens.append(contentsOf: promptText.utf8.map { Int32($0) + 3 })
+
             // Perform reasoning
             let result: AntigravityGenerationResult
             if let image = selectedImage {
                 currentStatus = "Encoding visual patches via CoreML ANE..."
                 let patchEmbeddings = try visionEncoder.encode(image: image)
-                let preallocatedTokens: [Int32] = [1, 10, 100, 200]
 
                 currentStatus = "Executing multimodal decode loop on Metal GPU..."
                 result = try await engine.reasonMultimodal(
-                    textTokens: preallocatedTokens,
+                    textTokens: inputTokens,
                     imageEmbeddings: patchEmbeddings,
                     patchCount: visionEncoder.patchCount,
                     maxTokens: 60
                 )
             } else {
-                let preallocatedTokens: [Int32] = [1, 5, 20, 50, 100]
                 result = try await engine.reason(
-                    promptTokens: preallocatedTokens,
+                    promptTokens: inputTokens,
                     maxTokens: 60
                 )
             }
@@ -120,6 +119,7 @@ public final class DemoViewModel: ObservableObject {
             self.totalLatencyMs = result.totalLatencyMs
             self.throughputTokPerSec = result.throughputTokensPerSec
             self.channelTraces = result.candidateTraces
+            self.bestCandidateIndex = result.bestCandidateIndex
 
             self.currentStatus = result.reflectionTriggered ?
                 "Reflection Triggered (Score \(String(format: "%.2f", result.verifierScore)) < 0.75) — Refinement Verified" :
