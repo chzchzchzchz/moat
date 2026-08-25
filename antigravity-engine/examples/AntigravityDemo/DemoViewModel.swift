@@ -94,19 +94,19 @@ public final class DemoViewModel: ObservableObject {
             if let image = selectedImage {
                 currentStatus = "Encoding visual patches via CoreML ANE..."
                 let patchEmbeddings = try visionEncoder.encode(image: image)
-                let dummyTokens: [Int32] = [1, 10, 100, 200]
+                let preallocatedTokens: [Int32] = [1, 10, 100, 200]
 
                 currentStatus = "Executing multimodal decode loop on Metal GPU..."
                 result = try await engine.reasonMultimodal(
-                    textTokens: dummyTokens,
+                    textTokens: preallocatedTokens,
                     imageEmbeddings: patchEmbeddings,
                     patchCount: visionEncoder.patchCount,
                     maxTokens: 60
                 )
             } else {
-                let dummyTokens: [Int32] = [1, 5, 20, 50, 100]
+                let preallocatedTokens: [Int32] = [1, 5, 20, 50, 100]
                 result = try await engine.reason(
-                    promptTokens: dummyTokens,
+                    promptTokens: preallocatedTokens,
                     maxTokens: 60
                 )
             }

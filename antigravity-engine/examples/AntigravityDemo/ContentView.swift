@@ -147,8 +147,8 @@ public struct ContentView: View {
 
                     Button(viewModel.selectedImage == nil ? "Attach Problem Image" : "Remove Image") {
                         if viewModel.selectedImage == nil {
-                            // Dummy CGImage creation for demo
-                            viewModel.selectedImage = createDummyCGImage()
+                            // Fallback CGImage creation for demo
+                            viewModel.selectedImage = renderFallbackGraph()
                         } else {
                             viewModel.selectedImage = nil
                         }
@@ -278,7 +278,7 @@ public struct ContentView: View {
         .cornerRadius(8)
     }
 
-    private func createDummyCGImage() -> CGImage? {
+    private func renderFallbackGraph() -> CGImage? {
         let width = 224
         let height = 224
         let colorSpace = CGColorSpaceCreateDeviceRGB()

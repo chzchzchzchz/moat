@@ -81,7 +81,7 @@ class VericodingShell {
                 print("   -> Generated \(generatedCode.count) bytes of logic.")
                 
                 if !self.astIntegrityCheck(code: generatedCode) {
-                    currentPrompt = "Fix your logic. You generated a dummy script that failed the AST integrity pass."
+                    currentPrompt = "Fix your logic. You generated an invalid script that failed the AST integrity pass."
                     continue
                 }
                 

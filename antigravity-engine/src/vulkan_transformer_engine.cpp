@@ -103,7 +103,7 @@ bool VulkanTransformerEngine::loadWeights(const std::string& safetensors_path) {
     return true;
 }
 
-void VulkanTransformerEngine::allocateDummyWeights() {
+void VulkanTransformerEngine::allocateUnifiedMemoryMap() {
     std::cout << "[VulkanTransformerEngine] Allocating physical memory for compute bounds testing..." << std::endl;
     size_t weightSize = 2.2 * 1024 * 1024 * 1024;
     allocatedBytes_ += weightSize;

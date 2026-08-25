@@ -35,14 +35,14 @@ int main() {
     
     std::cout << "Loading 2.2GB Safetensors into Metal Unified Memory...\n";
     MetalTransformerEngine target_engine(config);
-    bool loaded = target_engine.loadWeights("../models/tinyllama/model.safetensors");
+    bool loaded = target_engine.loadWeights("../models/qwen3.5/model.safetensors");
     if (!loaded) {
         std::cerr << "❌ Failed to load target model weights!\n";
         return 1;
     }
     
     MetalTransformerEngine draft_engine(config);
-    loaded = draft_engine.loadWeights("../models/tinyllama/model.safetensors");
+    loaded = draft_engine.loadWeights("../models/qwen3.5/model.safetensors");
     if (!loaded) {
         std::cerr << "❌ Failed to load draft model weights!\n";
         return 1;
@@ -64,7 +64,7 @@ int main() {
     std::cout << "\n[3/3] Running MCTS Benchmark (Batch=8, Bandwidth Saturation Test)...\n";
     config.n_channels = 8;
     MetalTransformerEngine mcts_engine(config);
-    mcts_engine.loadWeights("../models/tinyllama/model.safetensors");
+    mcts_engine.loadWeights("../models/qwen3.5/model.safetensors");
     MCTSConfig mcts_cfg;
     mcts_cfg.chunk_tokens = 16;
     mcts_cfg.num_chunks = 2;

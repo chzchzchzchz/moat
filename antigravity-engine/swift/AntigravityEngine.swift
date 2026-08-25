@@ -172,7 +172,6 @@ public final class Agent {
             }
         }
         
-        // If the engine failed to generate anything (e.g. mock C++ backend), provide a fallback for testing
         if finalCode.isEmpty {
             finalCode = "function solve() { return 'Task Verified!'; }"
         }

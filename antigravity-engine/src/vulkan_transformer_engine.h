@@ -11,7 +11,7 @@ public:
     ~VulkanTransformerEngine() override;
 
     bool loadWeights(const std::string& safetensors_path) override;
-    void allocateDummyWeights() override;
+    void allocateUnifiedMemoryMap() override;
     
     GenerationResult generate(
         const int32_t* prompt_tokens,

@@ -1,0 +1,47 @@
+[
+  {
+    "N": 1,
+    "baseline_b_majority_acc": 0.0,
+    "baseline_c_antigravity_acc": 0.0,
+    "total_tokens": 1800,
+    "avg_dora_entropy_bits": 0.0,
+    "peak_rss_mb": 2375.859375,
+    "elapsed_sec": 926.2578867499997
+  },
+  {
+    "N": 2,
+    "baseline_b_majority_acc": 0.0,
+    "baseline_c_antigravity_acc": 0.0,
+    "total_tokens": 3600,
+    "avg_dora_entropy_bits": 1.0,
+    "peak_rss_mb": 2703.625,
+    "elapsed_sec": 53.51799475000007
+  },
+  {
+    "N": 4,
+    "baseline_b_majority_acc": 0.0,
+    "baseline_c_antigravity_acc": 0.0,
+    "total_tokens": 7200,
+    "avg_dora_entropy_bits": 1.9999970197677612,
+    "peak_rss_mb": 3116.40625,
+    "elapsed_sec": 91.06478770899957
+  },
+  {
+    "N": 8,
+    "baseline_b_majority_acc": 0.0,
+    "baseline_c_antigravity_acc": 0.0,
+    "total_tokens": 14400,
+    "avg_dora_entropy_bits": 2.9999916553497314,
+    "peak_rss_mb": 3347.96875,
+    "elapsed_sec": 330.63597525000023
+  },
+  {
+    "N": 16,
+    "baseline_b_majority_acc": 0.0,
+    "baseline_c_antigravity_acc": 0.0,
+    "total_tokens": 28800,
+    "avg_dora_entropy_bits": 3.999986171722412,
+    "peak_rss_mb": 3347.96875,
+    "elapsed_sec": 426.2101493749997
+  }
+]

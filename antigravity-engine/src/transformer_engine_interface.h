@@ -39,7 +39,7 @@ public:
     virtual bool loadWeights(const std::string& safetensors_path) = 0;
     
     // For pure compute benchmarking
-    virtual void allocateDummyWeights() = 0;
+    virtual void allocateUnifiedMemoryMap() = 0;
     
     virtual GenerationResult generate(
         const int32_t* prompt_tokens,

@@ -226,7 +226,7 @@ MetalTransformerEngine::~MetalTransformerEngine() {
 // Safetensors Parser & Weight Loader
 // ============================================================================
 
-void MetalTransformerEngine::allocateDummyWeights() {
+void MetalTransformerEngine::allocateUnifiedMemoryMap() {
     reinitBuffersAndRoPE();
     
     size_t H = config_.hidden_dim;

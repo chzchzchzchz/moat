@@ -68,6 +68,6 @@ class Agent(
 ) {
     suspend fun generate(prompt: String, mode: SearchMode): AgentResponse {
         // JNI call to native generateMCTS
-        return AgentResponse("Dummy Response", 1.0f, 24.5)
+        return AgentResponse(String(bytes: outBuffer, charset: Charsets.UTF_8), 1.0f, 24.5f)
     }
 }

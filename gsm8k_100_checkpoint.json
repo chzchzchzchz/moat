@@ -1,0 +1,4053 @@
+{
+  "1": {
+    "1": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 328,
+      "entropy": 0.0,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "2": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 535,
+      "entropy": 0.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "3": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 814,
+      "entropy": 0.0,
+      "b_ans": 120000,
+      "c_ans": 120000,
+      "gt": 70000
+    },
+    "4": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 1014,
+      "entropy": 0.0,
+      "b_ans": 180,
+      "c_ans": 180,
+      "gt": 540
+    },
+    "5": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 1472,
+      "entropy": 0.0,
+      "b_ans": 115,
+      "c_ans": 115,
+      "gt": 20
+    },
+    "6": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 1828,
+      "entropy": 0.0,
+      "b_ans": 64,
+      "c_ans": 64,
+      "gt": 64
+    },
+    "7": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 2159,
+      "entropy": 0.0,
+      "b_ans": 260,
+      "c_ans": 260,
+      "gt": 260
+    },
+    "8": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 2671,
+      "entropy": 0.0,
+      "b_ans": 80,
+      "c_ans": 80,
+      "gt": 160
+    },
+    "9": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 3183,
+      "entropy": 0.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 45
+    },
+    "10": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 3502,
+      "entropy": 0.0,
+      "b_ans": 460,
+      "c_ans": 460,
+      "gt": 460
+    },
+    "11": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 3780,
+      "entropy": 0.0,
+      "b_ans": 324,
+      "c_ans": 324,
+      "gt": 366
+    },
+    "12": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 4103,
+      "entropy": 0.0,
+      "b_ans": 694,
+      "c_ans": 694,
+      "gt": 694
+    },
+    "13": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 4456,
+      "entropy": 0.0,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 13
+    },
+    "14": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 4883,
+      "entropy": 0.0,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "15": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 5283,
+      "entropy": 0.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "16": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 5795,
+      "entropy": 0.0,
+      "b_ans": 5000,
+      "c_ans": 5000,
+      "gt": 125
+    },
+    "17": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 6000,
+      "entropy": 0.0,
+      "b_ans": 230,
+      "c_ans": 230,
+      "gt": 230
+    },
+    "18": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 6373,
+      "entropy": 0.0,
+      "b_ans": 57500,
+      "c_ans": 57500,
+      "gt": 57500
+    },
+    "19": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 6743,
+      "entropy": 0.0,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "20": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 7255,
+      "entropy": 0.0,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 6
+    },
+    "21": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 7767,
+      "entropy": 0.0,
+      "b_ans": 9,
+      "c_ans": 9,
+      "gt": 15
+    },
+    "22": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 8058,
+      "entropy": 0.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 14
+    },
+    "23": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 8361,
+      "entropy": 0.0,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "24": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 8557,
+      "entropy": 0.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "25": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 8747,
+      "entropy": 0.0,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "26": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 9138,
+      "entropy": 0.0,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 2
+    },
+    "27": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 9477,
+      "entropy": 0.0,
+      "b_ans": 243,
+      "c_ans": 243,
+      "gt": 243
+    },
+    "28": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 9837,
+      "entropy": 0.0,
+      "b_ans": 1,
+      "c_ans": 1,
+      "gt": 16
+    },
+    "29": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 10047,
+      "entropy": 0.0,
+      "b_ans": 25,
+      "c_ans": 25,
+      "gt": 25
+    },
+    "30": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 10359,
+      "entropy": 0.0,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "31": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 10635,
+      "entropy": 0.0,
+      "b_ans": 109,
+      "c_ans": 109,
+      "gt": 109
+    },
+    "32": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 10886,
+      "entropy": 0.0,
+      "b_ans": 77,
+      "c_ans": 77,
+      "gt": 80
+    },
+    "33": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 11170,
+      "entropy": 0.0,
+      "b_ans": 35,
+      "c_ans": 35,
+      "gt": 35
+    },
+    "34": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 11613,
+      "entropy": 0.0,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "35": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 11845,
+      "entropy": 0.0,
+      "b_ans": 23,
+      "c_ans": 23,
+      "gt": 23
+    },
+    "36": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 12094,
+      "entropy": 0.0,
+      "b_ans": 9,
+      "c_ans": 9,
+      "gt": 9
+    },
+    "37": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 12450,
+      "entropy": 0.0,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 75
+    },
+    "38": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 12962,
+      "entropy": 0.0,
+      "b_ans": 13,
+      "c_ans": 13,
+      "gt": 2
+    },
+    "39": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 13419,
+      "entropy": 0.0,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "40": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 13832,
+      "entropy": 0.0,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "41": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 13979,
+      "entropy": 0.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "42": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 14491,
+      "entropy": 0.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 200
+    },
+    "43": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 14770,
+      "entropy": 0.0,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "44": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 15272,
+      "entropy": 0.0,
+      "b_ans": 48,
+      "c_ans": 48,
+      "gt": 48
+    },
+    "45": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 15648,
+      "entropy": 0.0,
+      "b_ans": 20,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "46": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 16111,
+      "entropy": 0.0,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "47": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 16612,
+      "entropy": 0.0,
+      "b_ans": 143,
+      "c_ans": 143,
+      "gt": 163
+    },
+    "48": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 17124,
+      "entropy": 0.0,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 800
+    },
+    "49": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 17295,
+      "entropy": 0.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "50": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 17569,
+      "entropy": 0.0,
+      "b_ans": 30,
+      "c_ans": 30,
+      "gt": 30
+    },
+    "51": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 17855,
+      "entropy": 0.0,
+      "b_ans": 294,
+      "c_ans": 294,
+      "gt": 294
+    },
+    "52": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 18339,
+      "entropy": 0.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 5
+    },
+    "53": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 18612,
+      "entropy": 0.0,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "54": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 19092,
+      "entropy": 0.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "55": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 19348,
+      "entropy": 0.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "56": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 19630,
+      "entropy": 0.0,
+      "b_ans": 14,
+      "c_ans": 14,
+      "gt": 14
+    },
+    "57": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 19792,
+      "entropy": 0.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "58": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 20238,
+      "entropy": 0.0,
+      "b_ans": 83,
+      "c_ans": 83,
+      "gt": 83
+    },
+    "59": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 20499,
+      "entropy": 0.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 57
+    },
+    "60": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 20773,
+      "entropy": 0.0,
+      "b_ans": 187,
+      "c_ans": 187,
+      "gt": 187
+    },
+    "61": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 21022,
+      "entropy": 0.0,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "62": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 21361,
+      "entropy": 0.0,
+      "b_ans": 1430,
+      "c_ans": 1430,
+      "gt": 1430
+    },
+    "63": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 21820,
+      "entropy": 0.0,
+      "b_ans": 81445,
+      "c_ans": 81445,
+      "gt": 25000
+    },
+    "64": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 22188,
+      "entropy": 0.0,
+      "b_ans": 1512,
+      "c_ans": 1512,
+      "gt": 1596
+    },
+    "65": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 22346,
+      "entropy": 0.0,
+      "b_ans": 300,
+      "c_ans": 300,
+      "gt": 300
+    },
+    "66": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 22796,
+      "entropy": 0.0,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "67": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 23059,
+      "entropy": 0.0,
+      "b_ans": 48,
+      "c_ans": 48,
+      "gt": 48
+    },
+    "68": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 23329,
+      "entropy": 0.0,
+      "b_ans": 630,
+      "c_ans": 630,
+      "gt": 595
+    },
+    "69": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 23566,
+      "entropy": 0.0,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "70": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 23804,
+      "entropy": 0.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "71": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 24261,
+      "entropy": 0.0,
+      "b_ans": 7425,
+      "c_ans": 7425,
+      "gt": 7425
+    },
+    "72": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 24551,
+      "entropy": 0.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "73": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 24797,
+      "entropy": 0.0,
+      "b_ans": 251,
+      "c_ans": 251,
+      "gt": 221
+    },
+    "74": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 25103,
+      "entropy": 0.0,
+      "b_ans": 255,
+      "c_ans": 255,
+      "gt": 255
+    },
+    "75": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 25615,
+      "entropy": 0.0,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 88
+    },
+    "76": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 25896,
+      "entropy": 0.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "77": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 26351,
+      "entropy": 0.0,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "78": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 26655,
+      "entropy": 0.0,
+      "b_ans": 100,
+      "c_ans": 100,
+      "gt": 100
+    },
+    "79": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 26957,
+      "entropy": 0.0,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "80": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 27200,
+      "entropy": 0.0,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "81": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 27510,
+      "entropy": 0.0,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "82": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 27816,
+      "entropy": 0.0,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "83": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 28097,
+      "entropy": 0.0,
+      "b_ans": 623,
+      "c_ans": 623,
+      "gt": 623
+    },
+    "84": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 28277,
+      "entropy": 0.0,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 600
+    },
+    "85": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 28667,
+      "entropy": 0.0,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "86": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 28896,
+      "entropy": 0.0,
+      "b_ans": 44,
+      "c_ans": 44,
+      "gt": 44
+    },
+    "87": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 29077,
+      "entropy": 0.0,
+      "b_ans": 22,
+      "c_ans": 22,
+      "gt": 22
+    },
+    "88": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 29376,
+      "entropy": 0.0,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 9360
+    },
+    "89": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 29689,
+      "entropy": 0.0,
+      "b_ans": 8000,
+      "c_ans": 8000,
+      "gt": 8000
+    },
+    "90": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 29947,
+      "entropy": 0.0,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 24
+    },
+    "91": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 30270,
+      "entropy": 0.0,
+      "b_ans": 225,
+      "c_ans": 225,
+      "gt": 225
+    },
+    "92": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 30564,
+      "entropy": 0.0,
+      "b_ans": 28,
+      "c_ans": 28,
+      "gt": 28
+    },
+    "93": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 30923,
+      "entropy": 0.0,
+      "b_ans": 4,
+      "c_ans": 4,
+      "gt": 4
+    },
+    "94": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 31347,
+      "entropy": 0.0,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "95": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 31758,
+      "entropy": 0.0,
+      "b_ans": 348,
+      "c_ans": 348,
+      "gt": 348
+    },
+    "96": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 32153,
+      "entropy": 0.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "97": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 32379,
+      "entropy": 0.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "98": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 32621,
+      "entropy": 0.0,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 12
+    },
+    "99": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 33133,
+      "entropy": 0.0,
+      "b_ans": 30,
+      "c_ans": 30,
+      "gt": 5
+    },
+    "100": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 33501,
+      "entropy": 0.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 58
+    }
+  },
+  "2": {
+    "1": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 960,
+      "entropy": 1.0,
+      "b_ans": 14,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "2": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 1558,
+      "entropy": 1.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "3": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 2474,
+      "entropy": 1.0,
+      "b_ans": 40000,
+      "c_ans": 40000,
+      "gt": 70000
+    },
+    "4": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 2970,
+      "entropy": 1.0,
+      "b_ans": 180,
+      "c_ans": 180,
+      "gt": 540
+    },
+    "5": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 3994,
+      "entropy": 1.0,
+      "b_ans": 20,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "6": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 4880,
+      "entropy": 1.0,
+      "b_ans": 64,
+      "c_ans": 64,
+      "gt": 64
+    },
+    "7": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 5904,
+      "entropy": 1.0,
+      "b_ans": 260,
+      "c_ans": 260,
+      "gt": 260
+    },
+    "8": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 6928,
+      "entropy": 1.0,
+      "b_ans": 80,
+      "c_ans": 100,
+      "gt": 160
+    },
+    "9": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 7952,
+      "entropy": 1.0,
+      "b_ans": 180,
+      "c_ans": 285,
+      "gt": 45
+    },
+    "10": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 8816,
+      "entropy": 1.0,
+      "b_ans": 460,
+      "c_ans": 460,
+      "gt": 460
+    },
+    "11": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 9316,
+      "entropy": 1.0,
+      "b_ans": 366,
+      "c_ans": 366,
+      "gt": 366
+    },
+    "12": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 10340,
+      "entropy": 1.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 694
+    },
+    "13": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 11276,
+      "entropy": 1.0,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 13
+    },
+    "14": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 12300,
+      "entropy": 1.0,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 18
+    },
+    "15": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 13324,
+      "entropy": 1.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "16": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 14348,
+      "entropy": 1.0,
+      "b_ans": 5000,
+      "c_ans": 96,
+      "gt": 125
+    },
+    "17": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 14950,
+      "entropy": 1.0,
+      "b_ans": 230,
+      "c_ans": 230,
+      "gt": 230
+    },
+    "18": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 15930,
+      "entropy": 1.0,
+      "b_ans": 62500,
+      "c_ans": 62500,
+      "gt": 57500
+    },
+    "19": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 16594,
+      "entropy": 1.0,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "20": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 17618,
+      "entropy": 1.0,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "21": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 18642,
+      "entropy": 1.0,
+      "b_ans": 15,
+      "c_ans": 9,
+      "gt": 15
+    },
+    "22": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 19286,
+      "entropy": 1.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 14
+    },
+    "23": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 19804,
+      "entropy": 1.0,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "24": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 20286,
+      "entropy": 1.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "25": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 20958,
+      "entropy": 1.0,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "26": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 21982,
+      "entropy": 1.0,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 2
+    },
+    "27": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 22834,
+      "entropy": 1.0,
+      "b_ans": 210,
+      "c_ans": 210,
+      "gt": 243
+    },
+    "28": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 23858,
+      "entropy": 1.0,
+      "b_ans": 60,
+      "c_ans": 1,
+      "gt": 16
+    },
+    "29": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 24398,
+      "entropy": 1.0,
+      "b_ans": 25,
+      "c_ans": 25,
+      "gt": 25
+    },
+    "30": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 25030,
+      "entropy": 1.0,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "31": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 26018,
+      "entropy": 1.0,
+      "b_ans": 109,
+      "c_ans": 109,
+      "gt": 109
+    },
+    "32": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 27038,
+      "entropy": 1.0,
+      "b_ans": 80,
+      "c_ans": 80,
+      "gt": 80
+    },
+    "33": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 27494,
+      "entropy": 1.0,
+      "b_ans": 35,
+      "c_ans": 35,
+      "gt": 35
+    },
+    "34": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 28410,
+      "entropy": 1.0,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "35": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 28876,
+      "entropy": 1.0,
+      "b_ans": 23,
+      "c_ans": 23,
+      "gt": 23
+    },
+    "36": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 29436,
+      "entropy": 1.0,
+      "b_ans": 9,
+      "c_ans": 9,
+      "gt": 9
+    },
+    "37": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 30214,
+      "entropy": 1.0,
+      "b_ans": 150,
+      "c_ans": 60,
+      "gt": 75
+    },
+    "38": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 31238,
+      "entropy": 1.0,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 2
+    },
+    "39": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 32262,
+      "entropy": 1.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 10
+    },
+    "40": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 33286,
+      "entropy": 1.0,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "41": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 33678,
+      "entropy": 1.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "42": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 34702,
+      "entropy": 1.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 200
+    },
+    "43": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 35366,
+      "entropy": 1.0,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "44": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 36390,
+      "entropy": 1.0,
+      "b_ans": 200,
+      "c_ans": 200,
+      "gt": 48
+    },
+    "45": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 37414,
+      "entropy": 1.0,
+      "b_ans": 20,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "46": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 38282,
+      "entropy": 1.0,
+      "b_ans": 108,
+      "c_ans": 108,
+      "gt": 104
+    },
+    "47": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 39306,
+      "entropy": 1.0,
+      "b_ans": 23,
+      "c_ans": 23,
+      "gt": 163
+    },
+    "48": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 40330,
+      "entropy": 1.0,
+      "b_ans": 640,
+      "c_ans": 640,
+      "gt": 800
+    },
+    "49": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 40680,
+      "entropy": 1.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "50": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 41704,
+      "entropy": 1.0,
+      "b_ans": 30,
+      "c_ans": 30,
+      "gt": 30
+    },
+    "51": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 42240,
+      "entropy": 1.0,
+      "b_ans": 294,
+      "c_ans": 294,
+      "gt": 294
+    },
+    "52": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 43264,
+      "entropy": 1.0,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "53": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 43796,
+      "entropy": 1.0,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "54": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 44820,
+      "entropy": 1.0,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 40
+    },
+    "55": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 45368,
+      "entropy": 1.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "56": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 45940,
+      "entropy": 1.0,
+      "b_ans": 14,
+      "c_ans": 14,
+      "gt": 14
+    },
+    "57": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 46322,
+      "entropy": 1.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "58": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 47144,
+      "entropy": 1.0,
+      "b_ans": 83,
+      "c_ans": 83,
+      "gt": 83
+    },
+    "59": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 47598,
+      "entropy": 1.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 57
+    },
+    "60": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 48122,
+      "entropy": 1.0,
+      "b_ans": 187,
+      "c_ans": 187,
+      "gt": 187
+    },
+    "61": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 48742,
+      "entropy": 1.0,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "62": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 49766,
+      "entropy": 1.0,
+      "b_ans": 500,
+      "c_ans": 1430,
+      "gt": 1430
+    },
+    "63": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 50338,
+      "entropy": 1.0,
+      "b_ans": 50000,
+      "c_ans": 2500,
+      "gt": 25000
+    },
+    "64": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 51362,
+      "entropy": 1.0,
+      "b_ans": 1512,
+      "c_ans": 140,
+      "gt": 1596
+    },
+    "65": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 52190,
+      "entropy": 1.0,
+      "b_ans": 300,
+      "c_ans": 300,
+      "gt": 300
+    },
+    "66": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 53214,
+      "entropy": 1.0,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "67": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 53806,
+      "entropy": 1.0,
+      "b_ans": 48,
+      "c_ans": 48,
+      "gt": 48
+    },
+    "68": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 54324,
+      "entropy": 1.0,
+      "b_ans": 625,
+      "c_ans": 595,
+      "gt": 595
+    },
+    "69": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 55282,
+      "entropy": 1.0,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "70": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 55774,
+      "entropy": 1.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "71": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 56798,
+      "entropy": 1.0,
+      "b_ans": 25,
+      "c_ans": 7425,
+      "gt": 7425
+    },
+    "72": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 57774,
+      "entropy": 1.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "73": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 58360,
+      "entropy": 1.0,
+      "b_ans": 251,
+      "c_ans": 221,
+      "gt": 221
+    },
+    "74": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 59028,
+      "entropy": 1.0,
+      "b_ans": 255,
+      "c_ans": 255,
+      "gt": 255
+    },
+    "75": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 59884,
+      "entropy": 1.0,
+      "b_ans": 88,
+      "c_ans": 88,
+      "gt": 88
+    },
+    "76": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 60712,
+      "entropy": 1.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 60
+    },
+    "77": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 61736,
+      "entropy": 1.0,
+      "b_ans": 180,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "78": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 62560,
+      "entropy": 1.0,
+      "b_ans": 100,
+      "c_ans": 100,
+      "gt": 100
+    },
+    "79": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 63484,
+      "entropy": 1.0,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "80": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 64028,
+      "entropy": 1.0,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "81": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 64780,
+      "entropy": 1.0,
+      "b_ans": 4,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "82": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 65414,
+      "entropy": 1.0,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "83": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 65908,
+      "entropy": 1.0,
+      "b_ans": 613,
+      "c_ans": 613,
+      "gt": 623
+    },
+    "84": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 66462,
+      "entropy": 1.0,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 600
+    },
+    "85": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 67278,
+      "entropy": 1.0,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "86": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 68022,
+      "entropy": 1.0,
+      "b_ans": 44,
+      "c_ans": 44,
+      "gt": 44
+    },
+    "87": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 68742,
+      "entropy": 1.0,
+      "b_ans": 22,
+      "c_ans": 22,
+      "gt": 22
+    },
+    "88": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 69656,
+      "entropy": 1.0,
+      "b_ans": 0,
+      "c_ans": 600,
+      "gt": 9360
+    },
+    "89": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 70098,
+      "entropy": 1.0,
+      "b_ans": 8000,
+      "c_ans": 8000,
+      "gt": 8000
+    },
+    "90": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 70792,
+      "entropy": 1.0,
+      "b_ans": 24,
+      "c_ans": 24,
+      "gt": 24
+    },
+    "91": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 71560,
+      "entropy": 1.0,
+      "b_ans": 250,
+      "c_ans": 225,
+      "gt": 225
+    },
+    "92": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 72140,
+      "entropy": 1.0,
+      "b_ans": 28,
+      "c_ans": 28,
+      "gt": 28
+    },
+    "93": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 72898,
+      "entropy": 1.0,
+      "b_ans": 4,
+      "c_ans": 4,
+      "gt": 4
+    },
+    "94": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 73696,
+      "entropy": 1.0,
+      "b_ans": 40,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "95": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 74720,
+      "entropy": 1.0,
+      "b_ans": 120,
+      "c_ans": 348,
+      "gt": 348
+    },
+    "96": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 75412,
+      "entropy": 1.0,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "97": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 75882,
+      "entropy": 1.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "98": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 76906,
+      "entropy": 1.0,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 12
+    },
+    "99": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 77778,
+      "entropy": 1.0,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 5
+    },
+    "100": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 78760,
+      "entropy": 1.0,
+      "b_ans": 58,
+      "c_ans": 58,
+      "gt": 58
+    }
+  },
+  "4": {
+    "1": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 1704,
+      "entropy": 1.999969482421875,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "2": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 3200,
+      "entropy": 1.9999845027923584,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "3": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 5248,
+      "entropy": 1.999961495399475,
+      "b_ans": 150000,
+      "c_ans": 70000,
+      "gt": 70000
+    },
+    "4": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 6184,
+      "entropy": 1.9999909400939941,
+      "b_ans": 180,
+      "c_ans": 180,
+      "gt": 540
+    },
+    "5": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 8232,
+      "entropy": 1.9999951124191284,
+      "b_ans": 9,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "6": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 9620,
+      "entropy": 1.9999970197677612,
+      "b_ans": 64,
+      "c_ans": 64,
+      "gt": 64
+    },
+    "7": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 11652,
+      "entropy": 1.999922752380371,
+      "b_ans": 260,
+      "c_ans": 260,
+      "gt": 260
+    },
+    "8": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 13700,
+      "entropy": 1.9999947547912598,
+      "b_ans": 80,
+      "c_ans": 80,
+      "gt": 160
+    },
+    "9": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 15748,
+      "entropy": 1.9998606443405151,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 45
+    },
+    "10": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 17596,
+      "entropy": 1.9999617338180542,
+      "b_ans": 460,
+      "c_ans": 460,
+      "gt": 460
+    },
+    "11": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 18708,
+      "entropy": 1.9999990463256836,
+      "b_ans": 240,
+      "c_ans": 240,
+      "gt": 366
+    },
+    "12": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 20056,
+      "entropy": 1.9999922513961792,
+      "b_ans": 694,
+      "c_ans": 694,
+      "gt": 694
+    },
+    "13": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 22104,
+      "entropy": 1.999983310699463,
+      "b_ans": 13,
+      "c_ans": 13,
+      "gt": 13
+    },
+    "14": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 24152,
+      "entropy": 1.9999382495880127,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 18
+    },
+    "15": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 26200,
+      "entropy": 1.9999923706054688,
+      "b_ans": 45,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "16": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 205891,
+      "entropy": 1.999954342842102,
+      "b_ans": 96,
+      "c_ans": 96,
+      "gt": 125
+    },
+    "17": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 206754,
+      "entropy": 1.9999487400054932,
+      "b_ans": 230,
+      "c_ans": 230,
+      "gt": 230
+    },
+    "18": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 208302,
+      "entropy": 1.999900460243225,
+      "b_ans": 26000,
+      "c_ans": 26000,
+      "gt": 57500
+    },
+    "19": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 209832,
+      "entropy": 1.9999637603759766,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "20": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 211697,
+      "entropy": 1.9999805688858032,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "21": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 213541,
+      "entropy": 1.9999855756759644,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "22": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 214616,
+      "entropy": 1.9999945163726807,
+      "b_ans": 2,
+      "c_ans": 8,
+      "gt": 14
+    },
+    "23": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 215961,
+      "entropy": 1.9999842643737793,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "24": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 217030,
+      "entropy": 1.9999523162841797,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "25": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 218099,
+      "entropy": 1.9999982118606567,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "26": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 219923,
+      "entropy": 1.9999415874481201,
+      "b_ans": 12,
+      "c_ans": 15,
+      "gt": 2
+    },
+    "27": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 221233,
+      "entropy": 1.9999418258666992,
+      "b_ans": 243,
+      "c_ans": 243,
+      "gt": 243
+    },
+    "28": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 222949,
+      "entropy": 1.999991774559021,
+      "b_ans": 1,
+      "c_ans": 1,
+      "gt": 16
+    },
+    "29": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 224138,
+      "entropy": 1.9999908208847046,
+      "b_ans": 25,
+      "c_ans": 25,
+      "gt": 25
+    },
+    "30": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 225566,
+      "entropy": 1.9999595880508423,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "31": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 227305,
+      "entropy": 1.9999346733093262,
+      "b_ans": 109,
+      "c_ans": 109,
+      "gt": 109
+    },
+    "32": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 228764,
+      "entropy": 1.999998927116394,
+      "b_ans": 80,
+      "c_ans": 80,
+      "gt": 80
+    },
+    "33": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 229999,
+      "entropy": 1.9999780654907227,
+      "b_ans": 35,
+      "c_ans": 35,
+      "gt": 35
+    },
+    "34": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 231265,
+      "entropy": 1.9999862909317017,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "35": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 232192,
+      "entropy": 1.9999780654907227,
+      "b_ans": 23,
+      "c_ans": 23,
+      "gt": 23
+    },
+    "36": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 233283,
+      "entropy": 1.9999942779541016,
+      "b_ans": 9,
+      "c_ans": 9,
+      "gt": 9
+    },
+    "37": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 235001,
+      "entropy": 1.999987244606018,
+      "b_ans": 60,
+      "c_ans": 2,
+      "gt": 75
+    },
+    "38": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 236975,
+      "entropy": 1.999990463256836,
+      "b_ans": 13,
+      "c_ans": 13,
+      "gt": 2
+    },
+    "39": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 238869,
+      "entropy": 1.9987727403640747,
+      "b_ans": 3,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "40": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 240737,
+      "entropy": 1.9999816417694092,
+      "b_ans": 18,
+      "c_ans": 4,
+      "gt": 18
+    },
+    "41": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 241463,
+      "entropy": 1.999964952468872,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "42": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 243410,
+      "entropy": 1.9999994039535522,
+      "b_ans": 1000,
+      "c_ans": 1000,
+      "gt": 200
+    },
+    "43": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 244365,
+      "entropy": 1.9999984502792358,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "44": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 246044,
+      "entropy": 1.9999909400939941,
+      "b_ans": 120,
+      "c_ans": 120,
+      "gt": 48
+    },
+    "45": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 247962,
+      "entropy": 1.999961256980896,
+      "b_ans": 10,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "46": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 249590,
+      "entropy": 1.9999949932098389,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "47": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 251360,
+      "entropy": 1.9999887943267822,
+      "b_ans": 123,
+      "c_ans": 123,
+      "gt": 163
+    },
+    "48": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 253119,
+      "entropy": 1.999997615814209,
+      "b_ans": 800,
+      "c_ans": 800,
+      "gt": 800
+    },
+    "49": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 253862,
+      "entropy": 1.9999879598617554,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "50": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 254998,
+      "entropy": 1.999998688697815,
+      "b_ans": 30,
+      "c_ans": 30,
+      "gt": 30
+    },
+    "51": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 256526,
+      "entropy": 1.999938726425171,
+      "b_ans": 364,
+      "c_ans": 294,
+      "gt": 294
+    },
+    "52": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 258331,
+      "entropy": 1.9999703168869019,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "53": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 259860,
+      "entropy": 1.9999864101409912,
+      "b_ans": 15,
+      "c_ans": 30,
+      "gt": 15
+    },
+    "54": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 261827,
+      "entropy": 1.9999947547912598,
+      "b_ans": 60,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "55": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 262979,
+      "entropy": 1.999990463256836,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "56": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 264178,
+      "entropy": 1.9984464645385742,
+      "b_ans": 14,
+      "c_ans": 14,
+      "gt": 14
+    },
+    "57": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 265264,
+      "entropy": 1.9998979568481445,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "58": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 266398,
+      "entropy": 1.999997615814209,
+      "b_ans": 83,
+      "c_ans": 83,
+      "gt": 83
+    },
+    "59": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 267435,
+      "entropy": 1.999996304512024,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 57
+    },
+    "60": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 268193,
+      "entropy": 1.9999685287475586,
+      "b_ans": 187,
+      "c_ans": 187,
+      "gt": 187
+    },
+    "61": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 269574,
+      "entropy": 1.9999865293502808,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "62": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 270655,
+      "entropy": 1.9999951124191284,
+      "b_ans": 1430,
+      "c_ans": 1430,
+      "gt": 1430
+    },
+    "63": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 272042,
+      "entropy": 1.9999936819076538,
+      "b_ans": 2500,
+      "c_ans": 2500,
+      "gt": 25000
+    },
+    "64": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 273606,
+      "entropy": 1.9999959468841553,
+      "b_ans": 1512,
+      "c_ans": 1512,
+      "gt": 1596
+    },
+    "65": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 274856,
+      "entropy": 1.9999806880950928,
+      "b_ans": 300,
+      "c_ans": 300,
+      "gt": 300
+    },
+    "66": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 276558,
+      "entropy": 1.9999940395355225,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "67": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 277898,
+      "entropy": 1.9999910593032837,
+      "b_ans": 48,
+      "c_ans": 48,
+      "gt": 48
+    },
+    "68": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 278913,
+      "entropy": 1.9999961853027344,
+      "b_ans": 630,
+      "c_ans": 595,
+      "gt": 595
+    },
+    "69": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 280026,
+      "entropy": 1.9999699592590332,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "70": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 281322,
+      "entropy": 1.9999938011169434,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "71": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 282899,
+      "entropy": 1.9999942779541016,
+      "b_ans": 2475,
+      "c_ans": 25,
+      "gt": 7425
+    },
+    "72": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 284347,
+      "entropy": 1.9999829530715942,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "73": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 285318,
+      "entropy": 1.9999933242797852,
+      "b_ans": 221,
+      "c_ans": 221,
+      "gt": 221
+    },
+    "74": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 286705,
+      "entropy": 1.9997731447219849,
+      "b_ans": 255,
+      "c_ans": 255,
+      "gt": 255
+    },
+    "75": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 288440,
+      "entropy": 1.9999563694000244,
+      "b_ans": 12,
+      "c_ans": 88,
+      "gt": 88
+    },
+    "76": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 290033,
+      "entropy": 1.9999901056289673,
+      "b_ans": 8,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "77": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 291902,
+      "entropy": 1.9999146461486816,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "78": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 293444,
+      "entropy": 1.999969720840454,
+      "b_ans": 100,
+      "c_ans": 100,
+      "gt": 100
+    },
+    "79": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 294835,
+      "entropy": 1.9999659061431885,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "80": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 295984,
+      "entropy": 1.9999825954437256,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "81": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 297322,
+      "entropy": 1.9998501539230347,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "82": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 298551,
+      "entropy": 1.9999603033065796,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 17
+    },
+    "83": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 299598,
+      "entropy": 1.9998886585235596,
+      "b_ans": 623,
+      "c_ans": 623,
+      "gt": 623
+    },
+    "84": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 300666,
+      "entropy": 1.9999619722366333,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 600
+    },
+    "85": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 302047,
+      "entropy": 1.9999582767486572,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "86": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 302949,
+      "entropy": 1.9999737739562988,
+      "b_ans": 44,
+      "c_ans": 44,
+      "gt": 44
+    },
+    "87": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 304029,
+      "entropy": 1.9999885559082031,
+      "b_ans": 22,
+      "c_ans": 22,
+      "gt": 22
+    },
+    "88": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 305300,
+      "entropy": 1.9999538660049438,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 9360
+    },
+    "89": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 306488,
+      "entropy": 1.9999878406524658,
+      "b_ans": 8000,
+      "c_ans": 8000,
+      "gt": 8000
+    },
+    "90": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 307728,
+      "entropy": 1.9999701976776123,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 24
+    },
+    "91": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 309149,
+      "entropy": 1.9999990463256836,
+      "b_ans": 225,
+      "c_ans": 225,
+      "gt": 225
+    },
+    "92": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 310352,
+      "entropy": 1.9999380111694336,
+      "b_ans": 28,
+      "c_ans": 28,
+      "gt": 28
+    },
+    "93": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 311676,
+      "entropy": 1.9999566078186035,
+      "b_ans": 4,
+      "c_ans": 4,
+      "gt": 4
+    },
+    "94": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 313427,
+      "entropy": 1.999984860420227,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "95": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 314994,
+      "entropy": 1.9999468326568604,
+      "b_ans": 348,
+      "c_ans": 348,
+      "gt": 348
+    },
+    "96": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 316945,
+      "entropy": 1.9999980926513672,
+      "b_ans": 200,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "97": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 317958,
+      "entropy": 1.9999862909317017,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "98": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 319331,
+      "entropy": 1.9999804496765137,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 12
+    },
+    "99": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 320961,
+      "entropy": 1.9999980926513672,
+      "b_ans": 15,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "100": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 322172,
+      "entropy": 1.9999855756759644,
+      "b_ans": 40,
+      "c_ans": 58,
+      "gt": 58
+    }
+  },
+  "8": {
+    "1": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 2866,
+      "entropy": 2.9999890327453613,
+      "b_ans": 14,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "2": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 4857,
+      "entropy": 2.999964714050293,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "3": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 8640,
+      "entropy": 2.999972343444824,
+      "b_ans": 80000,
+      "c_ans": 70000,
+      "gt": 70000
+    },
+    "4": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 10541,
+      "entropy": 2.9999642372131348,
+      "b_ans": 180,
+      "c_ans": 180,
+      "gt": 540
+    },
+    "5": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 14446,
+      "entropy": 2.9999942779541016,
+      "b_ans": 20,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "6": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 17373,
+      "entropy": 2.9999570846557617,
+      "b_ans": 64,
+      "c_ans": 64,
+      "gt": 64
+    },
+    "7": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 20610,
+      "entropy": 2.9440135955810547,
+      "b_ans": 260,
+      "c_ans": 260,
+      "gt": 260
+    },
+    "8": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 24551,
+      "entropy": 2.9999215602874756,
+      "b_ans": 100,
+      "c_ans": 100,
+      "gt": 160
+    },
+    "9": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 28578,
+      "entropy": 2.9999313354492188,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 45
+    },
+    "10": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 30631,
+      "entropy": 2.9999115467071533,
+      "b_ans": 460,
+      "c_ans": 460,
+      "gt": 460
+    },
+    "11": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 33062,
+      "entropy": 2.999967575073242,
+      "b_ans": 240,
+      "c_ans": 366,
+      "gt": 366
+    },
+    "12": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 35589,
+      "entropy": 2.9999513626098633,
+      "b_ans": 694,
+      "c_ans": 694,
+      "gt": 694
+    },
+    "13": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 38399,
+      "entropy": 2.9999704360961914,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 13
+    },
+    "14": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 41924,
+      "entropy": 2.9999899864196777,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "15": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 45530,
+      "entropy": 2.999985694885254,
+      "b_ans": 60,
+      "c_ans": 0,
+      "gt": 60
+    },
+    "16": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 49430,
+      "entropy": 2.999887466430664,
+      "b_ans": 5000,
+      "c_ans": 8096,
+      "gt": 125
+    },
+    "17": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 51411,
+      "entropy": 2.999927520751953,
+      "b_ans": 230,
+      "c_ans": 230,
+      "gt": 230
+    },
+    "18": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 54600,
+      "entropy": 2.999929666519165,
+      "b_ans": 57500,
+      "c_ans": 57500,
+      "gt": 57500
+    },
+    "19": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 57314,
+      "entropy": 2.9999747276306152,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "20": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 61295,
+      "entropy": 2.9999778270721436,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "21": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 64947,
+      "entropy": 2.99997615814209,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "22": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 67561,
+      "entropy": 2.9999442100524902,
+      "b_ans": 23,
+      "c_ans": 39,
+      "gt": 14
+    },
+    "23": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 70323,
+      "entropy": 2.9999828338623047,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "24": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 72466,
+      "entropy": 2.999969244003296,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "25": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 74448,
+      "entropy": 2.9999823570251465,
+      "b_ans": 26,
+      "c_ans": 19,
+      "gt": 26
+    },
+    "26": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 77870,
+      "entropy": 2.9999608993530273,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 2
+    },
+    "27": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 80518,
+      "entropy": 2.999945640563965,
+      "b_ans": 243,
+      "c_ans": 243,
+      "gt": 243
+    },
+    "28": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 83343,
+      "entropy": 2.9999914169311523,
+      "b_ans": 1,
+      "c_ans": 60,
+      "gt": 16
+    },
+    "29": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 85450,
+      "entropy": 2.9999749660491943,
+      "b_ans": 25,
+      "c_ans": 25,
+      "gt": 25
+    },
+    "30": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 87827,
+      "entropy": 2.9999399185180664,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "31": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 91054,
+      "entropy": 2.9991044998168945,
+      "b_ans": 109,
+      "c_ans": 109,
+      "gt": 109
+    },
+    "32": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 93828,
+      "entropy": 2.9999570846557617,
+      "b_ans": 80,
+      "c_ans": 80,
+      "gt": 80
+    },
+    "33": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 95796,
+      "entropy": 2.999966621398926,
+      "b_ans": 35,
+      "c_ans": 35,
+      "gt": 35
+    },
+    "34": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 98507,
+      "entropy": 2.999967098236084,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "35": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 100267,
+      "entropy": 2.999953031539917,
+      "b_ans": 23,
+      "c_ans": 40,
+      "gt": 23
+    },
+    "36": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 102325,
+      "entropy": 2.9999630451202393,
+      "b_ans": 9,
+      "c_ans": 9,
+      "gt": 9
+    },
+    "37": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 105612,
+      "entropy": 2.999983787536621,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 75
+    },
+    "38": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 109619,
+      "entropy": 2.9999778270721436,
+      "b_ans": 13,
+      "c_ans": 195,
+      "gt": 2
+    },
+    "39": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 112853,
+      "entropy": 2.9999728202819824,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "40": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 116573,
+      "entropy": 2.9999194145202637,
+      "b_ans": 18,
+      "c_ans": 3,
+      "gt": 18
+    },
+    "41": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 118253,
+      "entropy": 2.999845027923584,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "42": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 121937,
+      "entropy": 2.999978542327881,
+      "b_ans": 200,
+      "c_ans": 200,
+      "gt": 200
+    },
+    "43": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 124005,
+      "entropy": 2.99997615814209,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "44": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 127591,
+      "entropy": 2.999988079071045,
+      "b_ans": 48,
+      "c_ans": 240,
+      "gt": 48
+    },
+    "45": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 130978,
+      "entropy": 2.9999938011169434,
+      "b_ans": 20,
+      "c_ans": -160,
+      "gt": 20
+    },
+    "46": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 134478,
+      "entropy": 2.9304351806640625,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "47": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 137468,
+      "entropy": 2.9999263286590576,
+      "b_ans": 23,
+      "c_ans": 163,
+      "gt": 163
+    },
+    "48": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 141408,
+      "entropy": 2.9999818801879883,
+      "b_ans": 2,
+      "c_ans": 800,
+      "gt": 800
+    },
+    "49": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 143066,
+      "entropy": 2.999974489212036,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "50": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 145622,
+      "entropy": 2.999992847442627,
+      "b_ans": 30,
+      "c_ans": 30,
+      "gt": 30
+    },
+    "51": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 148637,
+      "entropy": 2.9998536109924316,
+      "b_ans": 294,
+      "c_ans": 294,
+      "gt": 294
+    },
+    "52": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 152133,
+      "entropy": 2.9999747276306152,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 5
+    },
+    "53": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 154357,
+      "entropy": 2.9999892711639404,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "54": {
+      "b_correct": 1,
+      "c_correct": 0,
+      "tokens": 157942,
+      "entropy": 2.9642856121063232,
+      "b_ans": 40,
+      "c_ans": 0,
+      "gt": 40
+    },
+    "55": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 160674,
+      "entropy": 2.999969482421875,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "56": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 163120,
+      "entropy": 2.9999375343322754,
+      "b_ans": 14,
+      "c_ans": 14,
+      "gt": 14
+    },
+    "57": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 165016,
+      "entropy": 2.999901294708252,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "58": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 167665,
+      "entropy": 2.9999685287475586,
+      "b_ans": 83,
+      "c_ans": 83,
+      "gt": 83
+    },
+    "59": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 169725,
+      "entropy": 2.9999775886535645,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 57
+    },
+    "60": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 171636,
+      "entropy": 2.9999589920043945,
+      "b_ans": 187,
+      "c_ans": 187,
+      "gt": 187
+    },
+    "61": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 174474,
+      "entropy": 2.999952793121338,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "62": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 176867,
+      "entropy": 2.9442577362060547,
+      "b_ans": 1430,
+      "c_ans": 1430,
+      "gt": 1430
+    },
+    "63": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 179250,
+      "entropy": 2.9999659061431885,
+      "b_ans": 2500,
+      "c_ans": 2500,
+      "gt": 25000
+    },
+    "64": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 182315,
+      "entropy": 2.999962329864502,
+      "b_ans": 1512,
+      "c_ans": 1596,
+      "gt": 1596
+    },
+    "65": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 185270,
+      "entropy": 2.9999821186065674,
+      "b_ans": 300,
+      "c_ans": 300,
+      "gt": 300
+    },
+    "66": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 188336,
+      "entropy": 2.9999756813049316,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "67": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 190651,
+      "entropy": 2.999939441680908,
+      "b_ans": 48,
+      "c_ans": 48,
+      "gt": 48
+    },
+    "68": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 192931,
+      "entropy": 2.9999332427978516,
+      "b_ans": 630,
+      "c_ans": 595,
+      "gt": 595
+    },
+    "69": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 195146,
+      "entropy": 2.999974250793457,
+      "b_ans": 36,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "70": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 197897,
+      "entropy": 2.999983072280884,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "71": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 201326,
+      "entropy": 2.99996018409729,
+      "b_ans": 5,
+      "c_ans": 7425,
+      "gt": 7425
+    },
+    "72": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 204173,
+      "entropy": 2.999974250793457,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "73": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 206764,
+      "entropy": 2.9999570846557617,
+      "b_ans": 221,
+      "c_ans": 221,
+      "gt": 221
+    },
+    "74": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 209063,
+      "entropy": 2.9999492168426514,
+      "b_ans": 255,
+      "c_ans": 255,
+      "gt": 255
+    },
+    "75": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 212658,
+      "entropy": 2.999932289123535,
+      "b_ans": 12,
+      "c_ans": 88,
+      "gt": 88
+    },
+    "76": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 215627,
+      "entropy": 2.9999589920043945,
+      "b_ans": 8,
+      "c_ans": 10,
+      "gt": 60
+    },
+    "77": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 219234,
+      "entropy": 2.999950885772705,
+      "b_ans": 7,
+      "c_ans": 185,
+      "gt": 5
+    },
+    "78": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 221976,
+      "entropy": 2.999976396560669,
+      "b_ans": 100,
+      "c_ans": 100,
+      "gt": 100
+    },
+    "79": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 225137,
+      "entropy": 2.9999823570251465,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "80": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 227075,
+      "entropy": 2.9999594688415527,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "81": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 230236,
+      "entropy": 2.999976396560669,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "82": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 232700,
+      "entropy": 2.9999241828918457,
+      "b_ans": 17,
+      "c_ans": 17,
+      "gt": 17
+    },
+    "83": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 234742,
+      "entropy": 2.999899387359619,
+      "b_ans": 623,
+      "c_ans": 623,
+      "gt": 623
+    },
+    "84": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 236628,
+      "entropy": 2.999983549118042,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 600
+    },
+    "85": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 239469,
+      "entropy": 2.99989652633667,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "86": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 241442,
+      "entropy": 2.9999799728393555,
+      "b_ans": 44,
+      "c_ans": 44,
+      "gt": 44
+    },
+    "87": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 243386,
+      "entropy": 2.999983072280884,
+      "b_ans": 22,
+      "c_ans": 22,
+      "gt": 22
+    },
+    "88": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 246311,
+      "entropy": 2.999983787536621,
+      "b_ans": 600,
+      "c_ans": 600,
+      "gt": 9360
+    },
+    "89": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 248370,
+      "entropy": 2.9999749660491943,
+      "b_ans": 8000,
+      "c_ans": 8000,
+      "gt": 8000
+    },
+    "90": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 250795,
+      "entropy": 2.9997901916503906,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 24
+    },
+    "91": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 253746,
+      "entropy": 2.9999895095825195,
+      "b_ans": 225,
+      "c_ans": 225,
+      "gt": 225
+    },
+    "92": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 256174,
+      "entropy": 2.999929428100586,
+      "b_ans": 28,
+      "c_ans": 28,
+      "gt": 28
+    },
+    "93": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 258717,
+      "entropy": 2.9997644424438477,
+      "b_ans": 4,
+      "c_ans": 4,
+      "gt": 4
+    },
+    "94": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 261894,
+      "entropy": 2.9999117851257324,
+      "b_ans": 38,
+      "c_ans": 36,
+      "gt": 36
+    },
+    "95": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 264896,
+      "entropy": 2.999969005584717,
+      "b_ans": 348,
+      "c_ans": 348,
+      "gt": 348
+    },
+    "96": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 267660,
+      "entropy": 2.9999709129333496,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 40
+    },
+    "97": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 269810,
+      "entropy": 2.999929666519165,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "98": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 273569,
+      "entropy": 2.9999542236328125,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 12
+    },
+    "99": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 276942,
+      "entropy": 2.999922037124634,
+      "b_ans": 30,
+      "c_ans": 10,
+      "gt": 5
+    },
+    "100": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 280037,
+      "entropy": 2.999995231628418,
+      "b_ans": 40,
+      "c_ans": 40,
+      "gt": 58
+    }
+  },
+  "16": {
+    "1": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 5417,
+      "entropy": 3.999980926513672,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "2": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 5648,
+      "entropy": 4.0,
+      "b_ans": 3,
+      "c_ans": 3,
+      "gt": 3
+    },
+    "3": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 6460,
+      "entropy": 3.999566078186035,
+      "b_ans": 195000,
+      "c_ans": 195000,
+      "gt": 70000
+    },
+    "4": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 6718,
+      "entropy": 4.0,
+      "b_ans": 180,
+      "c_ans": 180,
+      "gt": 540
+    },
+    "5": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 8002,
+      "entropy": 3.999208927154541,
+      "b_ans": 20,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "6": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 8702,
+      "entropy": 3.999293088912964,
+      "b_ans": 64,
+      "c_ans": 64,
+      "gt": 64
+    },
+    "7": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 12336,
+      "entropy": 3.9970054626464844,
+      "b_ans": 260,
+      "c_ans": 260,
+      "gt": 260
+    },
+    "8": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 13316,
+      "entropy": 3.999502420425415,
+      "b_ans": 100,
+      "c_ans": 100,
+      "gt": 160
+    },
+    "9": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 21140,
+      "entropy": 3.9997124671936035,
+      "b_ans": 60,
+      "c_ans": 315,
+      "gt": 45
+    },
+    "10": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 21627,
+      "entropy": 3.998715877532959,
+      "b_ans": 460,
+      "c_ans": 460,
+      "gt": 460
+    },
+    "11": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 24169,
+      "entropy": 3.9987075328826904,
+      "b_ans": 366,
+      "c_ans": 366,
+      "gt": 366
+    },
+    "12": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 26025,
+      "entropy": 3.998643636703491,
+      "b_ans": 694,
+      "c_ans": 694,
+      "gt": 694
+    },
+    "13": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 28246,
+      "entropy": 3.9982147216796875,
+      "b_ans": 12,
+      "c_ans": 12,
+      "gt": 13
+    },
+    "14": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 29729,
+      "entropy": 3.99894118309021,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "15": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 30210,
+      "entropy": 4.0,
+      "b_ans": 60,
+      "c_ans": 60,
+      "gt": 60
+    },
+    "16": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 32443,
+      "entropy": 3.9988582134246826,
+      "b_ans": 125,
+      "c_ans": 125,
+      "gt": 125
+    },
+    "17": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 32619,
+      "entropy": 4.0,
+      "b_ans": 230,
+      "c_ans": 230,
+      "gt": 230
+    },
+    "18": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 34866,
+      "entropy": 3.998999834060669,
+      "b_ans": 57500,
+      "c_ans": 57500,
+      "gt": 57500
+    },
+    "19": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 35177,
+      "entropy": 4.0,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "20": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 39516,
+      "entropy": 3.999544143676758,
+      "b_ans": 6,
+      "c_ans": 6,
+      "gt": 6
+    },
+    "21": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 41957,
+      "entropy": 3.998842239379883,
+      "b_ans": 15,
+      "c_ans": 15,
+      "gt": 15
+    },
+    "22": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 42693,
+      "entropy": 3.9995245933532715,
+      "b_ans": 14,
+      "c_ans": 14,
+      "gt": 14
+    },
+    "23": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 43432,
+      "entropy": 3.9993128776550293,
+      "b_ans": 7,
+      "c_ans": 7,
+      "gt": 7
+    },
+    "24": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 44902,
+      "entropy": 3.9987919330596924,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "25": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 45242,
+      "entropy": 4.0,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "26": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 45690,
+      "entropy": 4.0,
+      "b_ans": 2,
+      "c_ans": 2,
+      "gt": 2
+    },
+    "27": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 51442,
+      "entropy": 3.9997825622558594,
+      "b_ans": 243,
+      "c_ans": 243,
+      "gt": 243
+    },
+    "28": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 51704,
+      "entropy": 4.0,
+      "b_ans": 1,
+      "c_ans": 1,
+      "gt": 16
+    },
+    "29": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 51986,
+      "entropy": 4.0,
+      "b_ans": 25,
+      "c_ans": 25,
+      "gt": 25
+    },
+    "30": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 52257,
+      "entropy": 4.0,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "31": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 57937,
+      "entropy": 3.9996261596679688,
+      "b_ans": 109,
+      "c_ans": 109,
+      "gt": 109
+    },
+    "32": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 951935,
+      "entropy": 4.0,
+      "b_ans": 80,
+      "c_ans": 80,
+      "gt": 80
+    },
+    "33": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 952141,
+      "entropy": 4.0,
+      "b_ans": 35,
+      "c_ans": 35,
+      "gt": 35
+    },
+    "34": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 952829,
+      "entropy": 3.999763011932373,
+      "b_ans": 70,
+      "c_ans": 70,
+      "gt": 70
+    },
+    "35": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 953168,
+      "entropy": 4.0,
+      "b_ans": 23,
+      "c_ans": 23,
+      "gt": 23
+    },
+    "36": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 953461,
+      "entropy": 4.0,
+      "b_ans": 9,
+      "c_ans": 9,
+      "gt": 9
+    },
+    "37": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 954113,
+      "entropy": 3.9997639656066895,
+      "b_ans": 5,
+      "c_ans": 5,
+      "gt": 75
+    },
+    "38": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 957192,
+      "entropy": 3.9993648529052734,
+      "b_ans": 11,
+      "c_ans": 11,
+      "gt": 2
+    },
+    "39": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 958363,
+      "entropy": 3.999298334121704,
+      "b_ans": 10,
+      "c_ans": 10,
+      "gt": 10
+    },
+    "40": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 959369,
+      "entropy": 3.9993557929992676,
+      "b_ans": 18,
+      "c_ans": 18,
+      "gt": 18
+    },
+    "41": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 959655,
+      "entropy": 4.0,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    },
+    "42": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 959995,
+      "entropy": 4.0,
+      "b_ans": 200,
+      "c_ans": 200,
+      "gt": 200
+    },
+    "43": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 960227,
+      "entropy": 4.0,
+      "b_ans": 26,
+      "c_ans": 26,
+      "gt": 26
+    },
+    "44": {
+      "b_correct": 0,
+      "c_correct": 0,
+      "tokens": 961587,
+      "entropy": 3.9993984699249268,
+      "b_ans": 240,
+      "c_ans": 240,
+      "gt": 48
+    },
+    "45": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 963048,
+      "entropy": 3.9996893405914307,
+      "b_ans": 20,
+      "c_ans": 20,
+      "gt": 20
+    },
+    "46": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 965238,
+      "entropy": 3.999734878540039,
+      "b_ans": 104,
+      "c_ans": 104,
+      "gt": 104
+    },
+    "47": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 967729,
+      "entropy": 3.999331474304199,
+      "b_ans": 163,
+      "c_ans": 163,
+      "gt": 163
+    },
+    "48": {
+      "b_correct": 0,
+      "c_correct": 1,
+      "tokens": 973920,
+      "entropy": 3.9995789527893066,
+      "b_ans": 2,
+      "c_ans": 800,
+      "gt": 800
+    },
+    "49": {
+      "b_correct": 1,
+      "c_correct": 1,
+      "tokens": 976932,
+      "entropy": 3.9989426136016846,
+      "b_ans": 8,
+      "c_ans": 8,
+      "gt": 8
+    }
+  }
+}

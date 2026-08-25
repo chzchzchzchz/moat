@@ -1,0 +1,62 @@
+{
+  "0.8B": [
+    {
+      "question": 1,
+      "time": 3.71803879737854,
+      "response": "<think>\nHere's a thinking process that leads to the solution:\n\n1.  **Analyze the Request:**\n    *   **Goal:** Calculate the total money made by Janet from the farmers' market.\n    *   **Input Data:**\n        *   Ducks lay 16 eggs per day.\n        *   Breakfast: 3 eggs eaten per morning.\n        *   Muffins: 4 eggs baked for friends every day.\n        *   Market: Selling the remainder at $2 per fresh duck egg.\n    *   **Output:** Final answer in dollars.\n    *   **Constraint:** \"Let's think step by step.\"\n\n2.  **Step-by-Step Calculation Plan:**\n\n    *   *Step 1: Calculate the number of eggs laid by the ducks.*\n        *   Total eggs laid = 16.\n        *   *Wait, the problem says \"She eats three for breakfast every morning\".*\n        *   *Wait, the problem says \"She sells the remainder at the farmers' market daily\".*\n        *   *Wait, the problem says \"She eats three for breakfast every morning\".*\n        *   *Wait, the problem says \"She",
+      "ground_truth": "18"
+    },
+    {
+      "question": 2,
+      "time": 4.870820045471191,
+      "response": "<think>\nThe user wants to solve a word problem involving fractions of a whole (bolts of fiber).\n\n**1. Analyze the problem statement:**\n*   **Object:** A robe.\n*   **Material:** Blue fiber, White fiber.\n*   **Ratio:**\n    *   Blue fiber = 2 bolts.\n    *   White fiber = half that much (half of 2).\n*   **Goal:** Find the total number of bolts in total.\n\n**2. Step-by-step calculation:**\n*   **Step 1: Identify the parts.**\n    *   Blue bolts = 2 bolts.\n    *   White bolts = 2 / 2 = 1 bolt.\n*   **Step 2: Calculate the total.**\n    *   Total = Blue + White\n    *   Total = 2 + 1 = 3 bolts.\n\n**3. Check the logic:**\n*   The problem says \"A robe takes 2 bolts of blue fiber and half that much white fiber.\"\n*   \"Half that much\" means 2 / 2 = 1.\n*   So, Blue = 2, White = 1.\n*   Total = ",
+      "ground_truth": "3"
+    },
+    {
+      "question": 3,
+      "time": 4.295063018798828,
+      "response": "<think>\nThe user wants to solve a word problem about profit calculation.\n\n**1. Analyze the input:**\n*   **Initial value (Cost):** $80,000 (This is the cost of the house).\n*   **Repairs cost:** $50,000 (This is the amount put in repairs).\n*   **Change in value:** The value increased by 150%.\n*   **Question:** How much profit did he make?\n\n**2. Identify the components:**\n*   **Cost:** $80,000\n*   **Repairs:** $50,000\n*   **Total Cost (or Initial Investment):** $80,000\n*   **Repairs:** $50,000\n*   **Total Value:** $80,000 (Initial) + $50,000 (Repairs) = $130,000\n*   **Increase:** 150%\n*   **Profit:** The question asks for profit.\n    *   Profit = Total Value - Initial Cost\n    *   Profit = (Initial Cost + Repairs) - Initial",
+      "ground_truth": "70000"
+    }
+  ],
+  "2B": [
+    {
+      "question": 1,
+      "time": 8.93318772315979,
+      "response": "<think>\n\n</think>\n\nTo find out how much Janet makes at the farmers' market, we need to break down the problem step by step:\n\n1.  **Calculate the total number of eggs produced:**\n    Janet lays 16 eggs per day.\n\n2.  **Calculate the number of eggs used for breakfast:**\n    She eats 3 eggs for breakfast every morning.\n\n3.  **Calculate the number of eggs used for baking muffins:**\n    She bakes muffins using 4 eggs.\n\n4.  **Calculate the number of eggs remaining for sale:**\n    Subtract the eggs used for breakfast and muffins from the total eggs produced.\n    $$ \\text{Remaining Eggs} = \\text{Total Eggs} - \\text{Breakfast Eggs} - \\text{Muffin Eggs} $$\n    $$ \\text{Remaining Eggs} = 16 - 3 - 4 $$\n    $$ \\text{Remaining Eggs} = 9 $$\n\n5.  **Calculate the total revenue from selling the remaining eggs:**\n    She sells the remainder for $2 per egg.\n    $$ \\text{Total Revenue} = \\text{Remaining Eggs} \\times \\text{Price per Egg}",
+      "ground_truth": "18"
+    },
+    {
+      "question": 2,
+      "time": 8.211832046508789,
+      "response": "<think>\n\n</think>\n\nTo find the total number of bolts of fiber the robe takes, we need to break down the problem into two parts and then sum them up.\n\n**Step 1: Identify the amount of blue fiber.**\nThe problem states that the robe takes **2** bolts of blue fiber.\n\n**Step 2: Identify the amount of white fiber.**\nThe problem states that the robe takes \"half that much\" white fiber. \"That much\" refers to the amount of blue fiber, which is 2.\nSo, we calculate half of 2:\n$$ \\frac{1}{2} \\times 2 = 1 $$\nTherefore, the robe takes **1** bolt of white fiber.\n\n**Step 3: Calculate the total.**\nNow, add the amount of blue fiber and the amount of white fiber together:\n$$ \\text{Total} = \\text{Blue} + \\text{White} $$\n$$ \\text{Total} = 2 + 1 $$\n$$ \\text{Total} = 3 $$\n\nThe robe takes a total of 3 bolts of fiber.\n\n3",
+      "ground_truth": "3"
+    },
+    {
+      "question": 3,
+      "time": 9.289408922195435,
+      "response": "<think>\n\n</think>\n\nTo find the profit Josh made, we need to calculate the total cost of the house and then subtract the total cost from the total value of the house.\n\n**Step 1: Calculate the total initial investment.**\nJosh buys the house for $\\$80,000$ and spends $\\$50,000$ on repairs.\n$$ \\text{Total Cost} = \\$80,000 + \\$50,000 = \\$130,000 $$\n\n**Step 2: Calculate the total value of the house.**\nThe problem states that the repairs increased the value by $150\\%$.\nTo find the new value, we add $150\\%$ of the original value to the original value.\n$$ \\text{Increase} = 150\\% \\times \\$80,000 = 1.50 \\times \\$80,000 = \\$120,000 $$\n$$ \\text{Total Value} = \\text{Original Value} + \\text{Increase} $$\n$$ \\text{Total Value} = \\$80,000 + \\$1",
+      "ground_truth": "70000"
+    }
+  ],
+  "4B": [
+    {
+      "question": 1,
+      "time": 21.241379737854004,
+      "response": "<think>\n\n</think>\n\nTo determine how much Janet makes every day at the farmers' market, we need to calculate the number of eggs available for sale and then multiply that by the selling price.\n\n**Step 1: Calculate the total number of eggs laid.**\nJanet's ducks lay 16 eggs per day.\nTotal eggs = 16\n\n**Step 2: Subtract the eggs used for breakfast.**\nShe eats 3 eggs for breakfast every morning.\nRemaining eggs = $16 - 3 = 13$\n\n**Step 3: Subtract the eggs used for baking muffins.**\nShe uses 4 eggs to bake muffins for her friends.\nRemaining eggs = $13 - 4 = 9$\n\n**Step 4: Calculate the earnings from selling the remainder.**\nShe sells the remaining 9 eggs at the farmers' market for $2 per egg.\nEarnings = $9 \\text{ eggs} \\times \\$2/\\text{egg} = \\$18$\n\n**Conclusion:**\nJanet makes $18 every day at the farmers' market.\n\n$18<|im_end|>\n",
+      "ground_truth": "18"
+    },
+    {
+      "question": 2,
+      "time": 18.901396989822388,
+      "response": "<think>\n\n</think>\n\nTo find the total number of bolts required, let's break down the information given step by step:\n\n1.  **Identify the amount of blue fiber:**\n    The problem states that the robe takes **2 bolts** of blue fiber.\n\n2.  **Calculate the amount of white fiber:**\n    The problem states that the robe takes \"half that much\" white fiber as blue fiber.\n    $$ \\text{White bolts} = \\frac{1}{2} \\times \\text{Blue bolts} $$\n    $$ \\text{White bolts} = \\frac{1}{2} \\times 2 = 1 \\text{ bolt} $$\n\n3.  **Calculate the total number of bolts:**\n    Add the number of blue bolts and white bolts together.\n    $$ \\text{Total bolts} = \\text{Blue bolts} + \\text{White bolts} $$\n    $$ \\text{Total bolts} = 2 + 1 = 3 $$\n\n**Conclusion:**\nIt takes a total of 3 bolts.\n\n3<|im_end|>\n",
+      "ground_truth": "3"
+    },
+    {
+      "question": 3,
+      "time": 21.560919046401978,
+      "response": "<think>\n\n</think>\n\nTo determine Josh's profit, we need to calculate the total cost, the final selling price, and then find the difference between the two.\n\n**Step 1: Calculate the total cost of the house.**\nJosh bought the house for $\\$80,000$ and spent $\\$50,000$ on repairs.\n$$ \\text{Total Cost} = \\text{Purchase Price} + \\text{Repair Cost} $$\n$$ \\text{Total Cost} = \\$80,000 + \\$50,000 = \\$130,000 $$\n\n**Step 2: Calculate the increase in value.**\nThe problem states that the repairs increased the value of the house by $150\\%$. This percentage applies to the original purchase price ($\\$80,000$).\n$$ \\text{Value Increase} = \\text{Original Price} \\times 150\\% $$\n$$ \\text{Value Increase} = \\$80,000 \\times 1.50 $$\n$$ \\text{Value Increase} = \\$120,000 $$\n\n**Step 3: Calculate",
+      "ground_truth": "70000"
+    }
+  ]
+}
