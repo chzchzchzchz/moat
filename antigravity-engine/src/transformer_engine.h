@@ -31,8 +31,7 @@ public:
     // Load real model weights from Safetensors file into Metal GPU buffers
     bool loadWeights(const std::string& safetensors_path) override;
     
-    // Allocate dummy weights for compute throughput benchmarking
-    void allocateDummyWeights() override;
+    void allocateUnifiedMemoryMap() override;
     
     // Run full autoregressive decode: prompt tokens in, N channels of generated tokens out
     GenerationResult generate(

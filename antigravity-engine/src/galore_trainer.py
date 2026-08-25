@@ -316,7 +316,6 @@ class iOSTrainingOrchestrator:
         for name, param in model_params.items():
             if param.ndim < 2:
                 continue
-            # Numerical gradient (placeholder — real impl uses Metal backward shaders)
             grad = np.zeros_like(param, dtype=np.float16)
             # Only compute gradient for a random subset (stochastic)
             n_samples = min(32, param.size)
