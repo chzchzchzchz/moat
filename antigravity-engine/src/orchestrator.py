@@ -242,12 +242,6 @@ class AntigravityEngine:
             native_engine=self.native_engine
         )
 
-        # Pipeline validator components (used only in path 3)
-        self.transformer_layer = RealTransformerLayer(hidden_dim=self.hidden_dim)
-        rng = np.random.RandomState(123)
-        self.embedding_table = (rng.randn(self.vocab_size, self.hidden_dim) * 0.05).astype(np.float16)
-        self.lm_head_weight = (rng.randn(self.hidden_dim, self.vocab_size) * 0.05).astype(np.float16)
-
         # Build vocabulary mapping
         self.vocab = self._build_vocab(self.vocab_size)
 
@@ -262,8 +256,6 @@ class AntigravityEngine:
     def _build_vocab(self, vocab_size: int) -> List[str]:
         """Build generic token vocabulary with special tokens and numbered entries."""
         special = ["<pad>", "<bos>", "<eos>", "<think>", "</think>"]
-        vocab = special.copy()
-        while len(vocab) < vocab_size:
             vocab.append(f"tok_{len(vocab)}")
         return vocab
 
