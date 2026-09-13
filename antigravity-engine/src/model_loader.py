@@ -240,11 +240,50 @@ class ModelWeightLoader:
                 elif t_type == 1:  # FP16
                     raw_bytes = f.read(n_elements * 2)
                     w_fp16 = np.frombuffer(raw_bytes, dtype=np.float16).reshape(shape)
-                else:  # INT8/INT4 fallback payload read
-                    raw_bytes = f.read(n_elements)
-                    if len(raw_bytes) < n_elements:
-                        raw_bytes = raw_bytes + b'\x00' * (n_elements - len(raw_bytes))
-                    w_fp16 = (np.frombuffer(raw_bytes, dtype=np.int8).astype(np.float16) / 7.0).reshape(shape)
+                # GGUF Tensor Type IDs: 0=FP32, 1=FP16, 2=Q4_0, 3=Q4_1, 6=Q5_0, 7=Q5_1, 8=Q8_0, 14=Q4_K_M, 15=Q6_K
+                elif t_type == 2:  # Q4_0
+                    n_blocks = n_elements // 32
+                    raw_bytes = f.read(n_blocks * 18)
+                    data = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(n_blocks, 18)
+                    scales = data[:, :2].copy().view(np.float16)
+                    qs = data[:, 2:]
+                    qs_unpacked = np.empty((n_blocks, 32), dtype=np.int8)
+                    qs_unpacked[:, 0::2] = qs & 0x0F
+                    qs_unpacked[:, 1::2] = qs >> 4
+                    w_fp16 = ((qs_unpacked - 8) * scales).reshape(shape).astype(np.float16)
+                elif t_type == 3:  # Q4_1
+                    n_blocks = n_elements // 32
+                    raw_bytes = f.read(n_blocks * 20)
+                    data = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(n_blocks, 20)
+                    scales = data[:, :2].copy().view(np.float16)
+                    mins = data[:, 2:4].copy().view(np.float16)
+                    qs = data[:, 4:]
+                    qs_unpacked = np.empty((n_blocks, 32), dtype=np.int8)
+                    qs_unpacked[:, 0::2] = qs & 0x0F
+                    qs_unpacked[:, 1::2] = qs >> 4
+                    w_fp16 = (qs_unpacked * scales + mins).reshape(shape).astype(np.float16)
+                elif t_type == 6:  # Q5_0
+                    raise NotImplementedError("Q5_0 dequantization not implemented")
+                elif t_type == 7:  # Q5_1
+                    raise NotImplementedError("Q5_1 dequantization not implemented")
+                elif t_type == 8:  # Q8_0
+                    n_blocks = n_elements // 32
+                    raw_bytes = f.read(n_blocks * 34)
+                    data = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(n_blocks, 34)
+                    scales = data[:, :2].copy().view(np.float16)
+                    qs = data[:, 2:].view(np.int8)
+                    w_fp16 = (qs * scales).reshape(shape).astype(np.float16)
+                elif t_type == 14:  # Q4_K_M (Superblock Q4_K)
+                    n_blocks = (n_elements + 255) // 256
+                    raw_bytes = f.read(n_blocks * 144)
+                    w_fp16 = dequantize_q4_k_superblock(raw_bytes, n_elements, shape)
+                elif t_type == 15:  # Q6_K
+                    # Q6_K superblock: 210 bytes per 256 elements
+                    n_blocks = (n_elements + 255) // 256
+                    raw_bytes = f.read(n_blocks * 210)
+                    w_fp16 = dequantize_q6_k_superblock(raw_bytes, n_elements, shape)
+                else:
+                    raise ValueError(f"Unrecognized GGUF tensor type: {t_type}")
 
                 self.load_and_repack_layer(t_name, w_fp16)
 
@@ -272,6 +311,115 @@ class ModelWeightLoader:
         """Unload all layers and reset memory tracker."""
         self.layers.clear()
         self.total_loaded_bytes = 0
+
+
+# =============================================================================
+# GGUF K-Quant Superblock Dequantization (Q4_K, Q6_K)
+# =============================================================================
+
+def dequantize_q4_k_superblock(raw_bytes: bytes, n_elements: int, shape: tuple) -> np.ndarray:
+    """
+    Vectorized dequantization of GGUF Q4_K_M (type 14) superblocks.
+    Format: 256 weights per block (144 bytes per block).
+      - d: float16 (2 bytes, block scale)
+      - dmin: float16 (2 bytes, block min)
+      - scales: 12 bytes (packed 6-bit scales and mins for 8 sub-blocks)
+      - qs: 128 bytes (packed 4-bit weights)
+    """
+    n_blocks = (n_elements + 255) // 256
+    block_size = 144
+    needed_bytes = n_blocks * block_size
+    if len(raw_bytes) < needed_bytes:
+        raw_bytes = raw_bytes + b'\x00' * (needed_bytes - len(raw_bytes))
+
+    blocks = np.frombuffer(raw_bytes[:needed_bytes], dtype=np.uint8).reshape(n_blocks, block_size)
+
+    # d and dmin
+    d = blocks[:, 0:2].copy().view(np.float16).astype(np.float32)
+    dmin = blocks[:, 2:4].copy().view(np.float16).astype(np.float32)
+
+    # Unpack 8 sub-block scales (sc) and mins (m)
+    scales_raw = blocks[:, 4:16]
+    sc = np.empty((n_blocks, 8), dtype=np.float32)
+    m = np.empty((n_blocks, 8), dtype=np.float32)
+
+    # First 4 sub-blocks (j < 4)
+    sc[:, 0:4] = (scales_raw[:, 0:4] & 63).astype(np.float32)
+    m[:, 0:4] = (scales_raw[:, 4:8] & 63).astype(np.float32)
+
+    # Next 4 sub-blocks (j >= 4)
+    # *d = (q[j+4] & 0xF) | ((q[j-4] >> 6) << 4);
+    # *m = (q[j+4] >> 4) | ((q[j-0] >> 6) << 4);
+    sc[:, 4:8] = ((scales_raw[:, 8:12] & 0x0F) | ((scales_raw[:, 0:4] >> 6) << 4)).astype(np.float32)
+    m[:, 4:8] = ((scales_raw[:, 8:12] >> 4) | ((scales_raw[:, 4:8] >> 6) << 4)).astype(np.float32)
+
+    d_sc = d * sc
+    dmin_m = dmin * m
+
+    # qs: 128 bytes at offset 16:144
+    qs = blocks[:, 16:144]
+
+    out = np.empty((n_blocks, 8, 32), dtype=np.float32)
+    for pair in range(4):
+        chunk = qs[:, pair*32 : (pair+1)*32]
+        q_even = (chunk & 0x0F).astype(np.float32)
+        q_odd = (chunk >> 4).astype(np.float32)
+
+        out[:, 2*pair, :] = q_even * d_sc[:, 2*pair, None] - dmin_m[:, 2*pair, None]
+        out[:, 2*pair + 1, :] = q_odd * d_sc[:, 2*pair + 1, None] - dmin_m[:, 2*pair + 1, None]
+
+    flat_out = out.reshape(-1)[:n_elements]
+    return flat_out.reshape(shape).astype(np.float16)
+
+
+def dequantize_q6_k_superblock(raw_bytes: bytes, n_elements: int, shape: tuple) -> np.ndarray:
+    """
+    Vectorized dequantization of GGUF Q6_K (type 15) superblocks.
+    Format: 256 weights per block (210 bytes per block).
+      - ql: 128 bytes (low 4 bits of weights)
+      - qh: 64 bytes (high 2 bits of weights)
+      - scales: 16 bytes (int8 sub-block scales)
+      - d: float16 (2 bytes, block scale)
+    """
+    n_blocks = (n_elements + 255) // 256
+    block_size = 210
+    needed_bytes = n_blocks * block_size
+    if len(raw_bytes) < needed_bytes:
+        raw_bytes = raw_bytes + b'\x00' * (needed_bytes - len(raw_bytes))
+
+    blocks = np.frombuffer(raw_bytes[:needed_bytes], dtype=np.uint8).reshape(n_blocks, block_size)
+
+    ql = blocks[:, 0:128]
+    qh = blocks[:, 128:192]
+    scales = blocks[:, 192:208].view(np.int8).astype(np.float32)
+    d = blocks[:, 208:210].copy().view(np.float16).astype(np.float32)
+
+    # Reconstruct 256 6-bit values (q - 32) * (d * scale)
+    out = np.empty((n_blocks, 16, 16), dtype=np.float32)
+    for i in range(16):
+        # 16 sub-blocks of 16 values
+        ql_chunk = ql[:, i*8 : (i+1)*8]
+        qh_chunk = qh[:, i*4 : (i+1)*4]
+        # Low 4 bits
+        low0 = (ql_chunk & 0x0F).astype(np.float32)
+        low1 = (ql_chunk >> 4).astype(np.float32)
+        # High 2 bits
+        h0 = (qh_chunk & 0x03).astype(np.float32)
+        h1 = ((qh_chunk >> 2) & 0x03).astype(np.float32)
+        h2 = ((qh_chunk >> 4) & 0x03).astype(np.float32)
+        h3 = (qh_chunk >> 6).astype(np.float32)
+
+        q0 = (h0 * 16.0 + low0[:, :4]) - 32.0
+        q1 = (h1 * 16.0 + low0[:, 4:]) - 32.0
+        q2 = (h2 * 16.0 + low1[:, :4]) - 32.0
+        q3 = (h3 * 16.0 + low1[:, 4:]) - 32.0
+
+        q_sub = np.concatenate([q0, q1, q2, q3], axis=1)
+        scale_sub = d * scales[:, i:i+1]
+        out[:, i, :] = q_sub * scale_sub
+
+    flat_out = out.reshape(-1)[:n_elements]
+    return flat_out.reshape(shape).astype(np.float16)
 
 
 # =============================================================================
@@ -338,7 +486,26 @@ class SafetensorsWeightReader:
         tensor = self.f[name]
         return tensor.to(dtype=__import__('torch').float16).numpy()
 
-GGUFWeightReader = SafetensorsWeightReader
+class GGUFWeightReader:
+    """Reader for GGUF format model files using ModelWeightLoader.parse_gguf_file."""
+    def __init__(self, path: str):
+        self.path = path
+        self.tensors = {}
+        self._load()
+    
+    def _load(self):
+        loader = ModelWeightLoader()
+        result = loader.parse_gguf_file(self.path)
+        self.tensors = result.get('tensors', {})
+    
+    def get_tensor_names(self):
+        return list(self.tensors.keys())
+    
+    def count_parameters(self):
+        total = 0
+        for info in self.tensors.values():
+            total += info.get('n_elements', 0)
+        return total
 
 
 class QuantizedSuperBlockTensor:

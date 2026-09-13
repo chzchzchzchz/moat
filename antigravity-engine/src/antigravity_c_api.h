@@ -85,6 +85,13 @@ int32_t AntigravityEngineGenerateRollouts(
 /**
  * Perform List-Wise Verification across N candidate rollout streams.
  *
+ * NOTE: The current implementation uses a heuristic scoring function based on
+ * token entropy (vocabulary diversity) and unique token ratio. It does NOT use
+ * a learned reward model or neural verifier. The "best" candidate is the one
+ * with the most diverse token distribution, which correlates with but does not
+ * guarantee factual correctness. A learned Process Reward Model (PRM) would
+ * improve verification quality significantly.
+ *
  * @param ctx Engine handle pointer.
  * @param candidate_tokens Token IDs matrix [n_channels x seq_len].
  * @param seq_len Sequence length per candidate.
@@ -229,6 +236,12 @@ typedef struct {
 /**
  * Execute native chunk-based Monte Carlo Tree Search (MCTS) with Process Reward branch pruning.
  *
+ * NOTE: The Process Reward function currently uses a heuristic formula:
+ *   score = log_prob_density + token_diversity * 3.0 + log(1 + length) * 0.5
+ * This is NOT a learned value network or trained reward model. It approximates
+ * sequence quality using log-probability density, vocabulary diversity, and length.
+ * A trained PRM checkpoint would improve MCTS search quality substantially.
+ *
  * @param ctx               Engine handle pointer.
  * @param prompt_tokens     Array of prompt token IDs.
  * @param prompt_len        Length of prompt_tokens array.
@@ -261,6 +274,60 @@ void AntigravityEngineUnloadWeights(AntigravityEngineContext* ctx);
  * @return true if weights are loaded, false otherwise.
  */
 bool AntigravityEngineHasWeights(const AntigravityEngineContext* ctx);
+
+/**
+ * Factory method: Create an engine instance auto-configured by parsing GGUF file metadata.
+ *
+ * @param gguf_path Path to the GGUF model file.
+ * @return Pointer to context handle, or NULL on error.
+ */
+AntigravityEngineContext* AntigravityEngineCreateFromGGUF(const char* gguf_path);
+
+// =============================================================================
+// Structural License Enforcement API
+// =============================================================================
+
+#define ANTIGRAVITY_OK                           0
+#define ANTIGRAVITY_ERR_INVALID_ARGS            -1
+#define ANTIGRAVITY_ERR_NULL_POINTER            -2
+#define ANTIGRAVITY_ERR_NO_WEIGHTS              -3
+#define ANTIGRAVITY_ERR_LICENSE_INVALID         -13
+#define ANTIGRAVITY_ERR_LICENSE_MAX_CHANNELS    -14
+#define ANTIGRAVITY_ERR_LICENSE_FEATURE_DENIED  -15
+
+/**
+ * Configure license enforcement policy.
+ * When enabled, generation functions require a valid, non-expired license key.
+ *
+ * @param ctx Engine handle pointer.
+ * @param required true to enforce valid licensing on compute, false to allow development mode.
+ */
+void AntigravityEngineSetLicenseRequired(AntigravityEngineContext* ctx, bool required);
+
+/**
+ * Check whether license enforcement is active on this context.
+ *
+ * @param ctx Engine handle pointer.
+ * @return true if license enforcement is required, false otherwise.
+ */
+bool AntigravityEngineIsLicenseRequired(const AntigravityEngineContext* ctx);
+
+/**
+ * Validate offline Ed25519 license key.
+ *
+ * @param ctx Engine handle pointer.
+ * @param license_key Base64 license token (JSON payload . 64-byte Ed25519 signature).
+ * @return 0 if valid, non-zero error code if invalid or expired.
+ */
+int32_t AntigravityEngineSetLicenseKey(AntigravityEngineContext* ctx, const char* license_key);
+
+/**
+ * Check whether engine has a valid, active offline license.
+ *
+ * @param ctx Engine handle pointer.
+ * @return true if licensed, false otherwise.
+ */
+bool AntigravityEngineIsLicensed(const AntigravityEngineContext* ctx);
 
 #ifdef __cplusplus
 }

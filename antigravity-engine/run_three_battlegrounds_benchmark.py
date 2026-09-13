@@ -5,7 +5,7 @@ Project Antigravity — Four-Tier / Three-Battlegrounds Anti-Fuckery Benchmarkin
 Executes empirical verification comparing three core baselines:
   Baseline A: Naked Model (N=1, single-path decoding)
   Baseline B: Standard Majority Voting (N ∈ [1, 2, 4, 8, 16], mode over extracted numbers)
-  Baseline C: Antigravity Engine (N ∈ [1, 2, 4, 8, 16], DORA semantic uniqueness + GenPRM feedback)
+  Baseline C: Antigravity Engine (N ∈ [1, 2, 4, 8, 16], DORA lexical uniqueness + GenPRM feedback)
 
 Recorded Metrics:
   - Accuracy (%) on 100 out-of-distribution multi-step math/logic problems

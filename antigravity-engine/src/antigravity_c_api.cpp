@@ -5,6 +5,9 @@
 
 #include "antigravity_c_api.h"
 #include "transformer_engine.h"
+#include "license_verifier.h"
+#include "gguf_reader.h"
+#include "prm_weights.h"
 #if defined(USE_VULKAN) && __has_include(<vulkan/vulkan.h>)
 #include "vulkan_transformer_engine.h"
 #endif
@@ -35,6 +38,12 @@ struct AntigravityEngineContext {
     
     // Native C++ Transformer Engine Abstraction
     ITransformerEngine* nativeEngine = nullptr;
+
+    // Offline Licensing
+    bool isLicensed = false;
+    bool licenseRequired = false;
+    std::string licenseKey;
+    AntigravityLicensePayload licensePayload;
 };
 
 extern "C" {
@@ -122,12 +131,29 @@ void AntigravityEngineDestroy(AntigravityEngineContext* ctx) {
 int32_t AntigravityEngineLoadModel(AntigravityEngineContext* ctx, const char* model_path) {
     if (!ctx || !model_path) return -1;
 
+    std::string path_str(model_path);
     if (!ctx->nativeEngine) {
         TransformerConfig t_cfg;
-        t_cfg.n_channels = ctx->config.n_channels;
-        t_cfg.vocab_size = ctx->config.vocab_size > 0 ? ctx->config.vocab_size : 32000;
-        t_cfg.hidden_dim = ctx->config.hidden_dim > 0 ? ctx->config.hidden_dim : 2048;
-        t_cfg.max_seq_len = ctx->config.max_seq_len > 0 ? ctx->config.max_seq_len : 2048;
+        // Dynamically infer architecture dimensions from GGUF or Safetensors metadata headers
+        if (path_str.size() >= 5 && path_str.substr(path_str.size() - 5) == ".gguf") {
+            try {
+                t_cfg = TransformerConfig::fromGGUF(path_str);
+            } catch (const std::exception& e) {
+                std::cerr << "GGUF dynamic parsing fallback: " << e.what() << std::endl;
+            }
+        } else if (path_str.size() >= 12 && path_str.substr(path_str.size() - 12) == ".safetensors") {
+            try {
+                t_cfg = TransformerConfig::fromSafetensors(path_str);
+            } catch (const std::exception& e) {
+                std::cerr << "Safetensors dynamic parsing fallback: " << e.what() << std::endl;
+            }
+        }
+
+        // Apply context overrides if specified
+        if (t_cfg.n_channels <= 0) t_cfg.n_channels = ctx->config.n_channels > 0 ? ctx->config.n_channels : 8;
+        if (t_cfg.vocab_size <= 0) t_cfg.vocab_size = ctx->config.vocab_size > 0 ? ctx->config.vocab_size : 32000;
+        if (t_cfg.hidden_dim <= 0) t_cfg.hidden_dim = ctx->config.hidden_dim > 0 ? ctx->config.hidden_dim : 2048;
+        if (t_cfg.max_seq_len <= 0) t_cfg.max_seq_len = ctx->config.max_seq_len > 0 ? ctx->config.max_seq_len : 2048;
         
         if (ctx->config.use_metal_gpu) {
             ctx->nativeEngine = new MetalTransformerEngine(t_cfg);
@@ -140,8 +166,84 @@ int32_t AntigravityEngineLoadModel(AntigravityEngineContext* ctx, const char* mo
         }
     }
 
-    bool ok = ctx->nativeEngine->loadWeights(std::string(model_path));
+    bool ok = ctx->nativeEngine->loadWeights(path_str);
     return ok ? 0 : -1;
+}
+
+AntigravityEngineContext* AntigravityEngineCreateFromGGUF(const char* gguf_path) {
+    if (!gguf_path) return nullptr;
+    try {
+        TransformerConfig cfg = TransformerConfig::fromGGUF(std::string(gguf_path));
+        AntigravityConfig c_cfg;
+        c_cfg.n_channels = cfg.n_channels;
+        c_cfg.vocab_size = cfg.vocab_size;
+        c_cfg.hidden_dim = cfg.hidden_dim;
+        c_cfg.max_seq_len = cfg.max_seq_len;
+        c_cfg.use_metal_gpu = true;
+
+        AntigravityEngineContext* ctx = AntigravityEngineCreate(&c_cfg);
+        if (ctx) {
+            ctx->nativeEngine = new MetalTransformerEngine(cfg);
+        }
+        return ctx;
+    } catch (const std::exception& e) {
+        std::cerr << "AntigravityEngineCreateFromGGUF error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+int32_t AntigravityEngineSetLicenseKey(AntigravityEngineContext* ctx, const char* license_key) {
+    if (!ctx || !license_key) return -1;
+    AntigravityLicenseVerifier verifier;
+    AntigravityLicensePayload payload = verifier.verify(std::string(license_key));
+    if (payload.valid) {
+        ctx->isLicensed = true;
+        ctx->licenseKey = license_key;
+        ctx->licensePayload = payload;
+        return 0;
+    }
+    ctx->isLicensed = false;
+    ctx->licenseKey = "";
+    ctx->licensePayload = payload;
+    return -13;
+}
+
+bool AntigravityEngineIsLicensed(const AntigravityEngineContext* ctx) {
+    if (!ctx) return false;
+    return ctx->isLicensed && !ctx->licensePayload.isExpired();
+}
+
+void AntigravityEngineSetLicenseRequired(AntigravityEngineContext* ctx, bool required) {
+    if (ctx) ctx->licenseRequired = required;
+}
+
+bool AntigravityEngineIsLicenseRequired(const AntigravityEngineContext* ctx) {
+    return ctx ? ctx->licenseRequired : false;
+}
+
+static int32_t CheckContextAuthorization(const AntigravityEngineContext* ctx, const char* required_feature = "sdk") {
+    if (!ctx) return -2;
+    if (!ctx->licenseRequired) return 0; // Unenforced / dev mode
+
+    if (!AntigravityEngineIsLicensed(ctx)) {
+        std::cerr << "[AntigravityEngine] Authorization Failed: Context is not licensed or license has expired (-13)." << std::endl;
+        return -13;
+    }
+
+    if (ctx->config.n_channels > ctx->licensePayload.max_channels) {
+        std::cerr << "[AntigravityEngine] Authorization Failed: Parallel channels ("
+                  << ctx->config.n_channels << ") exceed licensed limit ("
+                  << ctx->licensePayload.max_channels << ") (-14)." << std::endl;
+        return -14;
+    }
+
+    if (required_feature && !ctx->licensePayload.hasFeature(required_feature)) {
+        std::cerr << "[AntigravityEngine] Authorization Failed: Missing required entitlement '"
+                  << required_feature << "' (-15)." << std::endl;
+        return -15;
+    }
+
+    return 0;
 }
 
 int32_t AntigravityEngineGenerateRollouts(
@@ -153,6 +255,8 @@ int32_t AntigravityEngineGenerateRollouts(
     AntigravityRolloutResult* out_result
 ) {
     if (!ctx || !out_tokens || !weight_matrix || max_steps <= 0) return -1;
+    int32_t auth = CheckContextAuthorization(ctx, "sdk");
+    if (auth != 0) return auth;
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -343,23 +447,30 @@ int32_t AntigravityEngineVerifyCandidates(
     for (int c = 0; c < N; c++) {
         std::vector<int> counts(V, 0);
         int unique_toks = 0;
+        
+        // Construct step representation vector in PRM embedding space [PRM_IN_DIM]
+        std::vector<float> step_repr(PRM_IN_DIM, 0.0f);
+
         for (int s = 0; s < seq_len; s++) {
             int32_t tok = candidate_tokens[c * seq_len + s];
             if (tok >= 0 && tok < V) {
                 if (counts[tok] == 0) unique_toks++;
                 counts[tok]++;
+
+                int dim_idx = (tok * 31 + s * 17) % PRM_IN_DIM;
+                if (dim_idx < 0) dim_idx += PRM_IN_DIM;
+                step_repr[dim_idx] += 1.0f / sqrtf((float)seq_len);
             }
         }
-        float entropy = 0.0f;
-        for (int v = 0; v < V; v++) {
-            if (counts[v] > 0) {
-                float p = (float)counts[v] / (float)seq_len;
-                entropy -= p * logf(p + 1e-10f);
-            }
-        }
-        float max_entropy = logf((float)std::min(seq_len, V));
-        float norm_entropy = (max_entropy > 0.0f) ? (entropy / max_entropy) : 0.5f;
-        float score = 0.5f * norm_entropy + 0.5f * ((float)unique_toks / (float)seq_len);
+
+        // Evaluate continuous neural Process Reward Model (PRM) logit via learned MLP
+        float raw_prm_logit = EvaluatePRMReward(step_repr.data());
+        // Numerically stable sigmoid mapping to [0, 1] probability
+        float prm_score = 1.0f / (1.0f + std::exp(-std::clamp(raw_prm_logit, -20.0f, 20.0f)));
+
+        // Regularize with token non-repetition diversity ratio
+        float diversity = (float)unique_toks / (float)seq_len;
+        float score = 0.70f * prm_score + 0.30f * diversity;
         if (score < 0.0f) score = 0.0f;
         if (score > 1.0f) score = 1.0f;
 
@@ -413,6 +524,8 @@ int32_t AntigravityEngineNativeGenerate(
 ) {
     if (!ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
     if (!ctx->nativeEngine) return -1;
+    int32_t auth = CheckContextAuthorization(ctx, "sdk");
+    if (auth != 0) return auth;
 
     // Delegate to the full 22-layer MetalTransformerEngine::generate()
     GenerationResult gen = ctx->nativeEngine->generate(
@@ -460,6 +573,8 @@ int32_t AntigravityEngineNativeGenerateSpeculative(
     if (!ctx || !draft_ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
     if (!ctx->nativeEngine || !draft_ctx->nativeEngine) return -1;
     if (!ctx->nativeEngine->weightsLoaded_ || !draft_ctx->nativeEngine->weightsLoaded_) return -1;
+    int32_t auth = CheckContextAuthorization(ctx, "sdk");
+    if (auth != 0) return auth;
 
     GenerationResult gen = ctx->nativeEngine->generateSpeculative(
         draft_ctx->nativeEngine, prompt_tokens, prompt_len, max_new_tokens, k_draft, temperature, top_p
@@ -499,6 +614,8 @@ int32_t AntigravityEngineNativeGenerateMultimodal(
 ) {
     if (!ctx || !out_tokens || max_new_tokens <= 0) return -2;
     if (!ctx->nativeEngine) return -1;
+    int32_t auth_mm = CheckContextAuthorization(ctx, "multimodal");
+    if (auth_mm != 0) return auth_mm;
 
     GenerationResult gen = ctx->nativeEngine->generateMultimodal(
         text_tokens, text_len, image_embeddings, n_image_patches, max_new_tokens, temperature, top_p
@@ -536,6 +653,8 @@ int32_t AntigravityEngineNativeMCTSGenerate(
 ) {
     if (!ctx || !prompt_tokens || prompt_len <= 0 || !out_tokens) return -2;
     if (!ctx->nativeEngine) return -1;
+    int32_t auth_mcts = CheckContextAuthorization(ctx, "sdk");
+    if (auth_mcts != 0) return auth_mcts;
 
     MCTSConfig cfg;
     if (mcts_config) {

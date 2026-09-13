@@ -70,7 +70,8 @@ static inline uint16_t bf16_to_fp16(uint16_t bf16) {
 // ============================================================================
 
 MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
-    : weightsLoaded_(false), config_(config), allocatedBytes_(0) {
+    : config_(config), allocatedBytes_(0) {
+    weightsLoaded_ = false;
     
     device_ = MTLCreateSystemDefaultDevice();
     if (!device_) {
@@ -705,11 +706,13 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBuffer:scratch3_ offset:k_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
             uint32_t nkv = config_.n_kv_heads, maxseq = config_.max_seq_len, hdim = config_.head_dim, wpos = seq_pos;
+            uint32_t ql = 1;
             [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:2];
             [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
             [enc setBytes:&maxseq length:sizeof(uint32_t) atIndex:4];
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
-            MTLSize grid = MTLSizeMake(1, nkv, hdim);
+            [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
+            MTLSize grid = MTLSizeMake(ql, nkv, hdim);
             MTLSize tg = MTLSizeMake(1, 1, 1);
             [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
 
@@ -726,13 +729,14 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
             [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:2];
             uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads, hd = config_.head_dim;
-            uint32_t sl = cur_seq_len, ms = config_.max_seq_len;
+            uint32_t sl = cur_seq_len, ms = config_.max_seq_len, ql = 1;
             [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
             [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
             [enc setBytes:&hd length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&sl length:sizeof(uint32_t) atIndex:6];
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
-            MTLSize grid = MTLSizeMake(1, nh, sl);
+            [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
+            MTLSize grid = MTLSizeMake(nh, ql, sl);
             MTLSize tg = MTLSizeMake(1, 1, 1);
             [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
         }
@@ -743,9 +747,8 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:1];
             uint32_t sl = cur_seq_len;
             [enc setBytes:&sl length:sizeof(uint32_t) atIndex:2];
-            uint32_t threadsPerTG = std::min(cur_seq_len, (uint32_t)256);
             MTLSize tg_count = MTLSizeMake(config_.n_heads, 1, 1);
-            MTLSize tg_size = MTLSizeMake(threadsPerTG, 1, 1);
+            MTLSize tg_size = MTLSizeMake(32, 1, 1);
             [enc dispatchThreadgroups:tg_count threadsPerThreadgroup:tg_size];
         }
 
@@ -755,13 +758,14 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
             [enc setBuffer:scratch2_ offset:attn_out_offset atIndex:2];
             uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads;
-            uint32_t sl = cur_seq_len, hd = config_.head_dim, ms = config_.max_seq_len;
+            uint32_t sl = cur_seq_len, hd = config_.head_dim, ms = config_.max_seq_len, ql = 1;
             [enc setBytes:&nh length:sizeof(uint32_t) atIndex:3];
             [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:4];
             [enc setBytes:&sl length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&hd length:sizeof(uint32_t) atIndex:6];
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
-            MTLSize grid = MTLSizeMake(1, nh, hd);
+            [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
+            MTLSize grid = MTLSizeMake(nh, ql, hd);
             MTLSize tg = MTLSizeMake(1, 1, 1);
             [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
         }

@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+setup.py
+antigravity_engine/__init__.py
+antigravity_engine/license_keygen.py
+antigravity_engine/native_bridge.py
+antigravity_engine.egg-info/PKG-INFO
+antigravity_engine.egg-info/SOURCES.txt
+antigravity_engine.egg-info/dependency_links.txt
+antigravity_engine.egg-info/requires.txt
+antigravity_engine.egg-info/top_level.txt
+antigravity_engine/lib/libantigravity_engine.dylib
+antigravity_engine/shaders/batched_gemm.metallib
+antigravity_engine/shaders/transformer_ops.metallib

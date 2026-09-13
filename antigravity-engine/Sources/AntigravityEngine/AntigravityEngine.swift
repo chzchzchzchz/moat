@@ -82,6 +82,7 @@ public final class AntigravityEngine {
     private var engineHandle: OpaquePointer?
     public let config: EngineConfig
     public private(set) var loadedModelPath: String?
+    public private(set) var tokenizer: AntigravityTokenizer = AntigravityTokenizer()
     private let queue = DispatchQueue(label: "org.antigravity.engine")
 
     public init(config: EngineConfig = .strict4GBFootprint) throws {
@@ -142,6 +143,72 @@ public final class AntigravityEngine {
         }
     }
 
+    // MARK: - Memory Pressure & Adaptive Scaling
+
+    /// Query current physically available memory before iOS triggers Jetsam termination
+    public static var availableMemoryBytes: UInt64 {
+        #if os(iOS)
+        return UInt64(os_proc_available_memory())
+        #elseif os(macOS)
+        return ProcessInfo.processInfo.physicalMemory
+        #else
+        return 4000 * 1024 * 1024
+        #endif
+    }
+
+    /// Compute adaptive active rollout channels based on available RAM
+    public var adaptiveActiveChannels: Int {
+        let available = Self.availableMemoryBytes
+        // If remaining headroom is under 600MB, degrade to 2 channels
+        if available < 600 * 1024 * 1024 {
+            return min(config.parallelChannels, 2)
+        }
+        // If remaining headroom is under 1.2GB, degrade to 4 channels
+        if available < 1200 * 1024 * 1024 {
+            return min(config.parallelChannels, 4)
+        }
+        return config.parallelChannels
+    }
+
+    // MARK: - Offline Licensing
+
+    /// Check if engine has an active, valid license
+    public var isLicensed: Bool {
+        queue.sync {
+            guard let handle = engineHandle else { return false }
+            return AntigravityEngineIsLicensed(handle)
+        }
+    }
+
+    /// Validate offline Ed25519 license key token
+    public func setLicenseKey(_ licenseKey: String) throws {
+        try queue.sync {
+            guard let handle = engineHandle else {
+                throw AntigravityError.executionFailed(reason: "Engine context is deallocated")
+            }
+            let ret = AntigravityEngineSetLicenseKey(handle, licenseKey)
+            guard ret == 0 else {
+                throw AntigravityError.executionFailed(reason: "License key verification failed (code \(ret))")
+            }
+        }
+    }
+
+    /// Enable or disable structural license enforcement on compute calls
+    public func setLicenseRequired(_ required: Bool) {
+        queue.sync {
+            guard let handle = engineHandle else { return }
+            AntigravityEngineSetLicenseRequired(handle, required)
+        }
+    }
+
+    /// Check if structural license enforcement is active
+    public var isLicenseRequired: Bool {
+        queue.sync {
+            guard let handle = engineHandle else { return false }
+            return AntigravityEngineIsLicenseRequired(handle)
+        }
+    }
+
     public func reason(
         promptTokens: [Int32],
         maxTokens: Int = 50,
@@ -188,6 +255,13 @@ public final class AntigravityEngine {
             }
 
             guard ret == 0 else {
+                if ret == -13 {
+                    throw AntigravityError.executionFailed(reason: "Commercial license required, invalid, or expired (-13)")
+                } else if ret == -14 {
+                    throw AntigravityError.executionFailed(reason: "Requested channels exceed licensed entitlement (-14)")
+                } else if ret == -15 {
+                    throw AntigravityError.executionFailed(reason: "Feature entitlement denied by license (-15)")
+                }
                 throw AntigravityError.executionFailed(reason: "AntigravityEngineNativeGenerate failed with code \(ret)")
             }
 
@@ -211,7 +285,8 @@ public final class AntigravityEngine {
             for c in 0..<N {
                 let count = Int(outTokenCounts[c])
                 let tokens = (0..<count).map { outTokens[c * maxNew + $0] }
-                candidateTraces.append("Channel \(c): " + tokens.map { String($0) }.joined(separator: " "))
+                let decoded = self.tokenizer.decode(tokens: tokens)
+                candidateTraces.append(decoded.isEmpty ? "Channel \(c): " + tokens.map { String($0) }.joined(separator: " ") : decoded)
             }
 
             let totalTokens = outTokenCounts.reduce(0) { $0 + Int($1) }
@@ -230,6 +305,28 @@ public final class AntigravityEngine {
                 throughputTokensPerSec: throughput
             )
         }
+    }
+
+    /// High-level text generation: encodes prompt string, runs parallel rollouts and verifiers on Metal GPU,
+    /// and decodes winning trajectory back into human-readable text.
+    public func generateText(
+        prompt: String,
+        maxTokens: Int = 120,
+        temperature: Float = 0.7,
+        topP: Float = 0.9
+    ) async throws -> AntigravityGenerationResult {
+        let promptTokens = tokenizer.encode(text: prompt)
+        return try await reason(
+            promptTokens: promptTokens,
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: topP
+        )
+    }
+
+    /// Load a local HuggingFace tokenizer.json file into the engine
+    public func loadTokenizer(from url: URL) {
+        self.tokenizer = AntigravityTokenizer(tokenizerJSONURL: url)
     }
 
     public func reasonMultimodal(

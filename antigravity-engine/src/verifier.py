@@ -167,29 +167,65 @@ class NeuralPRMVerifier:
             nn.SiLU(),
             nn.Linear(64, 1)
         )
-        self.exp_lut = ExponentialLUT(size=32768, range_max=10.0)
+        # Attempt to load pretrained PRM weights if available
+        if model_dir is None:
+            for candidate in [
+                "/Users/MohssineChazi2/moat/models",
+                os.path.join(os.path.dirname(__file__), "..", "models"),
+                os.path.join(os.path.dirname(__file__), "models")
+            ]:
+                if os.path.exists(os.path.join(candidate, "prm_head.safetensors")):
+                    model_dir = candidate
+                    break
 
-        # Attempt to load pretrained Skywork PRM weights if available
         if model_dir is not None:
             self.load_pretrained(model_dir)
 
     def load_pretrained(self, model_dir: str) -> bool:
-        """Load real PRM reward head weights from pytorch_model.bin or safetensors."""
+        """Load real PRM reward head weights from prm_head.safetensors, pytorch_model.bin, or model.safetensors."""
         import torch
         import torch.nn as nn
         import os
 
-        weights_file = os.path.join(model_dir, "pytorch_model.bin")
-        if not os.path.exists(weights_file):
-            weights_file = os.path.join(model_dir, "model.safetensors")
+        weights_file = None
+        for fname in ["prm_head.safetensors", "pytorch_model.bin", "model.safetensors"]:
+            cand = os.path.join(model_dir, fname)
+            if os.path.exists(cand):
+                weights_file = cand
+                break
 
-        if os.path.exists(weights_file):
+        if weights_file and os.path.exists(weights_file):
             try:
                 if weights_file.endswith(".bin"):
                     sd = torch.load(weights_file, map_location="cpu")
                 else:
                     from safetensors.torch import load_file
                     sd = load_file(weights_file)
+
+                # Check for our trained PRM architecture first
+                if "v_head.fc1.weight" in sd:
+                    fc1_w = sd["v_head.fc1.weight"].float()
+                    fc1_b = sd["v_head.fc1.bias"].float()
+                    fc2_w = sd["v_head.fc2.weight"].float()
+                    fc2_b = sd["v_head.fc2.bias"].float()
+
+                    in_dim = fc1_w.shape[1]
+                    mid_dim = fc1_w.shape[0]
+
+                    self.step_classifier = nn.Sequential(
+                        nn.Linear(in_dim, mid_dim),
+                        nn.SiLU(),
+                        nn.Linear(mid_dim, 1)
+                    )
+                    with torch.no_grad():
+                        self.step_classifier[0].weight.copy_(fc1_w)
+                        self.step_classifier[0].bias.copy_(fc1_b)
+                        self.step_classifier[2].weight.copy_(fc2_w)
+                        self.step_classifier[2].bias.copy_(fc2_b)
+
+                    self.has_real_prm = True
+                    print(f"NeuralPRMVerifier: Loaded REAL trained Antigravity PRM reward head ({in_dim}->{mid_dim}->1) from {weights_file}")
+                    return True
 
                 if "v_head.summary.weight" in sd:
                     w = sd["v_head.summary.weight"].float()  # shape [1, prm_dim] (1536)

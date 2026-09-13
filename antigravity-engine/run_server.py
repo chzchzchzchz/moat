@@ -13,7 +13,7 @@ import os
 import json
 import time
 import argparse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from orchestrator import AntigravityEngine
@@ -145,7 +145,7 @@ def main():
     print(f"Endpoint: POST http://{args.host}:{args.port}/v1/chat/completions")
     print("=" * 70)
 
-    server = HTTPServer((args.host, args.port), OpenAIRequestHandler)
+    server = ThreadingHTTPServer((args.host, args.port), OpenAIRequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

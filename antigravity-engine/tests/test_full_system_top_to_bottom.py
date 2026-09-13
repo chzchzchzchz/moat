@@ -236,16 +236,45 @@ def test_06_pillar_c_model_bus_and_virtual_context():
 
 
 def test_07_end_to_end_orchestrator_flow():
-    """Verify AntigravityEngine initialization and configuration integrity."""
+    """Verify AntigravityEngine full end-to-end multi-channel reasoning pipeline on Metal GPU."""
     from orchestrator import AntigravityEngine
 
-    engine = AntigravityEngine(n_channels=4, vocab_size=1000, hidden_dim=256, model_dir="models/tinyllama")
-    print(f"engine.hidden_dim = {engine.hidden_dim}, engine.n_channels = {engine.n_channels}")
+    engine = AntigravityEngine(n_channels=4, model_dir="models/tinyllama")
+    print(f"engine.hidden_dim = {engine.hidden_dim}, engine.n_channels = {engine.n_channels}, mode = {engine._generation_mode}")
     assert engine.n_channels == 4
-    assert engine.hidden_dim > 0
+    assert engine.hidden_dim == 2048
+    assert engine.vocab_size == 32000
     assert engine.dora_clusterer is not None
     assert engine.genprm_verifier is not None
-    print("✅ Test 7: End-to-end AntigravityEngine orchestrator components verified.")
+    assert engine._generation_mode == "native_metal", "Must execute via native Metal C++ GPU engine"
+
+    # Execute genuine 4-channel parallel Best-of-N rollout query
+    prompt = "The symptoms of clinical depression include"
+    res = engine.run_best_of_n_query(prompt, max_tokens=15, temperature=0.7)
+
+    # 1. Structural rollout checks
+    assert len(res['candidate_traces']) == 4, f"Expected 4 candidate traces, got {len(res['candidate_traces'])}"
+    assert res['candidates_evaluated'] == 4
+    assert 0 <= res['best_index'] < 4
+    assert res['best_score'] > 0.0
+    assert res['native_ttft_ms'] > 0.0, "Native TTFT must be measured"
+    assert res['tokens_generated_total'] >= 40
+
+    # 2. Strict Linguistic & Clinical Meaning Verification
+    best_text = res['best_trace'].lower()
+    print(f"\n[Generated Best Trace]: {res['best_trace']}")
+    print(f"[All Candidate Traces]: {res['candidate_traces']}")
+
+    clinical_keywords = ["sadness", "hopelessness", "loss", "interest", "feelings", "worthlessness"]
+    matches = [w for w in clinical_keywords if w in best_text]
+    assert len(matches) >= 2, f"Expected at least 2 clinical keywords in generated output, found {matches} in: {best_text}"
+
+    # Verify no channel produced degenerate repetition or blank output
+    for i, trace in enumerate(res['candidate_traces']):
+        assert len(trace.strip()) > 10, f"Channel {i} output too short: '{trace}'"
+        assert not trace.startswith("tok_"), f"Channel {i} emitted fallback dummy tokens: '{trace}'"
+
+    print(f"✅ Test 7: End-to-end Metal GPU inference verified with genuine linguistic output: '{res['best_trace']}'")
 
 
 if __name__ == "__main__":

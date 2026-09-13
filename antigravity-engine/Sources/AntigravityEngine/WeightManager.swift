@@ -16,7 +16,7 @@ public enum AntigravityModelType: Hashable, Sendable {
     public var defaultFileName: String {
         switch self {
         case .reasoner1B:
-            return "tinyllama_1.1b_model.safetensors"
+            return "model.safetensors"
         case .verifier1_5B:
             return "skywork_prm_1.5b_model.safetensors"
         case .custom(let name, _):
@@ -40,7 +40,7 @@ public enum AntigravityModelType: Hashable, Sendable {
         case .reasoner1B:
             return 1_100_000_000 // ~1.1 GB
         case .verifier1_5B:
-            return 2_880_000_000 // ~2.88 GB
+            return 16_000_000_000 // 8B model, ~16 GB
         case .custom:
             return 0
         }

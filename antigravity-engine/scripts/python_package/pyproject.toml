@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "antigravity-engine"
+version = "2.5.0"
+description = "High-Performance Edge AI Inference Engine for Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.22.0",
+    "cryptography>=41.0.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+"antigravity_engine" = ["lib/*.dylib", "shaders/*.metallib"]

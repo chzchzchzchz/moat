@@ -8,7 +8,7 @@ class LlamaTokenizer:
         model_dir = os.path.dirname(os.path.abspath(tokenizer_path))
         try:
             from transformers import AutoTokenizer
-            self.auto_tok = AutoTokenizer.from_pretrained(model_dir)
+            self.auto_tok = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
             self.use_auto = True
         except Exception:
             self.tokenizer = Tokenizer.from_file(tokenizer_path)

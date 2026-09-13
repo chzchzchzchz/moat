@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: antigravity-engine
+Version: 2.5.0
+Summary: High-Performance Edge AI Inference Engine for Apple Silicon
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.22.0
+Requires-Dist: cryptography>=41.0.0
+Dynamic: requires-python
+
+# Antigravity Engine Python SDK
+
+High-performance, bare-metal C++/Metal LLM inference engine for Apple Silicon (macOS & iOS).
+
+## Features
+- Full multi-layer Transformer forward pass directly in Apple Silicon Metal GPU
+- Zero-copy shared memory architecture (eliminates PyTorch MPS CPU/GPU copies)
+- Parallel Best-of-N candidate rollouts ($N=8$ channels)
+- Offline Ed25519 cryptographic licensing
+- Air-gapped, zero-cloud egress compliance

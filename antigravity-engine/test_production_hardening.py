@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.insert(0, 'src')
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from orchestrator import AntigravityEngine
 
 print("Testing Orchestrator with Native Engine binding...")

@@ -19,12 +19,9 @@ let package = Package(
         ),
     ],
     targets: [
-        .target(
+        .binaryTarget(
             name: "CAntigravityEngine",
-            publicHeadersPath: "include",
-            cSettings: [
-                .headerSearchPath("include")
-            ]
+            path: "frameworks/AntigravityEngine.xcframework"
         ),
         .target(
             name: "AntigravityEngine",
@@ -32,12 +29,17 @@ let package = Package(
             path: "Sources/AntigravityEngine",
             resources: [
                 .process("Resources")
+            ],
+            linkerSettings: [
+                .linkedFramework("Metal"),
+                .linkedFramework("Foundation"),
+                .linkedLibrary("c++")
             ]
         ),
         .testTarget(
             name: "AntigravityEngineTests",
             dependencies: ["AntigravityEngine"],
-            path: "Tests/AntigravityEngineTests"
+            path: "tests/AntigravityEngineTests"
         ),
     ]
 )

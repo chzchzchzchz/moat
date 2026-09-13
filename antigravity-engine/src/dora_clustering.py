@@ -1,10 +1,11 @@
 """
-Project Antigravity — On-Device Real Semantic Embeddings (DORA Clustering)
+Project Antigravity — On-Device Real Lexical Diversity & Clustering (DORA)
 
 This module implements:
   - DORAClusterer: Dynamic Optimal Resource Allocation Clusterer.
-    Computes real text/token vector embeddings, pairwise cosine similarity matrices S_ij,
-    and dynamic uniqueness weights gamma_i = 1 / sum_j(S_ij) to penalize redundant rollouts.
+    Computes lexical frequency vectors using character/word n-gram CRC32 hashing,
+    pairwise cosine similarity matrices S_ij, and dynamic uniqueness weights
+    gamma_i = 1 / sum_j(S_ij) to penalize redundant rollout channels.
 
 Target Hardware: Apple Silicon GPU / iOS (A17 Pro / A18 Pro / M1-M4)
 """
@@ -16,10 +17,10 @@ from typing import List, Dict, Tuple, Optional
 
 class DORAClusterer:
     """
-    On-Device Real DORA Semantic Clusterer.
+    On-Device DORA Lexical Diversity Clusterer.
 
-    Computes real semantic vector embeddings (subword/character n-gram frequency vectors),
-    cosine similarity matrices, and uniqueness weights across active candidate channels.
+    Computes character/word n-gram CRC32 hash frequency vectors, pairwise cosine
+    similarity matrices, and uniqueness weights across active candidate channels.
     """
 
     def __init__(self, ngram_range: Tuple[int, int] = (2, 4), vector_dim: int = 512):
@@ -29,7 +30,7 @@ class DORAClusterer:
     def compute_embedding(self, text_or_tokens) -> np.ndarray:
         """
         Compute a dense vector embedding v in R^D for a text string or list of token IDs.
-        Uses token n-gram hashing for robust semantic embedding.
+        Uses character/word n-gram CRC32 hashing for lexical diversity representation.
         """
         vec = np.zeros(self.vector_dim, dtype=np.float32)
         import zlib
@@ -109,7 +110,7 @@ class DORAClusterer:
 
     def cluster_candidates(self, candidate_traces: List[str]) -> Dict:
         """
-        Perform complete DORA semantic clustering over candidate traces.
+        Perform complete DORA lexical diversity clustering over candidate traces.
 
         Returns:
             Dict containing:

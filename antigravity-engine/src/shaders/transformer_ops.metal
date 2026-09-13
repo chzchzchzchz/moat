@@ -145,7 +145,7 @@ kernel void gqa_attention_scores_kernel(
 }
 
 // 4. softmax_kernel
-// Computes softmax over attention scores using threadgroup reduction for stability.
+// Computes softmax over attention scores using SIMD-group reductions for exact numerical stability.
 kernel void softmax_kernel(
     device half* scores [[buffer(0)]],
     device half* probs [[buffer(1)]],
@@ -160,41 +160,34 @@ kernel void softmax_kernel(
     device half* scores_bh = scores + batch_head_idx * seq_len;
     device half* probs_bh = probs + batch_head_idx * seq_len;
     
-    threadgroup float max_shared[1024];
-    threadgroup float sum_shared[1024];
+    threadgroup float max_shared[32];
+    threadgroup float sum_shared[32];
     
-    float local_max = -1e9;
+    float local_max = -1e9f;
     for (uint i = tid; i < seq_len; i += threads_per_threadgroup) {
         local_max = max(local_max, (float)scores_bh[i]);
     }
-    max_shared[tid] = local_max;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    for (uint s = threads_per_threadgroup / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            max_shared[tid] = max(max_shared[tid], max_shared[tid + s]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Exact SIMD-group hardware reduction
+    local_max = simd_max(local_max);
+    if (tid == 0) {
+        max_shared[0] = local_max;
     }
-    
-    float max_val = max_shared[0];
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    float max_val = max_shared[0];
     
-    float local_sum = 0.0;
+    float local_sum = 0.0f;
     for (uint i = tid; i < seq_len; i += threads_per_threadgroup) {
         float val = exp((float)scores_bh[i] - max_val);
         local_sum += val;
     }
-    sum_shared[tid] = local_sum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
     
-    for (uint s = threads_per_threadgroup / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sum_shared[tid] += sum_shared[tid + s];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Exact SIMD-group hardware reduction
+    local_sum = simd_sum(local_sum);
+    if (tid == 0) {
+        sum_shared[0] = max(local_sum, 1e-6f);
     }
-    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     float sum_val = sum_shared[0];
     
     for (uint i = tid; i < seq_len; i += threads_per_threadgroup) {

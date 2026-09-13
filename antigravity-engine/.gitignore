@@ -1,0 +1,43 @@
+# Build artifacts
+.build/
+build/
+*.o
+*.air
+__pycache__/
+.pytest_cache/
+.clang-module-cache/
+.venv/
+
+# Compiled binaries (built from source)
+metal_runner
+run_benchmarks
+test_metal_kernels
+test_metal_kernels_exe
+test_metal_kernels_test
+test_parallel_prefill
+test_vulkan
+transformer_engine.o
+transformer_ops.air
+
+# Model weights (too large for git, download separately)
+models/*.safetensors
+models/*.gguf
+models/qwen/
+models/tinyllama/
+models/qwen3.5/
+models/skywork-prm-1.5b/
+
+# IDE & OS
+.DS_Store
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+
+# Distribution (built artifacts)
+dist/
+
+# iOS training checkpoints
+ios_training_checkpoints/
+
+# Scratch/temp
+scratch/

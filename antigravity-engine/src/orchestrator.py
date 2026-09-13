@@ -120,8 +120,8 @@ class AntigravityEngine:
         self.hidden_dim = hidden_dim
 
         # Paths - resolve robustly against workspace root
-        abs_qwen = "/Users/MohssineChazi2/moat/models/qwen"
-        abs_tiny = "/Users/MohssineChazi2/moat/models/tinyllama"
+        abs_qwen = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'qwen')
+        abs_tiny = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'tinyllama')
         if model_dir is not None and os.path.exists(os.path.abspath(model_dir)):
             model_base = os.path.abspath(model_dir)
         elif os.path.exists(abs_qwen):
@@ -146,29 +146,27 @@ class AntigravityEngine:
         ]
 
         # ======================================================================
-        # GENERATION PATH 0: HuggingFace PyTorch MPS for Qwen
-        # ======================================================================
-        self.hf_model = None
-        self.hf_tokenizer = None
-        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-        if os.path.exists(model_base) and "qwen" in model_base.lower():
-            try:
-                from transformers import AutoTokenizer, AutoModelForCausalLM
-                self.hf_tokenizer = AutoTokenizer.from_pretrained(model_base)
-                self.hf_model = AutoModelForCausalLM.from_pretrained(model_base, dtype=torch.float16).to(self.device)
-                self.vocab_size = getattr(self.hf_tokenizer, "vocab_size", 151936)
-                self.hidden_dim = 1536
-                print(f"[AntigravityEngine] ✅ Loaded HuggingFace Qwen3.5 model on PyTorch {self.device}")
-            except Exception as e:
-                print(f"[AntigravityEngine] Notice: HF Qwen load failed ({e})")
-
-        # ======================================================================
-        # GENERATION PATH 1: Native C++ Metal Engine (ctypes bridge)
+        # Initial State & Component Defaults
         # ======================================================================
         self.native_engine = None
         self.tokenizer = None
+        self.hf_model = None
+        self.hf_tokenizer = None
+        self.real_model = None
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-        if self.hf_model is None and HAS_NATIVE_BRIDGE and os.path.exists(model_path):
+        # Load tokenizer (needed for both native and MPS paths)
+        if os.path.exists(tokenizer_path):
+            try:
+                from tokenizer import LlamaTokenizer
+                self.tokenizer = LlamaTokenizer(tokenizer_path)
+            except Exception:
+                self.tokenizer = None
+
+        # ======================================================================
+        # GENERATION PATH 0 (PRIMARY): Native C++ Metal Engine (ctypes bridge)
+        # ======================================================================
+        if HAS_NATIVE_BRIDGE and os.path.exists(model_path):
             for dylib_path in dylib_candidates:
                 if os.path.exists(dylib_path):
                     try:
@@ -192,19 +190,24 @@ class AntigravityEngine:
                         print(f"[AntigravityEngine] Notice: Native bridge failed ({e}), trying next...")
                         self.native_engine = None
 
-        # Load tokenizer (needed for both native and MPS paths)
-        if os.path.exists(tokenizer_path):
+        # ======================================================================
+        # GENERATION PATH 1 (FALLBACK): HuggingFace PyTorch MPS for Qwen
+        # ======================================================================
+        if self.native_engine is None and os.path.exists(model_base) and "qwen" in model_base.lower():
             try:
-                from tokenizer import LlamaTokenizer
-                self.tokenizer = LlamaTokenizer(tokenizer_path)
-            except Exception:
-                self.tokenizer = None
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+                self.hf_tokenizer = AutoTokenizer.from_pretrained(model_base, local_files_only=True)
+                self.hf_model = AutoModelForCausalLM.from_pretrained(model_base, local_files_only=True, dtype=torch.float16).to(self.device)
+                self.vocab_size = getattr(self.hf_tokenizer, "vocab_size", 151936)
+                self.hidden_dim = 1536
+                print(f"[AntigravityEngine] ✅ Loaded HuggingFace Qwen3.5 model on PyTorch {self.device}")
+            except Exception as e:
+                print(f"[AntigravityEngine] Notice: HF Qwen load failed ({e})")
 
         # ======================================================================
-        # GENERATION PATH 2: PyTorch MPS Fallback (only if native unavailable)
+        # GENERATION PATH 2 (FALLBACK): PyTorch MPS Fallback for TinyLlama
         # ======================================================================
-        self.real_model = None
-        if self.hf_model is None and self.native_engine is None and "tinyllama" in model_base.lower():
+        if self.native_engine is None and self.hf_model is None and "tinyllama" in model_base.lower():
             if HAS_REAL_MODEL and os.path.exists(model_path) and self.tokenizer is not None:
                 try:
                     device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -215,6 +218,16 @@ class AntigravityEngine:
                 except Exception as e:
                     print(f"[AntigravityEngine] Notice: MPS fallback failed ({e})")
                     self.real_model = None
+
+        # ======================================================================
+        # PATH 3 missing attributes
+        # ======================================================================
+        import logging
+        logging.warning("PATH 3 uses random weights.")
+        rng = np.random.RandomState(42)
+        self.embedding_table = (rng.randn(self.vocab_size, self.hidden_dim) * 0.02).astype(np.float16)
+        self.lm_head_weight = (rng.randn(self.hidden_dim, self.vocab_size) * 0.02).astype(np.float16)
+        self.transformer_layer = RealTransformerLayer(hidden_dim=self.hidden_dim, intermediate_dim=self.hidden_dim * 2)
 
         # ======================================================================
         # Verifier & Support Components
@@ -298,35 +311,10 @@ class AntigravityEngine:
         self.coordinator.reset()
 
         # ============================================================
-        # PATH 0: HuggingFace PyTorch MPS for Qwen
-        # ============================================================
-        if self.hf_model is not None and self.hf_tokenizer is not None:
-            inputs = self.hf_tokenizer(prompt, return_tensors="pt").to(self.device)
-            prompt_len = inputs.input_ids.shape[1]
-            candidate_traces = []
-            logprobs_list = []
-
-            for c in range(self.n_channels):
-                with torch.no_grad():
-                    outputs = self.hf_model.generate(
-                        **inputs,
-                        max_new_tokens=max_tokens,
-                        do_sample=(temperature > 0.0),
-                        temperature=max(temperature, 0.01),
-                        top_p=top_p
-                    )
-                gen_seq = outputs[0][prompt_len:]
-                text = self.hf_tokenizer.decode(gen_seq, skip_special_tokens=False)
-                candidate_traces.append(text)
-                logprobs_list.append(-1.0)
-
-            cum_logprobs = np.array(logprobs_list, dtype=np.float32)
-
-        # ============================================================
-        # PATH 1: Native C++ Metal Engine (ctypes bridge)
+        # PATH 0 (PRIMARY): Native C++ Metal Engine (ctypes bridge)
         # Zero Python overhead — single call drives full decode loop
         # ============================================================
-        elif self.native_engine is not None and self.native_engine.is_ready and self.tokenizer is not None:
+        if self.native_engine is not None and self.native_engine.is_ready and self.tokenizer is not None:
             prompt_token_ids = self.tokenizer.encode(prompt)
 
             channel_tokens, channel_logprobs_list, native_ttft_ms, native_total_ms = \
@@ -341,7 +329,45 @@ class AntigravityEngine:
             cum_logprobs = np.array(channel_logprobs_list, dtype=np.float32)
 
         # ============================================================
-        # PATH 2: PyTorch MPS Fallback
+        # PATH 1 (FALLBACK): HuggingFace PyTorch MPS for Qwen
+        # ============================================================
+        elif self.hf_model is not None and self.hf_tokenizer is not None:
+            inputs = self.hf_tokenizer(prompt, return_tensors="pt").to(self.device)
+            prompt_len = inputs.input_ids.shape[1]
+            candidate_traces = []
+            logprobs_list = []
+
+            for c in range(self.n_channels):
+                with torch.no_grad():
+                    outputs = self.hf_model.generate(
+                        **inputs,
+                        max_new_tokens=max_tokens,
+                        do_sample=(temperature > 0.0),
+                        temperature=max(temperature, 0.01),
+                        top_p=top_p,
+                        return_dict_in_generate=True,
+                        output_scores=True
+                    )
+                gen_seq = outputs.sequences[0, prompt_len:]
+                gen_ids = gen_seq.tolist()
+                channel_tokens.append(gen_ids)
+                text = self.hf_tokenizer.decode(gen_seq, skip_special_tokens=False)
+                candidate_traces.append(text)
+
+                # Compute true cumulative log-probability across generated tokens
+                cum_lp = 0.0
+                if hasattr(outputs, "scores") and outputs.scores:
+                    for step_idx, step_logits in enumerate(outputs.scores):
+                        if step_idx < len(gen_ids):
+                            tok_id = gen_ids[step_idx]
+                            step_logprobs = torch.log_softmax(step_logits[0], dim=-1)
+                            cum_lp += float(step_logprobs[tok_id].item())
+                logprobs_list.append(cum_lp)
+
+            cum_logprobs = np.array(logprobs_list, dtype=np.float32)
+
+        # ============================================================
+        # PATH 2 (FALLBACK): PyTorch MPS Fallback
         # ============================================================
         elif self.real_model is not None and self.tokenizer is not None:
             prompt_token_ids = self.tokenizer.encode(prompt)
@@ -361,21 +387,7 @@ class AntigravityEngine:
         # PATH 3: Pipeline Validator (no real model)
         # ============================================================
         else:
-            prompt_tokens = [hash(w) % (self.vocab_size - 10) + 5 for w in prompt.split()]
-            if not prompt_tokens:
-                prompt_tokens = [1, 10, 100]
-
-            weights = self.lm_head_weight
-
-            channel_tokens = self.coordinator.generate(
-                prompt_tokens=prompt_tokens,
-                weights=weights,
-                max_steps=max_tokens,
-                temperature=temperature
-            )
-
-            cum_logprobs = np.array(self.coordinator.channel_logprobs, dtype=np.float32)
-            candidate_traces = [self.decode_tokens(tokens) for tokens in channel_tokens]
+            raise RuntimeError('No model weights found. Cannot generate. Please download model weights first.')
 
         # Step 2: Memory swap → Verifier
         self.model_swapper.swap_to_verifier()
@@ -414,6 +426,7 @@ class AntigravityEngine:
             # Check if GenPRM generated a specific code feedback prompt
             feedback_prompt = genprm_reports[best_index].get('feedback_prompt') if best_index < len(genprm_reports) else None
             
+            # NOTE: Reflection for native_metal and hf_model only appends feedback text; no second autoregressive pass is executed.
             if self.hf_model is None and self._generation_mode != "native_metal":
                 self.model_swapper.swap_to_reasoner()
                 self.coordinator.reset()

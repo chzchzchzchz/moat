@@ -45,7 +45,7 @@ class NativeMetalEngine:
 
     def __init__(
         self,
-        dylib_path: str,
+        dylib_path: Optional[str] = None,
         model_path: Optional[str] = None,
         n_channels: int = 8,
         vocab_size: int = 32000,
@@ -56,15 +56,39 @@ class NativeMetalEngine:
         Load the native engine dylib and optionally load model weights.
 
         Args:
-            dylib_path:  Absolute path to libantigravity_engine.dylib.
+            dylib_path:  Absolute path to libantigravity_engine.dylib (optional).
             model_path:  Path to Safetensors model weights (loaded immediately if provided).
             n_channels:  Number of parallel reasoning channels (N).
             vocab_size:  Model vocabulary size.
             hidden_dim:  Model hidden dimension.
             max_seq_len: Maximum sequence length for KV cache.
         """
-        if not os.path.exists(dylib_path):
-            raise FileNotFoundError(f"Native engine dylib not found: {dylib_path}")
+        if not dylib_path:
+            paths_to_check = [
+                os.path.join(os.path.dirname(__file__), "lib", "libantigravity_engine.dylib"),
+                os.path.join(os.path.dirname(__file__), "libantigravity_engine.dylib"),
+                os.path.join(os.path.dirname(__file__), "..", "lib", "libantigravity_engine.dylib"),
+                os.path.join(os.path.dirname(__file__), "..", "libantigravity_engine.dylib"),
+            ]
+            try:
+                import importlib.resources as importlib_resources
+                try:
+                    p = importlib_resources.files("antigravity_engine").joinpath("lib", "libantigravity_engine.dylib")
+                    if p.is_file():
+                        paths_to_check.insert(0, str(p))
+                except Exception:
+                    pass
+                with importlib_resources.path("antigravity_engine", "libantigravity_engine.dylib") as p:
+                    paths_to_check.append(str(p))
+            except Exception:
+                pass
+            for p in paths_to_check:
+                if os.path.exists(p):
+                    dylib_path = p
+                    break
+
+        if not dylib_path or not os.path.exists(dylib_path):
+            raise FileNotFoundError(f"Native engine dylib not found (checked: {paths_to_check if 'paths_to_check' in locals() else dylib_path})")
 
         self.lib = ctypes.CDLL(dylib_path)
         self.n_channels = n_channels
@@ -162,6 +186,55 @@ class NativeMetalEngine:
         lib.AntigravityEngineSanitizeBuffers.argtypes = [ctypes.c_void_p]
         lib.AntigravityEngineSanitizeBuffers.restype = None
 
+        # AntigravityEngineSetLicenseKey
+        if hasattr(lib, "AntigravityEngineSetLicenseKey"):
+            lib.AntigravityEngineSetLicenseKey.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            lib.AntigravityEngineSetLicenseKey.restype = ctypes.c_int32
+
+        # AntigravityEngineIsLicensed
+        if hasattr(lib, "AntigravityEngineIsLicensed"):
+            lib.AntigravityEngineIsLicensed.argtypes = [ctypes.c_void_p]
+            lib.AntigravityEngineIsLicensed.restype = ctypes.c_bool
+
+        # AntigravityEngineSetLicenseRequired
+        if hasattr(lib, "AntigravityEngineSetLicenseRequired"):
+            lib.AntigravityEngineSetLicenseRequired.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+            lib.AntigravityEngineSetLicenseRequired.restype = None
+
+        # AntigravityEngineIsLicenseRequired
+        if hasattr(lib, "AntigravityEngineIsLicenseRequired"):
+            lib.AntigravityEngineIsLicenseRequired.argtypes = [ctypes.c_void_p]
+            lib.AntigravityEngineIsLicenseRequired.restype = ctypes.c_bool
+
+        # AntigravityEngineCreateFromGGUF
+        if hasattr(lib, "AntigravityEngineCreateFromGGUF"):
+            lib.AntigravityEngineCreateFromGGUF.argtypes = [ctypes.c_char_p]
+            lib.AntigravityEngineCreateFromGGUF.restype = ctypes.c_void_p
+
+    def set_license_key(self, license_key: str) -> bool:
+        """Validate offline Ed25519 license key on this engine instance."""
+        if not self._ctx or not hasattr(self.lib, "AntigravityEngineSetLicenseKey"):
+            return False
+        ret = self.lib.AntigravityEngineSetLicenseKey(self._ctx, license_key.encode("utf-8"))
+        return ret == 0
+
+    def is_licensed(self) -> bool:
+        """Check whether engine has an active, valid offline license."""
+        if not self._ctx or not hasattr(self.lib, "AntigravityEngineIsLicensed"):
+            return False
+        return bool(self.lib.AntigravityEngineIsLicensed(self._ctx))
+
+    def set_license_required(self, required: bool = True):
+        """Enable or disable hard structural license verification on compute calls."""
+        if self._ctx and hasattr(self.lib, "AntigravityEngineSetLicenseRequired"):
+            self.lib.AntigravityEngineSetLicenseRequired(self._ctx, ctypes.c_bool(required))
+
+    def is_license_required(self) -> bool:
+        """Check whether license verification is enforced on this engine context."""
+        if not self._ctx or not hasattr(self.lib, "AntigravityEngineIsLicenseRequired"):
+            return False
+        return bool(self.lib.AntigravityEngineIsLicenseRequired(self._ctx))
+
     def load_weights(self, model_path: str) -> bool:
         """
         Load model weights from Safetensors into Metal GPU buffers.
@@ -240,6 +313,12 @@ class NativeMetalEngine:
         )
 
         if ret != 0:
+            if ret == -13:
+                raise PermissionError("Commercial engine license required, invalid, or expired (-13)")
+            elif ret == -14:
+                raise PermissionError("Requested channel count exceeds licensed entitlement (-14)")
+            elif ret == -15:
+                raise PermissionError("Feature entitlement denied by license (-15)")
             error_msg = "weights not loaded" if ret == -1 else f"error code {ret}"
             raise RuntimeError(f"AntigravityEngineNativeGenerate failed: {error_msg}")
 
@@ -351,7 +430,10 @@ class NativeMetalEngine:
             print("[NativeMetalEngine] Destroyed")
 
     def __del__(self):
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
     @property
     def is_ready(self) -> bool:

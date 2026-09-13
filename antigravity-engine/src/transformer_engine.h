@@ -21,6 +21,15 @@ struct TransformerConfig {
     float rope_theta = 10000.0f;
     int32_t n_channels = 8;  // parallel reasoning channels
     int32_t q_len_max = 64;  // Max draft sequence length for parallel prefill
+    
+    /// Create config by parsing GGUF file metadata
+    static TransformerConfig fromGGUF(const std::string& gguf_path);
+    
+    /// Create config by parsing Safetensors JSON metadata header
+    static TransformerConfig fromSafetensors(const std::string& safetensors_path);
+    
+    /// Print configuration summary
+    void print() const;
 };
 
 class MetalTransformerEngine : public ITransformerEngine {
@@ -77,9 +86,6 @@ public:
     void sanitizeBuffers() override;
     void print_l2_norm(id<MTLBuffer> buf, uint32_t elements, const std::string& name);
     void rollbackKVCache(uint32_t step); // Allows reverting KV cache for speculative rollback
-
-    // Public state — accessed by C API bridge
-    bool weightsLoaded_;
 
 private:
     // Metal device and pipelines

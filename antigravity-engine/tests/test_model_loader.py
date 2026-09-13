@@ -32,7 +32,7 @@ class TestWeightReaders(unittest.TestCase):
         if not os.path.exists(model_path):
             self.skipTest("models/tinyllama/model.safetensors does not exist on disk")
 
-        reader = GGUFWeightReader(model_path)
+        reader = SafetensorsWeightReader(model_path)
 
         names = reader.list_tensor_names()
         self.assertIn("model.embed_tokens.weight", names)
@@ -144,6 +144,27 @@ class TestMemoryBudgetValidator(unittest.TestCase):
             MemoryBudgetValidator.validate_memory_budget(
                 num_params=6_000_000_000  # 6B params exceeds 2.5 GB in INT4
             )
+
+    def test_gguf_q4_k_and_q6_k_superblock_dequantization(self):
+        """Verify proper GGUF Q4_K_M and Q6_K superblock dequantization algorithms."""
+        from model_loader import dequantize_q4_k_superblock, dequantize_q6_k_superblock
+        
+        # Test Q4_K superblock: 256 weights in 144 bytes
+        # d=1.0 (0x3c00), dmin=0.5 (0x3800), scales=[1]*12, qs=[0x12]*128
+        raw_q4_k = bytes([0x00, 0x3c, 0x00, 0x38]) + bytes([1]*12) + bytes([0x12]*128)
+        weights_q4 = dequantize_q4_k_superblock(raw_q4_k, 256, (16, 16))
+        self.assertEqual(weights_q4.shape, (16, 16))
+        self.assertEqual(weights_q4.dtype, np.float16)
+        self.assertFalse(np.isnan(weights_q4).any())
+        self.assertFalse(np.isinf(weights_q4).any())
+
+        # Test Q6_K superblock: 256 weights in 210 bytes
+        raw_q6_k = bytes([0x01]*128) + bytes([0x01]*64) + bytes([1]*16) + bytes([0x00, 0x3c])
+        weights_q6 = dequantize_q6_k_superblock(raw_q6_k, 256, (16, 16))
+        self.assertEqual(weights_q6.shape, (16, 16))
+        self.assertEqual(weights_q6.dtype, np.float16)
+        self.assertFalse(np.isnan(weights_q6).any())
+        self.assertFalse(np.isinf(weights_q6).any())
 
 
 if __name__ == '__main__':

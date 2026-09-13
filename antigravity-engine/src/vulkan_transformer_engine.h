@@ -1,10 +1,11 @@
-#include <vulkan/vulkan.h>
-
 #pragma once
+#if defined(USE_VULKAN) && __has_include(<vulkan/vulkan.h>)
+#include <vulkan/vulkan.h>
+#endif
 #include "transformer_engine_interface.h"
 #include "transformer_engine.h" // for TransformerConfig
 
-// Stub for Vulkan backend to satisfy the abstraction
+// Cross-Platform Native Vulkan Engine implementation
 class VulkanTransformerEngine : public ITransformerEngine {
 public:
     VulkanTransformerEngine(const TransformerConfig& config);
