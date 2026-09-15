@@ -152,7 +152,9 @@ kernel void softmax_kernel(
     constant uint& seq_len [[buffer(2)]],
     uint thread_position_in_threadgroup [[thread_position_in_threadgroup]],
     uint threadgroup_position_in_grid [[threadgroup_position_in_grid]],
-    uint threads_per_threadgroup [[threads_per_threadgroup]]
+    uint threads_per_threadgroup [[threads_per_threadgroup]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]]
 ) {
     uint batch_head_idx = threadgroup_position_in_grid;
     uint tid = thread_position_in_threadgroup;
@@ -168,10 +170,21 @@ kernel void softmax_kernel(
         local_max = max(local_max, (float)scores_bh[i]);
     }
     
-    // Exact SIMD-group hardware reduction
+    // 1. Exact SIMD-group hardware reduction
     local_max = simd_max(local_max);
-    if (tid == 0) {
-        max_shared[0] = local_max;
+    if (simd_lane_id == 0) {
+        max_shared[simd_group_id] = local_max;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // 2. Cross-SIMD-group reduction across SIMD groups
+    uint num_simd_groups = (threads_per_threadgroup + 31) / 32;
+    if (simd_group_id == 0) {
+        float gmax = (simd_lane_id < num_simd_groups) ? max_shared[simd_lane_id] : -1e9f;
+        gmax = simd_max(gmax);
+        if (simd_lane_id == 0) {
+            max_shared[0] = gmax;
+        }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float max_val = max_shared[0];
@@ -182,10 +195,20 @@ kernel void softmax_kernel(
         local_sum += val;
     }
     
-    // Exact SIMD-group hardware reduction
+    // 3. Exact SIMD-group hardware reduction for sum
     local_sum = simd_sum(local_sum);
-    if (tid == 0) {
-        sum_shared[0] = max(local_sum, 1e-6f);
+    if (simd_lane_id == 0) {
+        sum_shared[simd_group_id] = local_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // 4. Cross-SIMD-group reduction for sum
+    if (simd_group_id == 0) {
+        float gsum = (simd_lane_id < num_simd_groups) ? sum_shared[simd_lane_id] : 0.0f;
+        gsum = simd_sum(gsum);
+        if (simd_lane_id == 0) {
+            sum_shared[0] = max(gsum, 1e-6f);
+        }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float sum_val = sum_shared[0];

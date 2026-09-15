@@ -403,7 +403,8 @@ public final class AntigravityEngine {
             for c in 0..<N {
                 let count = Int(outTokenCounts[c])
                 let tokens = (0..<count).map { outTokens[c * maxNew + $0] }
-                candidateTraces.append("Channel \(c): " + tokens.map { String($0) }.joined(separator: " "))
+                let decoded = self.tokenizer.decode(tokens: tokens)
+                candidateTraces.append(decoded.isEmpty ? "Channel \(c): " + tokens.map { String($0) }.joined(separator: " ") : decoded)
             }
 
             let totalTokens = outTokenCounts.reduce(0) { $0 + Int($1) }

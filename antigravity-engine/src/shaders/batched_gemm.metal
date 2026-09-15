@@ -78,7 +78,8 @@ kernel void batched_gemm_simdgroup(
     constant uint&           N_batch       [[buffer(3)]],
     constant uint&           K_dim         [[buffer(4)]],
     constant uint&           M_dim         [[buffer(5)]],
-    uint2 group_id [[threadgroup_position_in_grid]]
+    uint2 group_id [[threadgroup_position_in_grid]],
+    uint thread_idx [[thread_index_in_simdgroup]]
 ) {
     uint row_start = group_id.y * 8;
     uint col_start = group_id.x * 8;
@@ -104,8 +105,25 @@ kernel void batched_gemm_simdgroup(
         simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix);
     }
 
-    // Store result tile back to global memory C [N x M]
-    simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
+    // Store result tile back to global memory C [N x M] with bounds checking
+    if (row_start + 8 <= N_batch && col_start + 8 <= M_dim) {
+        simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
+    } else {
+        threadgroup half edge_tile[64];
+        simdgroup_store(acc_matrix, edge_tile, 8);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (thread_idx == 0) {
+            for (uint r = 0; r < 8; r++) {
+                if (row_start + r < N_batch) {
+                    for (uint c = 0; c < 8; c++) {
+                        if (col_start + c < M_dim) {
+                            output[(row_start + r) * M_dim + (col_start + c)] = edge_tile[r * 8 + c];
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================

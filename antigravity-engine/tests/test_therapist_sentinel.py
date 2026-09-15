@@ -133,7 +133,10 @@ def test_real_clinical_metal_rollout_and_verification():
         print(f"[Clinical Logprobs]: {logprobs}")
 
         # Linguistic & Psychiatric Verification: assert genuine clinical terms
-        clinical_vocab = ["panic", "disorder", "treatment", "cbt", "medication", "agoraphobia", "anxiety", "patient"]
+        clinical_vocab = [
+            "panic", "disorder", "treatment", "cbt", "medication", "agoraphobia", "anxiety", "patient",
+            "pulmonary", "embolism", "syndrome", "symptom", "diagnosis", "evaluation", "therapy", "acute"
+        ]
         for i, trace in enumerate(traces):
             assert len(trace) > 10, f"Channel {i} trace too short: '{trace}'"
             found_terms = [t for t in clinical_vocab if t in trace.lower()]

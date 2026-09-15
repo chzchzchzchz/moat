@@ -513,8 +513,8 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     finalNorm_ = loadTensor("norm.weight", false);
     lmHead_ = loadTensor("lm_head.weight", true);
     if (!lmHead_ && embedWeights_) {
-        std::cout << "[loadWeights] lm_head.weight tied to embed_tokens.weight" << std::endl;
-        lmHead_ = embedWeights_;
+        std::cout << "[loadWeights] lm_head.weight tied to embed_tokens.weight (transposing)" << std::endl;
+        lmHead_ = loadTensor("embed_tokens.weight", true);
     }
     
     if (!embedWeights_ || !finalNorm_ || !lmHead_) {
@@ -632,7 +632,8 @@ void MetalTransformerEngine::dispatchRMSNorm(
 void MetalTransformerEngine::dispatchRoPE(
     id<MTLComputeCommandEncoder> enc,
     id<MTLBuffer> q, id<MTLBuffer> k,
-    uint32_t start_pos, uint32_t batch
+    uint32_t start_pos, uint32_t batch,
+    uint32_t seq_len
 ) {
     if (!ropePipeline_) return;
     
@@ -642,7 +643,6 @@ void MetalTransformerEngine::dispatchRoPE(
     [enc setBuffer:ropeFreqsCos_ offset:0 atIndex:2];
     [enc setBuffer:ropeFreqsSin_ offset:0 atIndex:3];
     
-    uint32_t seq_len = 1;  // decode mode: 1 token at a time
     uint32_t n_heads = config_.n_heads;
     uint32_t n_kv_heads = config_.n_kv_heads;
     uint32_t head_dim = config_.head_dim;
@@ -673,7 +673,8 @@ void MetalTransformerEngine::forwardLayer(
     id<MTLBuffer> input,    // [batch_size, hidden_dim]
     id<MTLBuffer> output,   // [batch_size, hidden_dim]
     uint32_t batch_size,
-    uint32_t seq_pos        // current position in the sequence
+    uint32_t seq_pos,       // current position in the sequence
+    uint32_t channel_offset
 ) {
     const auto& lw = layerWeights_[layer_idx];
     uint32_t H = config_.hidden_dim;         // 2048
@@ -689,11 +690,13 @@ void MetalTransformerEngine::forwardLayer(
     dispatchGEMM(enc, scratch1_, lw.k_proj, scratch3_, M, H, KV_DIM);   // K [M, KV_DIM] -> scratch3_
     dispatchGEMM(enc, scratch1_, lw.v_proj, scratchV_, M, H, KV_DIM);   // V [M, KV_DIM] -> scratchV_
 
-    // 3. Apply RoPE to Q and K for all M channels
-    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, M);
+    // 3. Apply RoPE to Q and K for all M channels (seq_len = 1 in single-token decode)
+    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, M, 1);
 
     // 4. Per-channel KV cache append and Attention calculation
     for (uint32_t c = 0; c < M; c++) {
+        uint32_t ch = channel_offset + c;
+        if (ch >= config_.n_channels) ch = ch % config_.n_channels;
         size_t k_offset = c * KV_DIM * sizeof(_Float16);
         size_t v_offset = c * KV_DIM * sizeof(_Float16);
         size_t q_offset = c * H * sizeof(_Float16);
@@ -704,7 +707,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setComputePipelineState:kvAppendPipeline_];
             // Append K
             [enc setBuffer:scratch3_ offset:k_offset atIndex:0];
-            [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
+            [enc setBuffer:kvCaches_[layer_idx][ch].k_cache offset:0 atIndex:1];
             uint32_t nkv = config_.n_kv_heads, maxseq = config_.max_seq_len, hdim = config_.head_dim, wpos = seq_pos;
             uint32_t ql = 1;
             [enc setBytes:&nkv length:sizeof(uint32_t) atIndex:2];
@@ -718,7 +721,7 @@ void MetalTransformerEngine::forwardLayer(
 
             // Append V
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
-            [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
+            [enc setBuffer:kvCaches_[layer_idx][ch].v_cache offset:0 atIndex:1];
             [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
         }
 
@@ -726,7 +729,7 @@ void MetalTransformerEngine::forwardLayer(
         if (attnScoresPipeline_) {
             [enc setComputePipelineState:attnScoresPipeline_];
             [enc setBuffer:scratch2_ offset:q_offset atIndex:0];
-            [enc setBuffer:kvCaches_[layer_idx][c].k_cache offset:0 atIndex:1];
+            [enc setBuffer:kvCaches_[layer_idx][ch].k_cache offset:0 atIndex:1];
             [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:2];
             uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads, hd = config_.head_dim;
             uint32_t sl = cur_seq_len, ms = config_.max_seq_len, ql = 1;
@@ -755,7 +758,7 @@ void MetalTransformerEngine::forwardLayer(
         if (attnValuePipeline_) {
             [enc setComputePipelineState:attnValuePipeline_];
             [enc setBuffer:scratchAttn_ offset:attn_score_offset atIndex:0];
-            [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
+            [enc setBuffer:kvCaches_[layer_idx][ch].v_cache offset:0 atIndex:1];
             [enc setBuffer:scratch2_ offset:attn_out_offset atIndex:2];
             uint32_t nh = config_.n_heads, nkv = config_.n_kv_heads;
             uint32_t sl = cur_seq_len, hd = config_.head_dim, ms = config_.max_seq_len, ql = 1;
@@ -848,7 +851,7 @@ void MetalTransformerEngine::forwardBatched(
     dispatchGEMM(enc, scratch1_, lw.v_proj, scratchV_, M, H, KV_DIM);
 
     // RoPE takes q_len as its sequence length dimension
-    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, M);
+    dispatchRoPE(enc, scratch2_, scratch3_, seq_pos, batch_size, q_len);
 
     for (uint32_t c = 0; c < batch_size; c++) {
         size_t k_offset = c * q_len * KV_DIM * sizeof(_Float16);
@@ -1267,9 +1270,10 @@ GenerationResult MetalTransformerEngine::generate(
     const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
     const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
     
+    std::random_device rd;
     std::vector<std::mt19937> channel_rngs(C);
     for (uint32_t c = 0; c < C; c++) {
-        channel_rngs[c].seed(1337 + c * 10007);
+        channel_rngs[c].seed(rd() + c * 10007);
     }
     
     // Track active channels (not yet hit EOS)
@@ -1287,71 +1291,80 @@ GenerationResult MetalTransformerEngine::generate(
     
     // ---- Prefill: Process prompt tokens 0..prompt_len-2 into KV cache ----
     for (int t = 0; t < prompt_len - 1; t++) {
-        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-        
-        // Embedding lookup for prompt token t for all C channels
-        if (embedPipeline_) {
-            [enc setComputePipelineState:embedPipeline_];
-            uint32_t tok = (uint32_t)prompt_tokens[t];
-            id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-            for (uint32_t c = 0; c < C; c++) {
-                [enc setBuffer:tokBuf offset:0 atIndex:0];
-                [enc setBuffer:embedWeights_ offset:0 atIndex:1];
-                [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
-                uint32_t hdim = H;
-                [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
-                MTLSize grid = MTLSizeMake(1, H, 1);
-                MTLSize tg = MTLSizeMake(1, 1, 1);
-                [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            
+            // Embedding lookup for prompt token t for all C channels
+            if (embedPipeline_) {
+                [enc setComputePipelineState:embedPipeline_];
+                uint32_t tok = (uint32_t)prompt_tokens[t];
+                if (tok >= config_.vocab_size) tok = 0;
+                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+                for (uint32_t c = 0; c < C; c++) {
+                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+                    [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
+                    uint32_t hdim = H;
+                    [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+                    MTLSize grid = MTLSizeMake(1, H, 1);
+                    MTLSize tg = MTLSizeMake(1, 1, 1);
+                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                }
             }
+            
+            // Forward through all layers with batch_size = C
+            for (int l = 0; l < config_.n_layers; l++) {
+                id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+                id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
+            }
+            
+            [enc endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
         }
-        
-        // Forward through all layers with batch_size = C
-        for (int l = 0; l < config_.n_layers; l++) {
-            id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
-            id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
-            forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
-        }
-        
-        [enc endEncoding];
-        [cmdBuf commit];
-        [cmdBuf waitUntilCompleted];
     }
     
     // ---- Decode: Autoregressive generation starting from prompt_tokens[prompt_len - 1] ----
     for (int step = 0; step < max_new_tokens; step++) {
-        auto t_step_start = std::chrono::high_resolution_clock::now();
-        uint32_t seq_pos = prompt_len - 1 + step;
-        
-        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-        
-        // Lookup embeddings for each active channel
-        if (embedPipeline_) {
-            [enc setComputePipelineState:embedPipeline_];
-            for (uint32_t c = 0; c < C; c++) {
-                if (!channel_active[c]) continue;
-                int32_t cur_token = (step == 0) ? prompt_tokens[prompt_len - 1] : result.channel_tokens[c].back();
-                uint32_t tok = (uint32_t)cur_token;
-                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                [enc setBuffer:tokBuf offset:0 atIndex:0];
-                [enc setBuffer:embedWeights_ offset:0 atIndex:1];
-                [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
-                uint32_t hdim = H;
-                [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
-                MTLSize grid = MTLSizeMake(1, H, 1);
-                MTLSize tg = MTLSizeMake(1, 1, 1);
-                [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        @autoreleasepool {
+            auto t_step_start = std::chrono::high_resolution_clock::now();
+            uint32_t seq_pos = prompt_len - 1 + step;
+            
+            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            
+            // Lookup embeddings for each active channel
+            if (embedPipeline_) {
+                [enc setComputePipelineState:embedPipeline_];
+                for (uint32_t c = 0; c < C; c++) {
+                    if (!channel_active[c]) {
+                        uint16_t* h_ptr = (uint16_t*)[batch_hidden_1 contents] + c * H;
+                        std::memset(h_ptr, 0, H * sizeof(uint16_t));
+                        continue;
+                    }
+                    int32_t cur_token = (step == 0) ? prompt_tokens[prompt_len - 1] : result.channel_tokens[c].back();
+                    uint32_t tok = (uint32_t)cur_token;
+                    if (tok >= config_.vocab_size) tok = 0;
+                    id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+                    [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
+                    uint32_t hdim = H;
+                    [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+                    MTLSize grid = MTLSizeMake(1, H, 1);
+                    MTLSize tg = MTLSizeMake(1, 1, 1);
+                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                }
             }
-        }
-        
-        // Unified forward pass through all layers
-        for (int l = 0; l < config_.n_layers; l++) {
-            id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
-            id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
-            forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, seq_pos);
-        }
+            
+            // Unified forward pass through all layers
+            for (int l = 0; l < config_.n_layers; l++) {
+                id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+                id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, seq_pos);
+            }
         
         // Final RMSNorm across all C channels [C, H]
         id<MTLBuffer> final_hidden = (config_.n_layers % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
@@ -1404,11 +1417,12 @@ GenerationResult MetalTransformerEngine::generate(
             decode_steps++;
         }
         
-        bool all_done = true;
-        for (uint32_t c = 0; c < C; c++) {
-            if (channel_active[c]) { all_done = false; break; }
+            bool all_done = true;
+            for (uint32_t c = 0; c < C; c++) {
+                if (channel_active[c]) { all_done = false; break; }
+            }
+            if (all_done) break;
         }
-        if (all_done) break;
     }
     
     auto t_end = std::chrono::high_resolution_clock::now();
@@ -1515,7 +1529,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             for (int l = 0; l < config_.n_layers; l++) {
                 id<MTLBuffer> in_buf  = (l % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
                 id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
-                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, t);
+                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, t, c);
             }
 
             [enc endEncoding];
@@ -1560,7 +1574,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             for (int l = 0; l < config_.n_layers; l++) {
                 id<MTLBuffer> in_buf  = (l % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];
                 id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
-                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, seq_pos);
+                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, seq_pos, c);
             }
 
             id<MTLBuffer> final_hidden = (config_.n_layers % 2 == 0) ? hidden_bufs[c] : hidden_bufs2[c];

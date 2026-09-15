@@ -121,12 +121,33 @@ public final class WeightManager: NSObject, @unchecked Sendable {
         return storageDirectory.appendingPathComponent(type.defaultFileName)
     }
 
+    /// Path to local tokenizer.json in the weight storage directory
+    public var localTokenizerURL: URL {
+        return storageDirectory.appendingPathComponent("tokenizer.json")
+    }
+
+    /// Default remote URL for HuggingFace TinyLlama tokenizer.json
+    public var defaultTokenizerRemoteURL: URL {
+        return URL(string: "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/main/tokenizer.json")!
+    }
+
     /// Delete downloaded local weights
     public func removeLocalModel(type: AntigravityModelType) throws {
         let url = localURL(for: type)
         if fileManager.fileExists(atPath: url.path) {
             try fileManager.removeItem(at: url)
         }
+    }
+
+    /// Download tokenizer.json from remote CDN to local storage directory
+    public func downloadTokenizer(customURL: URL? = nil) async throws {
+        let remoteURL = customURL ?? defaultTokenizerRemoteURL
+        let destination = localTokenizerURL
+        let (tempURL, _) = try await URLSession.shared.download(from: remoteURL)
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: tempURL, to: destination)
     }
 
     /// Stream download model weights from HF CDN / custom server directly to local disk
@@ -175,6 +196,11 @@ public final class WeightManager: NSObject, @unchecked Sendable {
 
         guard isModelDownloaded(type: modelType) else {
             throw AntigravityError.modelLoadingFailed(reason: "Model file not available at \(destinationURL.path)")
+        }
+
+        // Also ensure tokenizer.json is present if possible
+        if !fileManager.fileExists(atPath: localTokenizerURL.path) {
+            try? await downloadTokenizer()
         }
 
         try engine.loadModel(at: destinationURL.path)

@@ -152,7 +152,7 @@ private:
     // Internal helpers
     void dispatchGEMM(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C, uint32_t M, uint32_t K, uint32_t N);
     void dispatchRMSNorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> input, id<MTLBuffer> weight, id<MTLBuffer> output, uint32_t batch, uint32_t dim);
-    void dispatchRoPE(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> q, id<MTLBuffer> k, uint32_t start_pos, uint32_t batch);
+    void dispatchRoPE(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> q, id<MTLBuffer> k, uint32_t start_pos, uint32_t batch, uint32_t seq_len = 1);
     void forwardLayer(
         id<MTLCommandBuffer> cmdBuf,
         id<MTLComputeCommandEncoder> enc,
@@ -160,7 +160,8 @@ private:
         id<MTLBuffer> input,
         id<MTLBuffer> output,
         uint32_t batch_size,
-        uint32_t seq_pos
+        uint32_t seq_pos,
+        uint32_t channel_offset = 0
     );
     void forwardBatched(
         id<MTLCommandBuffer> cmdBuf,

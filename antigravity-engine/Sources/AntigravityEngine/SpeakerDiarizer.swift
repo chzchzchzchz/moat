@@ -56,23 +56,25 @@ public struct SpeakerDiarizer: Sendable {
         }
         zcr /= Float(audioSamples.count)
         
-        // Simple FFT for spectral features
-        let log2n = vDSP_Length(log2(Float(audioSamples.count)))
-        guard let fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else { return [0, 0, 0, 0] }
+        // Simple FFT for spectral features (requires power of 2 >= 16)
+        guard audioSamples.count >= 16 else { return [0, rms, zcr, 0] }
+        let log2n = vDSP_Length(floor(log2(Float(audioSamples.count))))
+        let n = 1 << log2n
+        guard n >= 16, let fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else { return [0, rms, zcr, 0] }
         defer { vDSP_destroy_fftsetup(fftSetup) }
         
-        let n = 1 << log2n
         var realP = [Float](repeating: 0, count: n/2)
         var imagP = [Float](repeating: 0, count: n/2)
         
         var centroid: Float = 0
         var rolloff: Float = 0
         
+        let padded = Array(audioSamples.prefix(n))
         realP.withUnsafeMutableBufferPointer { realPtr in
             imagP.withUnsafeMutableBufferPointer { imagPtr in
                 var splitComplex = DSPSplitComplex(realp: realPtr.baseAddress!, imagp: imagPtr.baseAddress!)
                 
-                audioSamples.withUnsafeBufferPointer { samplesPtr in
+                padded.withUnsafeBufferPointer { samplesPtr in
                     samplesPtr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: n/2) { complexPtr in
                         vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(n/2))
                     }

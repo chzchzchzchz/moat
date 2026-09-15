@@ -532,13 +532,13 @@ int32_t AntigravityEngineNativeGenerate(
         prompt_tokens, prompt_len, max_new_tokens, temperature, top_p
     );
 
-    int N = ctx->config.n_channels;
+    int N = std::min((int)ctx->config.n_channels, (int)gen.channel_tokens.size());
 
     // Flatten GenerationResult into C output buffers
     for (int c = 0; c < N; c++) {
         int n_toks = (int)gen.channel_tokens[c].size();
         if (out_token_counts) out_token_counts[c] = n_toks;
-        if (out_logprobs)     out_logprobs[c] = gen.channel_logprobs[c];
+        if (out_logprobs)     out_logprobs[c] = (c < (int)gen.channel_logprobs.size()) ? gen.channel_logprobs[c] : 0.0f;
 
         // Copy tokens into flat [n_channels * max_new_tokens] buffer
         for (int t = 0; t < max_new_tokens; t++) {
@@ -580,11 +580,11 @@ int32_t AntigravityEngineNativeGenerateSpeculative(
         draft_ctx->nativeEngine, prompt_tokens, prompt_len, max_new_tokens, k_draft, temperature, top_p
     );
 
-    int n_toks = (int)gen.channel_tokens[0].size();
+    int n_toks = (!gen.channel_tokens.empty()) ? (int)gen.channel_tokens[0].size() : 0;
     if (out_token_counts) *out_token_counts = n_toks;
 
     for (int t = 0; t < max_new_tokens; t++) {
-        if (t < n_toks) {
+        if (!gen.channel_tokens.empty() && t < n_toks) {
             out_tokens[t] = gen.channel_tokens[0][t];
         } else {
             out_tokens[t] = 0;
@@ -667,7 +667,8 @@ int32_t AntigravityEngineNativeMCTSGenerate(
 
     MCTSResult res = ctx->nativeEngine->generateMCTS(prompt_tokens, prompt_len, cfg);
 
-    int n_toks = (int)res.best_tokens.size();
+    int max_capacity = cfg.chunk_tokens * cfg.num_chunks;
+    int n_toks = std::min((int)res.best_tokens.size(), max_capacity);
     for (int t = 0; t < n_toks; t++) {
         out_tokens[t] = res.best_tokens[t];
     }

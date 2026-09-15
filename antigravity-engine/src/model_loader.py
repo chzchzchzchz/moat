@@ -375,7 +375,8 @@ def dequantize_q4_k_superblock(raw_bytes: bytes, n_elements: int, shape: tuple) 
 def dequantize_q6_k_superblock(raw_bytes: bytes, n_elements: int, shape: tuple) -> np.ndarray:
     """
     Vectorized dequantization of GGUF Q6_K (type 15) superblocks.
-    Format: 256 weights per block (210 bytes per block).
+    Strictly adheres to the GGML interleaved stride layout:
+    256 weights per block (210 bytes per block).
       - ql: 128 bytes (low 4 bits of weights)
       - qh: 64 bytes (high 2 bits of weights)
       - scales: 16 bytes (int8 sub-block scales)
@@ -394,29 +395,33 @@ def dequantize_q6_k_superblock(raw_bytes: bytes, n_elements: int, shape: tuple) 
     scales = blocks[:, 192:208].view(np.int8).astype(np.float32)
     d = blocks[:, 208:210].copy().view(np.float16).astype(np.float32)
 
-    # Reconstruct 256 6-bit values (q - 32) * (d * scale)
-    out = np.empty((n_blocks, 16, 16), dtype=np.float32)
-    for i in range(16):
-        # 16 sub-blocks of 16 values
-        ql_chunk = ql[:, i*8 : (i+1)*8]
-        qh_chunk = qh[:, i*4 : (i+1)*4]
-        # Low 4 bits
-        low0 = (ql_chunk & 0x0F).astype(np.float32)
-        low1 = (ql_chunk >> 4).astype(np.float32)
-        # High 2 bits
-        h0 = (qh_chunk & 0x03).astype(np.float32)
-        h1 = ((qh_chunk >> 2) & 0x03).astype(np.float32)
-        h2 = ((qh_chunk >> 4) & 0x03).astype(np.float32)
-        h3 = (qh_chunk >> 6).astype(np.float32)
+    out = np.empty((n_blocks, 256), dtype=np.float32)
 
-        q0 = (h0 * 16.0 + low0[:, :4]) - 32.0
-        q1 = (h1 * 16.0 + low0[:, 4:]) - 32.0
-        q2 = (h2 * 16.0 + low1[:, :4]) - 32.0
-        q3 = (h3 * 16.0 + low1[:, 4:]) - 32.0
+    for half in range(2):
+        ql_half = ql[:, half*64 : (half+1)*64]
+        qh_half = qh[:, half*32 : (half+1)*32]
+        sc = scales[:, half*8 : (half+1)*8]
+        out_offset = half * 128
 
-        q_sub = np.concatenate([q0, q1, q2, q3], axis=1)
-        scale_sub = d * scales[:, i:i+1]
-        out[:, i, :] = q_sub * scale_sub
+        ql_l = ql_half[:, :32]
+        ql_h = ql_half[:, 32:]
+
+        q1 = ((ql_l & 0x0F) | ((qh_half & 0x03) << 4)).astype(np.float32) - 32.0
+        q2 = ((ql_h & 0x0F) | (((qh_half >> 2) & 0x03) << 4)).astype(np.float32) - 32.0
+        q3 = ((ql_l >> 4) | (((qh_half >> 4) & 0x03) << 4)).astype(np.float32) - 32.0
+        q4 = ((ql_h >> 4) | (((qh_half >> 6) & 0x03) << 4)).astype(np.float32) - 32.0
+
+        out[:, out_offset + 0  : out_offset + 16] = q1[:, :16] * (d * sc[:, 0:1])
+        out[:, out_offset + 16 : out_offset + 32] = q1[:, 16:] * (d * sc[:, 1:2])
+
+        out[:, out_offset + 32 : out_offset + 48] = q2[:, :16] * (d * sc[:, 2:3])
+        out[:, out_offset + 48 : out_offset + 64] = q2[:, 16:] * (d * sc[:, 3:4])
+
+        out[:, out_offset + 64 : out_offset + 80] = q3[:, :16] * (d * sc[:, 4:5])
+        out[:, out_offset + 80 : out_offset + 96] = q3[:, 16:] * (d * sc[:, 5:6])
+
+        out[:, out_offset + 96 : out_offset + 112] = q4[:, :16] * (d * sc[:, 6:7])
+        out[:, out_offset + 112: out_offset + 128] = q4[:, 16:] * (d * sc[:, 7:8])
 
     flat_out = out.reshape(-1)[:n_elements]
     return flat_out.reshape(shape).astype(np.float16)

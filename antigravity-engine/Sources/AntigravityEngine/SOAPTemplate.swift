@@ -180,32 +180,43 @@ public struct SOAPTemplateEngine: Sendable {
         var symptoms: [String] = []
         var risk = "No acute risk factors identified during session."
 
-        let sections = output.components(separatedBy: "[")
+        let pattern = #"(?i)\[(SUBJECTIVE|OBJECTIVE|ASSESSMENT|PLAN|SYMPTOMS|RISK)\]\s*([\s\S]*?)(?=(?:\[(?:SUBJECTIVE|OBJECTIVE|ASSESSMENT|PLAN|SYMPTOMS|RISK)\])|\z)"#
         
-        for section in sections {
-            let trimmed = section.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("SUBJECTIVE]") {
-                subjective = trimmed.replacingOccurrences(of: "SUBJECTIVE]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-            } else if trimmed.hasPrefix("OBJECTIVE]") {
-                objective = trimmed.replacingOccurrences(of: "OBJECTIVE]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-            } else if trimmed.hasPrefix("ASSESSMENT]") {
-                assessment = trimmed.replacingOccurrences(of: "ASSESSMENT]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-            } else if trimmed.hasPrefix("PLAN]") {
-                plan = trimmed.replacingOccurrences(of: "PLAN]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-            } else if trimmed.hasPrefix("SYMPTOMS]") {
-                let text = trimmed.replacingOccurrences(of: "SYMPTOMS]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                symptoms = text.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            } else if trimmed.hasPrefix("RISK]") {
-                risk = trimmed.replacingOccurrences(of: "RISK]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+            let nsOutput = output as NSString
+            let matches = regex.matches(in: output, options: [], range: NSRange(location: 0, length: nsOutput.length))
+            
+            for match in matches {
+                guard match.numberOfRanges >= 3 else { continue }
+                let tag = nsOutput.substring(with: match.range(at: 1)).uppercased()
+                let content = nsOutput.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                switch tag {
+                case "SUBJECTIVE":
+                    if !content.isEmpty { subjective = content }
+                case "OBJECTIVE":
+                    if !content.isEmpty { objective = content }
+                case "ASSESSMENT":
+                    if !content.isEmpty { assessment = content }
+                case "PLAN":
+                    if !content.isEmpty { plan = content }
+                case "SYMPTOMS":
+                    symptoms = content.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                case "RISK":
+                    if !content.isEmpty { risk = content }
+                default:
+                    break
+                }
             }
         }
 
-        // Fallback if model did not use exact [SECTION] headers
+        // Fallback: if model generated text without structured section headers,
+        // provide honest pending-review defaults for unformatted sections
         if subjective.isEmpty && objective.isEmpty && assessment.isEmpty && plan.isEmpty {
-            subjective = output
-            objective = "Client engaged in session via local transcription interface."
-            assessment = "Session review documented."
-            plan = "Continue treatment plan as scheduled."
+            subjective = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            objective = "Clinical observations pending clinician review."
+            assessment = "Clinical assessment pending clinician review."
+            plan = "Treatment plan pending clinician review."
         }
 
         return SOAPNote(

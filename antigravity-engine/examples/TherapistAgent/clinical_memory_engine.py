@@ -41,12 +41,13 @@ from verifier import ListWiseVerifier
 
 
 # ==============================================================================
-# 1. FORENSIC ZERO-EGRESS NETWORK SNIFFER
+# 1. NETWORK EGRESS AUDITOR (Informational Telemetry)
 # ==============================================================================
 class ZeroEgressNetworkAuditor:
     """
-    Forensically audits network traffic before, during, and after inference.
-    Validates air-gapped execution and proves zero bytes transmitted to external networks.
+    Monitors system network interface delta during inference.
+    NOTE: Measures aggregate system socket bytes across all active interfaces;
+    this is an observational check rather than an operating-system level firewall sandbox.
     """
     def __init__(self):
         self.initial_bytes_sent = 0
@@ -83,18 +84,20 @@ class ZeroEgressNetworkAuditor:
             "final_bytes": self.final_bytes_sent,
             "external_egress_bytes": diff,
             "wan_connections_opened": 0 if diff == 0 else -1,  # -1 = unknown
-            "hipaa_compliant_airgap": diff == 0
+            "network_isolated_observation": diff == 0,
+            "hipaa_compliant_airgap": diff == 0  # Backwards compatibility alias
         }
 
 
 # ==============================================================================
-# 2. LOCAL ENCRYPTED LONGITUDINAL PATIENT STORE (SQLite)
+# 2. LOCAL LONGITUDINAL PATIENT STORE (SQLite Prototype)
 # ==============================================================================
 class ClinicalMemoryStore:
     """
-    Encrypted, on-device local database storing longitudinal psychotherapy history.
-    Stores multi-month patient encounters, clinical psychometric scores, medication
-    titrations, and semantic indices without any cloud sync.
+    On-device local SQLite store for longitudinal psychotherapy history.
+    WARNING: This Python prototype store uses standard unencrypted SQLite.
+    For production encrypted clinical storage with zero-trust key management,
+    use the Swift ClinicalDatabase with AES-256-GCM encryption.
     """
     def __init__(self, db_path: str = ":memory:"):
         self.db_path = db_path
@@ -508,8 +511,7 @@ THERAPIST: Dr. Marcus Vance, Psy.D.
         # 5. Stop Network Audit and Measure Egress
         print("\n[Step 5/6] 🔒 Finalizing Zero-Egress Network Audit...")
         net_report = self.auditor.stop_audit()
-        print(f"  • Bytes sent to external internet (WAN): {net_report['external_egress_bytes']} bytes ✅")
-        print(f"  • Air-Gap Integrity: 100% ZERO-TRUST AIR-GAPPED ✅")
+        print(f"  • Bytes sent to external network interfaces: {net_report['external_egress_bytes']} bytes (observational telemetry)")
 
         # 6. Synthesize Performance Telemetry
         print("\n[Step 6/6] 📊 Compiling Hardware Telemetry & Performance Metrics...")

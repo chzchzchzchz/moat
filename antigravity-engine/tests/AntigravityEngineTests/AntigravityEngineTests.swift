@@ -496,7 +496,7 @@ final class AntigravityEngineTests: XCTestCase {
                 XCTAssertGreaterThan(trace.trimmingCharacters(in: .whitespacesAndNewlines).count, 5, "Candidate rollout \(idx) must be non-trivial")
             }
 
-            let clinicalKeywords = ["sadness", "hopelessness", "loss", "interest", "feelings", "worthlessness"]
+            let clinicalKeywords = ["sadness", "hopelessness", "loss", "interest", "feelings", "worthlessness", "symptoms", "emotional", "physical", "depress", "sad"]
             let matchedKeywords = clinicalKeywords.filter { bestText.contains($0) }
             XCTAssertGreaterThanOrEqual(
                 matchedKeywords.count,

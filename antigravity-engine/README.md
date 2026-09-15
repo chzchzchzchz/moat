@@ -76,7 +76,7 @@ curl http://localhost:8080/v1/chat/completions -d '{"messages":[{"role":"user","
 
 ## Proof It Works
 - The C++ `test_cpp_sdk` loads real 3GB weights and verifies exact token IDs: `token 21737 = " feelings"`, `token 310 = " of"`, `token 14610 = " sadness"`
-- 152 Python tests pass covering quantization, attention, batching, Metal GPU, clinical storage
+- 153 Python tests pass covering quantization, attention, batching, Metal GPU, clinical storage
 - 26 Swift tests pass including real Metal GPU inference
 - Real VRAM allocation: 3,037 MB loaded, 0 bytes after unload
 
