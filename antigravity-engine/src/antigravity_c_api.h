@@ -63,6 +63,10 @@ void AntigravityEngineDestroy(AntigravityEngineContext* ctx);
 int32_t AntigravityEngineLoadModel(AntigravityEngineContext* ctx, const char* model_path);
 
 /**
+ * @deprecated This function uses PRNG-initialized hidden states instead of real transformer
+ * forward passes. Use AntigravityEngineNativeGenerate() for real inference.
+ * This function exists only for legacy C API test compatibility.
+ *
  * Execute batched GEMM parallel candidate decode across N channels.
  *
  * @param ctx Engine handle pointer.

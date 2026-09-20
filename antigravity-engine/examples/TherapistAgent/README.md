@@ -9,7 +9,7 @@ A production-grade native macOS/iOS application that generates HIPAA-compliant S
 ## 🏗 System Architecture & Security Highlights
 
 1. **Hardware-Accelerated Inference**: Executes 22-layer transformer forward passes directly in unified Apple Silicon GPU memory via `AntigravityEngine.xcframework` (compiled Metal C++).
-2. **Zero-Trust Column-Level Encryption**: Patient records and clinical documents in `ClinicalDatabase.swift` are encrypted using **AES-256-GCM** (Apple CryptoKit) with symmetric keys derived from the hardware Secure Enclave via Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Raw SQLite disk files contain zero plaintext PHI.
+2. **Zero-Trust Column-Level Encryption**: Patient records and clinical documents in `ClinicalDatabase.swift` are encrypted using **AES-256-GCM** (Apple CryptoKit) with symmetric keys stored via Keychain Data Protection (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Raw SQLite disk files contain zero plaintext PHI.
 3. **Real BPE Tokenization**: `AntigravityTokenizer` natively parses HuggingFace `tokenizer.json`, loading full vocabulary (32,000 tokens) and all 61,249 BPE merge rules.
 4. **Offline ASR & Diarization**: On-device speech recognition via Apple `Speech` framework (`requiresOnDeviceRecognition = true`) paired with Accelerate `vDSP` spectral feature diarization.
 5. **No Fake Fallbacks**: If model weights are missing, the UI presents an honest download banner rather than simulating output.
@@ -108,4 +108,4 @@ swift test --filter testClinicalDatabaseZeroTrustColumnLevelEncryption
 
 The test injects a patient record and assertively inspects raw binary sectors of the `.sqlite` file on disk:
 - `rawDiskBytes` contains **zero plaintext occurrences** of patient names, dates of birth, clinical dialogues, or diagnoses.
-- Queries authenticated through the Secure Enclave decrypt seamlessly into typed Swift structs.
+- Queries authenticated through the Keychain decrypt seamlessly into typed Swift structs.

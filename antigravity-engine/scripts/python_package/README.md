@@ -7,4 +7,4 @@ High-performance, bare-metal C++/Metal LLM inference engine for Apple Silicon (m
 - Zero-copy shared memory architecture (eliminates PyTorch MPS CPU/GPU copies)
 - Parallel Best-of-N candidate rollouts ($N=8$ channels)
 - Offline Ed25519 cryptographic licensing
-- Air-gapped, zero-cloud egress compliance
+- Fully offline local execution (zero cloud network egress)

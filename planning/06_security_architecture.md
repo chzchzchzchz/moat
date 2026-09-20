@@ -1,5 +1,7 @@
 # Architectural Document 06: Double-Blind Security & Cryptographic Isolation
 
+> **Notice**: This document is an early design proposal. The production implementation uses Keychain Data Protection (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) with AES-256-GCM rather than an asymmetric Secure Enclave keypair or compiler-level network kill switch.
+
 ## 1. Network Air-Gapping (OS Entitlement Lock)
 
 ### 1.1 Info.plist Network Kill Switch
