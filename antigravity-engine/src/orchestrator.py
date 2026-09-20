@@ -426,18 +426,12 @@ class AntigravityEngine:
             # Check if GenPRM generated a specific code feedback prompt
             feedback_prompt = genprm_reports[best_index].get('feedback_prompt') if best_index < len(genprm_reports) else None
             
-            # NOTE: Reflection for native_metal and hf_model only appends feedback text; no second autoregressive pass is executed.
-            if self.hf_model is None and self._generation_mode != "native_metal":
-                self.model_swapper.swap_to_reasoner()
-                self.coordinator.reset()
-                refine_act = self.embedding_table[[3]]
-                refine_hidden = self.transformer_layer.forward_batch(refine_act)
-                _ = self.coordinator.step_decode_batch(refine_hidden, self.lm_head_weight, temperature=0.1)
-            
+            # NOTE: Reflection only appends feedback text; no second autoregressive inference pass is executed.
+            # A true learned reflection pass would require a second model forward with the best trace as input.
             if feedback_prompt:
                 best_trace = best_trace + f"\n[GenPRM Feedback: {feedback_prompt}]"
             else:
-                best_trace = best_trace + "\n[Refinement Pass Verified]"
+                best_trace = best_trace + "\n[Reflection: Score below threshold, clinician review recommended]"
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         total_tokens = sum(len(t) for t in channel_tokens) if isinstance(channel_tokens, list) and channel_tokens and isinstance(channel_tokens[0], list) else len(channel_tokens)

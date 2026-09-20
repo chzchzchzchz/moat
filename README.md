@@ -208,9 +208,15 @@ swift test
 
 ### 3. Run Native C++ Verification
 ```bash
-cd antigravity-engine
 # Compile test runner
-clang++ -O3 -std=c++17 -Wall -x objective-c++ -fobjc-arc   -I./src tests/test_cpp_sdk.cpp src/transformer_engine.mm src/antigravity_c_api.cpp   -framework Metal -framework Foundation   -o bin/test_cpp_sdk
+clang -O3 -c src/monocypher.c -Isrc -o /tmp/monocypher.o
+clang -O3 -c src/monocypher-ed25519.c -Isrc -o /tmp/monocypher_ed.o
+clang++ -O3 -std=c++17 -Wall -x objective-c++ -fobjc-arc -I./src \
+  tests/test_cpp_sdk.cpp src/transformer_engine.mm src/antigravity_c_api.cpp \
+  src/antigravity_engine_c.cpp src/gguf_reader.cpp src/config_parser.cpp src/license_verifier.cpp \
+  -x none /tmp/monocypher.o /tmp/monocypher_ed.o \
+  -framework Metal -framework Foundation \
+  -o bin/test_cpp_sdk
 
 # Execute test suite
 ./bin/test_cpp_sdk

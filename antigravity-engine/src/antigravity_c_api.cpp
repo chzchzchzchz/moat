@@ -246,6 +246,9 @@ static int32_t CheckContextAuthorization(const AntigravityEngineContext* ctx, co
     return 0;
 }
 
+// DEPRECATED: This function uses PRNG-initialized hidden states instead of real transformer
+// forward passes. Use AntigravityEngineNativeGenerate() for real inference.
+// This function exists only for legacy C API test compatibility.
 int32_t AntigravityEngineGenerateRollouts(
     AntigravityEngineContext* ctx,
     const float* weight_matrix,

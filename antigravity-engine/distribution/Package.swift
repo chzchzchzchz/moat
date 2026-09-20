@@ -22,7 +22,7 @@ let package = Package(
         .binaryTarget(
             name: "AntigravityEngine",
             url: "https://github.com/chzchzchzchz/moat/releases/download/v1.0.0/AntigravityEngine.xcframework.zip",
-            checksum: "fc01fefadc87d7bcea26b03a0b770bd1711b6da4bf0199ed7a3d9bddce14324d"
+            checksum: "602c86e541f8b0284722f59e9dfdce594eabf06bdb5e0bbf3b6bf7d162fda337"
         )
     ]
 )
