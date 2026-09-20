@@ -39,7 +39,9 @@ public struct EngineConfig {
 
 /// Generation Result returned by the Antigravity Engine
 public struct AntigravityGenerationResult {
-    public let bestTraceText: String
+    /// Token IDs of the winning candidate. This target links no tokenizer, so the caller
+    /// decodes these with whatever tokenizer the host app owns.
+    public let bestTraceTokens: [Int32]
     public let verifierScore: Float
     public let candidatesEvaluated: Int
     public let reflectionTriggered: Bool
@@ -81,50 +83,72 @@ public final class AntigravityEngine {
         }
     }
 
-    /// Run an offline parallel Best-of-N reasoning query
+    /// Run an offline parallel Best-of-N reasoning query over pre-tokenized input.
+    ///
+    /// This is the real inference path: it runs the full multi-layer Metal transformer
+    /// forward pass. This target links no tokenizer, so callers pass token IDs and decode
+    /// the returned IDs themselves.
     public func generateRollouts(
-        prompt: String,
+        promptTokens: [Int32],
         maxTokens: Int = 50,
-        temperature: Float = 0.7
+        temperature: Float = 0.7,
+        topP: Float = 0.9
     ) async throws -> AntigravityGenerationResult {
         guard let handle = engineHandle else {
             throw AntigravityError.executionFailed(reason: "Engine handle deallocated")
         }
-
-        let resPtr = antigravity_generate_rollouts(handle, prompt, UInt32(maxTokens), temperature)
-        guard let res = resPtr?.pointee else {
-            throw AntigravityError.executionFailed(reason: "Rollout generation returned NULL pointer")
+        guard !promptTokens.isEmpty else {
+            throw AntigravityError.executionFailed(reason: "Prompt token array is empty")
         }
 
+        let resPtr = antigravity_generate_rollouts_tokens(
+            handle, promptTokens, UInt32(promptTokens.count),
+            UInt32(maxTokens), temperature, topP
+        )
+        guard let res = resPtr?.pointee else {
+            throw AntigravityError.executionFailed(
+                reason: "Generation failed: weights not loaded, or the Metal forward pass returned an error"
+            )
+        }
         defer { antigravity_free_rollout_result(resPtr) }
 
         let vresPtr = antigravity_verify_candidates(handle, resPtr)
         guard let vres = vresPtr?.pointee else {
             throw AntigravityError.executionFailed(reason: "Candidate verification returned NULL pointer")
         }
-
         defer { antigravity_free_verification_result(vresPtr) }
 
         let bestIdx = Int(res.best_candidate_index)
-        guard bestIdx < Int(res.candidate_count), let traceCStr = res.candidates[bestIdx].trace_text else {
-            throw AntigravityError.executionFailed(reason: "Invalid candidate trace output from engine")
+        guard bestIdx < Int(res.candidate_count) else {
+            throw AntigravityError.executionFailed(reason: "Best candidate index out of range")
         }
 
-        let bestTrace = String(cString: traceCStr)
-        let score = vres.confidence_score
+        let best = res.candidates[bestIdx]
+        var bestTokens: [Int32] = []
+        if let ids = best.token_ids {
+            bestTokens = Array(UnsafeBufferPointer(start: ids, count: Int(best.token_count)))
+        }
+
+        var totalTokens = 0
+        for c in 0..<Int(res.candidate_count) {
+            totalTokens += Int(res.candidates[c].token_count)
+        }
 
         return AntigravityGenerationResult(
-            bestTraceText: bestTrace,
-            verifierScore: score,
+            bestTraceTokens: bestTokens,
+            verifierScore: vres.confidence_score,
             candidatesEvaluated: Int(res.candidate_count),
             reflectionTriggered: res.reflection_triggered,
             tokenSavingsPercentage: res.token_savings_pct,
             latencyMilliseconds: res.total_latency_ms,
-            totalTokensGenerated: Int(res.candidate_count) * maxTokens
+            totalTokensGenerated: totalTokens
         )
     }
 
-    /// Zero out all internal Metal buffers for Secure Enclave compliance
+    /// Zero out all internal Metal buffers.
+    ///
+    /// This is a plain memory wipe of shared MTLBuffers. It is not a Secure Enclave
+    /// operation and carries no hardware-backed guarantee.
     public func sanitizeBuffers() {
         if let handle = engineHandle {
             antigravity_sanitize_buffers(handle)
