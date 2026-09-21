@@ -75,7 +75,7 @@ def test_03_genprm_verifier_and_feedback():
     """Verify GenPRM programmatic verification and compiler feedback generation."""
     from genprm_verifier import GenPRMVerifier
 
-    prm = GenPRMVerifier(code_timeout_sec=2.0)
+    prm = GenPRMVerifier(code_timeout_sec=2.0, enable_code_execution=True)
 
     # Case 1: Consistent valid code
     trace_valid = (

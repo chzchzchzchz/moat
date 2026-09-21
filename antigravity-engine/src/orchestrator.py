@@ -62,6 +62,7 @@ class AntigravityEngine:
         vocab_size: int = 1000,
         hidden_dim: int = 256,
         reflection_threshold: float = DEFAULT_REFLECTION_THRESHOLD,
+        enable_code_execution: bool = False,
         model_dir: Optional[str] = None
     ):
         self.n_channels = n_channels
@@ -177,7 +178,9 @@ class AntigravityEngine:
             hidden_dim=self.hidden_dim
         )
         self.verifier = ListWiseVerifier()
-        self.genprm_verifier = GenPRMVerifier()
+        # Code execution runs model-generated Python on this machine, so it is off
+        # unless the caller asks for it. See GenPRMVerifier's security note.
+        self.genprm_verifier = GenPRMVerifier(enable_code_execution=enable_code_execution)
         self.dora_clusterer = DORAClusterer()
         self.prm_verifier = None # Disabled to prevent OOM
         self.bon_strategy = BestOfNStrategy(logprob_weight=0.1)

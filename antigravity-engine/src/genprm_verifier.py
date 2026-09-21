@@ -4,8 +4,11 @@ Project Antigravity — Program-Aided Self-Correction (GenPRM Verifier)
 This module implements:
   - GenPRMVerifier: Program-Aided Process Reward Model Verifier.
     Extracts Python code blocks from reasoning traces, executes them in a
-    sandboxed subprocess, compares execution outputs against text answers,
-    and returns verified feedback scores and reflection prompts.
+    subprocess, compares execution outputs against text answers, and returns
+    feedback scores and reflection prompts.
+
+    Executing model-generated code is off by default; see GenPRMVerifier's
+    docstring for why, and for what the subprocess is and is not confined by.
 
 Target Hardware: Apple Silicon GPU / iOS (A17 Pro / A18 Pro / M1-M4)
 """
@@ -23,13 +26,34 @@ class GenPRMVerifier:
     """
     Program-Aided Process Reward Model (GenPRM) Verifier.
 
-    Eliminates 'Specification Hallucination' by executing model-generated
-    Python verification code locally and scoring traces based on execution feedback.
+    Scores traces by executing Python code the model emitted and comparing its
+    output against the trace's stated answer.
+
+    SECURITY: that means running model-generated code on this machine. The model's
+    output is influenced by whatever text reaches the prompt, so a prompt injection
+    becomes code execution. The executed code runs as this process's user and can
+    reach the filesystem — including any clinical database beside it — and the
+    network, which defeats the zero-egress property the rest of the stack maintains.
+
+    Execution is therefore OFF unless enable_code_execution=True is passed. With it
+    off, scoring falls back to the answer-consistency check, which parses the trace
+    and runs nothing.
+
+    When enabled, execution is confined only by: a wall-clock timeout, an address
+    space cap (POSIX only), a scrubbed environment, an empty working directory, and
+    python -I. It is NOT a sandbox. There is no syscall filter, no namespace and no
+    network restriction. Enable it only for content you would run yourself.
     """
 
-    def __init__(self, code_timeout_sec: float = 2.0, max_memory_mb: int = 256):
+    def __init__(
+        self,
+        code_timeout_sec: float = 2.0,
+        max_memory_mb: int = 256,
+        enable_code_execution: bool = False,
+    ):
         self.code_timeout_sec = code_timeout_sec
         self.max_memory_mb = max_memory_mb
+        self.enable_code_execution = enable_code_execution
 
     def extract_python_code(self, trace_text: str) -> List[str]:
         """
@@ -83,24 +107,51 @@ class GenPRMVerifier:
 
         return None
 
-    def execute_code_safely(self, code_str: str) -> Tuple[bool, str, Optional[str]]:
+    def execute_code_unsandboxed(self, code_str: str) -> Tuple[bool, str, Optional[str]]:
         """
-        Safely execute Python code string in an isolated subprocess.
+        Run a Python code string in a subprocess. See the class docstring: this is
+        NOT a sandbox, and it refuses unless enable_code_execution was set.
+
+        Confinement applied here: a wall-clock timeout, RLIMIT_AS at max_memory_mb
+        (POSIX only), an environment stripped to PATH, an empty working directory,
+        and python -I so the caller's site-packages and PYTHON* vars do not apply.
+        The code can still read and write the filesystem and open sockets.
 
         Returns:
             (success: bool, output_stdout: str, error_message: Optional[str])
         """
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        if not self.enable_code_execution:
+            return False, "", (
+                "Code execution is disabled. Pass enable_code_execution=True to "
+                "GenPRMVerifier to run model-generated code, and read that class's "
+                "security note before doing so."
+            )
+
+        work_dir = tempfile.mkdtemp(prefix="genprm-")
+        temp_filename = os.path.join(work_dir, "candidate.py")
+        with open(temp_filename, "w") as f:
             f.write(code_str)
-            temp_filename = f.name
+
+        def _apply_limits():
+            # Enforces max_memory_mb, which was previously stored and never used.
+            try:
+                import resource
+                limit = int(self.max_memory_mb) * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            except Exception:
+                pass
 
         try:
-            cmd = [sys.executable, temp_filename]
+            cmd = [sys.executable, "-I", temp_filename]
             res = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=self.code_timeout_sec
+                timeout=self.code_timeout_sec,
+                cwd=work_dir,
+                env={"PATH": os.environ.get("PATH", "")},
+                preexec_fn=_apply_limits if os.name == "posix" else None,
             )
 
             stdout = res.stdout.strip()
@@ -116,11 +167,8 @@ class GenPRMVerifier:
         except Exception as e:
             return False, "", str(e)
         finally:
-            if os.path.exists(temp_filename):
-                try:
-                    os.remove(temp_filename)
-                except Exception:
-                    pass
+            import shutil
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     def verify_trace_with_code(self, trace_text: str) -> Dict:
         """
@@ -143,8 +191,25 @@ class GenPRMVerifier:
                 'feedback_prompt': "No Python verification code found." if stated_ans is None else None
             }
 
+        if not self.enable_code_execution:
+            # Execution is off. Treat this exactly like a trace that stated an answer
+            # without code: no bonus, no penalty. Penalising here would rank candidates
+            # by whether they happened to emit a code block, which says nothing about
+            # correctness when nothing ran.
+            return {
+                'has_code': True,
+                'code_success': False,
+                'code_output': "",
+                'stated_answer': stated_ans,
+                'code_answer': None,
+                'is_consistent': False,
+                'reward_modifier': 0.0,
+                'code_execution_disabled': True,
+                'feedback_prompt': None,
+            }
+
         target_code = codes[-1]
-        success, stdout, err = self.execute_code_safely(target_code)
+        success, stdout, err = self.execute_code_unsandboxed(target_code)
 
         code_ans = None
         if success and stdout:

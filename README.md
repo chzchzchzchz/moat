@@ -89,6 +89,7 @@ The engine supports multi-channel parallel decoding (e.g., N=4 channels). During
 
 ### 5. Security and Data Protection
 - **Zero Network Egress**: Inference runs locally with no external socket connections. The included `ZeroEgressNetworkAuditor` monitors OS socket counters to verify no outbound data leaves during processing.
+- **Model-Generated Code Execution (off by default)**: `GenPRMVerifier` can score a reasoning trace by running the Python the model emitted and comparing its output to the stated answer. Because the model's output is shaped by whatever text reaches the prompt, enabling this turns a prompt injection into code execution on the host, with filesystem and network access — which would also break the zero-egress property above. It is therefore disabled unless you pass `enable_code_execution=True`. When enabled, the subprocess is limited by a wall-clock timeout, `RLIMIT_AS` at `max_memory_mb` (POSIX), a scrubbed environment, an empty working directory and `python -I`. That is confinement, not a sandbox: there is no syscall filter, namespace, or network restriction.
 - **Encrypted Persistence**: Clinical notes and patient identifiers are encrypted at rest using AES-256-GCM via Apple CryptoKit. Keys are retrieved from the macOS/iOS Keychain (`kSecClassGenericPassword`), and decryption operations authenticate tag integrity before releasing plaintext.
 
 ---
