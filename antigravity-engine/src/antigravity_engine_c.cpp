@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <cmath>
+#include <limits>
 #include <chrono>
 #include <algorithm>
 
@@ -298,9 +299,10 @@ struct AntigravityEngineInternal {
     std::string model_path;
     AntigravityEngineContext* ctx = nullptr;
     BPETokenizer tokenizer;
-    std::vector<int32_t> last_generated_tokens;
+    std::vector<int32_t> last_generated_tokens;   // [last_n_channels * last_stride]
+    std::vector<uint32_t> last_token_counts;      // real tokens per channel
     uint32_t last_n_channels = 0;
-    uint32_t last_seq_len = 0;
+    uint32_t last_stride = 0;
 };
 
 extern "C" {
@@ -374,25 +376,36 @@ antigravity_rollout_result_t* antigravity_generate_rollouts(
     std::vector<int32_t> prompt_tokens = engine->tokenizer.encode(prompt);
     std::vector<int32_t> out_tokens(n_channels * max_tokens, 0);
 
-    AntigravityMCTSConfig mcts_cfg = { (int32_t)n_channels, 3, 4, temperature, 0.9f };
-    AntigravityMCTSResult api_result;
-    memset(&api_result, 0, sizeof(api_result));
+    // AntigravityEngineNativeGenerate fills [n_channels * max_tokens], which is the layout
+    // out_tokens, the per-candidate loop and the verification cache below all assume.
+    //
+    // This previously called AntigravityEngineNativeMCTSGenerate with a positionally
+    // mis-built config — { n_channels, 3, 4, ... } sets chunk_tokens = n_channels, capping
+    // output at n_channels * 3 tokens regardless of max_tokens. MCTS also returns a single
+    // best sequence written to the front of the buffer, not one sequence per channel, so
+    // channels 1..N-1 decoded nothing but the zero-filled tail and every candidate was
+    // assigned an identical logprob derived from one best_score. Use MCTS directly through
+    // AntigravityEngineNativeMCTSGenerate when a single searched sequence is what you want.
+    std::vector<float>   out_logprobs(n_channels, 0.0f);
+    std::vector<int32_t> out_counts(n_channels, 0);
+    double ttft_ms = 0.0;
+    double total_ms = 0.0;
 
-    int ret = AntigravityEngineNativeMCTSGenerate(
+    int ret = AntigravityEngineNativeGenerate(
         engine->ctx,
         prompt_tokens.data(),
         (int32_t)prompt_tokens.size(),
-        &mcts_cfg,
+        (int32_t)max_tokens,
+        temperature,
+        0.9f,
         out_tokens.data(),
-        &api_result
+        out_logprobs.data(),
+        out_counts.data(),
+        &ttft_ms,
+        &total_ms
     );
 
     if (ret != 0) return NULL;
-
-    // Cache generated token buffers directly for downstream verification
-    engine->last_generated_tokens = out_tokens;
-    engine->last_n_channels = n_channels;
-    engine->last_seq_len = max_tokens;
 
     antigravity_rollout_result_t* res = new antigravity_rollout_result_t();
     res->candidate_count = n_channels;
@@ -400,25 +413,35 @@ antigravity_rollout_result_t* antigravity_generate_rollouts(
 
     std::string prompt_str = std::string(prompt);
     uint32_t best_idx = 0;
-    float max_logprob = -1e9f;
+    float max_logprob = -std::numeric_limits<float>::infinity();
+
+    // Cache the raw buffers so verification scores the engine's own tokens.
+    engine->last_generated_tokens = out_tokens;
+    engine->last_n_channels = n_channels;
+    engine->last_stride = max_tokens;
+    engine->last_token_counts.assign(n_channels, 0);
 
     for (uint32_t c = 0; c < n_channels; c++) {
-        // Extract channel tokens and decode into human-readable text
-        std::vector<int32_t> chan_toks;
-        chan_toks.reserve(max_tokens);
-        for (uint32_t s = 0; s < max_tokens; s++) {
-            chan_toks.push_back(out_tokens[c * max_tokens + s]);
-        }
+        // Decode only the tokens the engine actually produced. Decoding the full stride
+        // would fold the zero-padded tail into the text as repeated token 0.
+        uint32_t n_toks = (uint32_t)std::max(0, out_counts[c]);
+        if (n_toks > max_tokens) n_toks = max_tokens;
+        engine->last_token_counts[c] = n_toks;
+
+        std::vector<int32_t> chan_toks(
+            out_tokens.begin() + (size_t)c * max_tokens,
+            out_tokens.begin() + (size_t)c * max_tokens + n_toks
+        );
 
         std::string decoded_text = engine->tokenizer.decode(chan_toks);
         std::string trace = prompt_str + "\n[Channel " + std::to_string(c + 1) + " rollout]:\n" + decoded_text;
 
-        // Compute candidate log-probability from search confidence without synthetic channel penalty
-        float chan_logprob = (api_result.best_score != 0.0f) ? std::log(std::max(0.01f, std::min(1.0f, std::abs(api_result.best_score)))) : -1.0f;
+        // Per-channel cumulative log-probability as reported by the engine.
+        float chan_logprob = out_logprobs[c];
 
         res->candidates[c].trace_text = strdup(trace.c_str());
         res->candidates[c].logprob = chan_logprob;
-        res->candidates[c].token_count = max_tokens;
+        res->candidates[c].token_count = n_toks;
 
         if (chan_logprob > max_logprob) {
             max_logprob = chan_logprob;
@@ -427,7 +450,7 @@ antigravity_rollout_result_t* antigravity_generate_rollouts(
     }
 
     res->best_candidate_index = best_idx;
-    res->total_latency_ms = api_result.execution_wall_time_ms;
+    res->total_latency_ms = total_ms;
     res->token_savings_pct = 0.0f;
     res->reflection_triggered = false;
 
@@ -441,27 +464,48 @@ antigravity_verification_result_t* antigravity_verify_candidates(
     if (!engine || !engine->ctx || !rollouts || rollouts->candidate_count == 0) return NULL;
 
     uint32_t n_channels = rollouts->candidate_count;
-    uint32_t seq_len = rollouts->candidates[0].token_count;
+
+    // Score over the longest candidate; shorter ones are padded with their own final token.
+    uint32_t seq_len = 0;
+    for (uint32_t c = 0; c < n_channels; c++) {
+        if (rollouts->candidates[c].token_count > seq_len) {
+            seq_len = rollouts->candidates[c].token_count;
+        }
+    }
+    if (seq_len == 0) return NULL;
 
     std::vector<int32_t> candidate_tokens(n_channels * seq_len, 0);
 
-    // Verify candidate tokens directly from token buffers
-    if (engine->last_generated_tokens.size() >= n_channels * seq_len &&
-        engine->last_n_channels == n_channels && engine->last_seq_len == seq_len) {
-        candidate_tokens = engine->last_generated_tokens;
-    } else {
-        // Fallback: tokenize trace texts with BPE tokenizer
+    // Preferred: score the engine's own token buffers from the last generation.
+    bool cache_usable =
+        engine->last_n_channels == n_channels &&
+        engine->last_stride > 0 &&
+        engine->last_token_counts.size() == n_channels &&
+        engine->last_generated_tokens.size() >= (size_t)n_channels * engine->last_stride;
+
+    if (cache_usable) {
+        for (uint32_t c = 0; c < n_channels; c++) {
+            uint32_t n_toks = engine->last_token_counts[c];
+            if (n_toks == 0) { cache_usable = false; break; }
+            for (uint32_t s = 0; s < seq_len; s++) {
+                uint32_t idx = (s < n_toks) ? s : (n_toks - 1);
+                candidate_tokens[c * seq_len + s] =
+                    engine->last_generated_tokens[(size_t)c * engine->last_stride + idx];
+            }
+        }
+    }
+
+    if (!cache_usable) {
+        // Fallback: re-encode the trace text with the BPE tokenizer. Lossy, but it scores
+        // text the engine actually produced rather than substituted token data.
         for (uint32_t c = 0; c < n_channels; c++) {
             const char* trace = rollouts->candidates[c].trace_text;
-            if (trace) {
-                std::vector<int32_t> encoded = engine->tokenizer.encode(trace);
-                for (size_t s = 0; s < seq_len; s++) {
-                    if (s < encoded.size()) {
-                        candidate_tokens[c * seq_len + s] = encoded[s];
-                    } else {
-                        candidate_tokens[c * seq_len + s] = engine->tokenizer.eos_id;
-                    }
-                }
+            if (!trace) return NULL;
+            std::vector<int32_t> encoded = engine->tokenizer.encode(trace);
+            if (encoded.empty()) return NULL;
+            for (uint32_t s = 0; s < seq_len; s++) {
+                candidate_tokens[c * seq_len + s] =
+                    (s < encoded.size()) ? encoded[s] : engine->tokenizer.eos_id;
             }
         }
     }
