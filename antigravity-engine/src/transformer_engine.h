@@ -73,7 +73,20 @@ public:
         float top_p
     ) override;
     
-    // Run chunk-based Monte Carlo Tree Search
+    // Chunk-wise best-of-N search over the generated sequence.
+    //
+    // NOT Monte Carlo Tree Search, despite the name, which is kept because it is
+    // part of the published C ABI (AntigravityEngineNativeMCTSGenerate). The
+    // algorithm is a greedy hill climb: for each of num_chunks rounds it generates
+    // branches_per_chunk candidate continuations of chunk_tokens each, scores them
+    // with the Process Reward heuristic below, appends the single best one to the
+    // running prefix, and moves on. There is no tree, no visit counts, no UCT
+    // selection and no backpropagation -- a losing branch is discarded immediately
+    // and never revisited, so the search cannot recover from an early wrong turn.
+    //
+    // The Process Reward heuristic is
+    //     score = logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5
+    // which is hand-tuned, not a learned value network or trained reward model.
     MCTSResult generateMCTS(
         const int32_t* prompt_tokens,
         int32_t prompt_len,

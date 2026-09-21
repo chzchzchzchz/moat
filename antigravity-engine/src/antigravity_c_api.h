@@ -241,13 +241,21 @@ typedef struct {
 } AntigravityMCTSResult;
 
 /**
- * Execute native chunk-based Monte Carlo Tree Search (MCTS) with Process Reward branch pruning.
+ * Execute chunk-wise best-of-N search with Process Reward branch pruning.
  *
- * NOTE: The Process Reward function currently uses a heuristic formula:
+ * NOTE: This is NOT Monte Carlo Tree Search, despite the name, which is retained
+ * because it is part of the published ABI. Each of num_chunks rounds generates
+ * branches_per_chunk continuations of chunk_tokens each, scores them, appends the
+ * single best one to the prefix and continues. There is no tree, no visit counts,
+ * no UCT selection and no backpropagation: a losing branch is discarded at once and
+ * never revisited, so the search cannot recover from an early wrong turn.
+ *
+ * NOTE: The Process Reward function is a heuristic, not a learned value network or
+ * trained reward model:
  *   score = log_prob_density + token_diversity * 3.0 + log(1 + length) * 0.5
- * This is NOT a learned value network or trained reward model. It approximates
- * sequence quality using log-probability density, vocabulary diversity, and length.
- * A trained PRM checkpoint would improve MCTS search quality substantially.
+ * A trained PRM checkpoint would improve search quality substantially.
+ *
+ * Writes a SINGLE best sequence to out_tokens, not one sequence per channel.
  *
  * @param ctx               Engine handle pointer.
  * @param prompt_tokens     Array of prompt token IDs.

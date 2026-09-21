@@ -258,7 +258,12 @@ To maintain full transparency, here is the current engineering status of all sys
   - AES-256-GCM column encryption backed by Keychain Data Protection.
 
 - **Work in Progress & Roadmapped**:
-  - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics. Training an on-device neural verifier is in progress.
-  - **Tree Search**: The Best-of-N decoding currently conducts sequential multi-channel rollouts; full Monte Carlo Tree Search (MCTS) expansion is planned.
+  - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics — concretely `logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5`, hand-tuned rather than learned. Training an on-device neural verifier is in progress.
+  - **Tree Search**: Despite the name, `generateMCTS` / `AntigravityEngineNativeMCTSGenerate` is **not** Monte Carlo Tree Search. It is a chunk-wise greedy hill climb: each round generates N continuations, scores them with the PRM heuristic, appends the single best one and moves on. There is no tree, no visit counts, no UCT selection and no backpropagation, so it cannot recover from an early wrong turn. The name is retained because it is part of the published ABI. Real UCT expansion and backpropagation are planned.
   - **Speculative Sampling**: Speculative drafting currently uses greedy decoding rather than stochastic top-p sampling.
   - **Cross-Platform**: Windows ARM64 and Vulkan shader backends are experimental drafts and not yet functional for production use.
+
+- **Notes on Verification**:
+  - The C++, Swift and Python suite results quoted above were measured on Apple Silicon. They require the Apple toolchain and real model weights, so they cannot be reproduced on Linux or in a GPU-less CI runner.
+  - `tests/test_bridge_contract.cpp` is the exception: it links the pure-C++ bridge against stub implementations of the Metal C API and runs anywhere, with no GPU and no weights.
+  - Set `ANTIGRAVITY_MODEL_DIR` to point the engine, the PRM weight loader and the test clients at a model directory outside the working tree.
