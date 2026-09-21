@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -322,10 +323,20 @@ antigravity_engine_t antigravity_engine_create(const antigravity_config_t* confi
         tok_search_paths.push_back(mp.substr(0, last_slash) + "/tokenizer.json");
     }
     tok_search_paths.push_back(mp + "/tokenizer.json");
+
+    // ANTIGRAVITY_MODEL_DIR lets a caller point at a model directory outside the cwd,
+    // replacing the absolute paths of one developer's machine that used to live here.
+    if (const char* env_dir = std::getenv("ANTIGRAVITY_MODEL_DIR")) {
+        if (env_dir[0] != '\0') {
+            std::string ed(env_dir);
+            tok_search_paths.push_back(ed + "/tokenizer.json");
+            tok_search_paths.push_back(ed + "/tinyllama/tokenizer.json");
+            tok_search_paths.push_back(ed + "/qwen/tokenizer.json");
+        }
+    }
+
     tok_search_paths.push_back("models/tinyllama/tokenizer.json");
     tok_search_paths.push_back("models/qwen/tokenizer.json");
-    tok_search_paths.push_back("/Users/MohssineChazi2/moat/models/tinyllama/tokenizer.json");
-    tok_search_paths.push_back("/Users/MohssineChazi2/moat/models/qwen/tokenizer.json");
 
     for (const auto& path : tok_search_paths) {
         if (engine->tokenizer.load(path)) {

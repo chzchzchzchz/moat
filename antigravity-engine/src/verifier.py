@@ -169,11 +169,15 @@ class NeuralPRMVerifier:
         )
         # Attempt to load pretrained PRM weights if available
         if model_dir is None:
-            for candidate in [
-                "/Users/MohssineChazi2/moat/models",
+            candidates = []
+            env_dir = os.environ.get("ANTIGRAVITY_MODEL_DIR")
+            if env_dir:
+                candidates.append(env_dir)
+            candidates += [
                 os.path.join(os.path.dirname(__file__), "..", "models"),
-                os.path.join(os.path.dirname(__file__), "models")
-            ]:
+                os.path.join(os.path.dirname(__file__), "models"),
+            ]
+            for candidate in candidates:
                 if os.path.exists(os.path.join(candidate, "prm_head.safetensors")):
                     model_dir = candidate
                     break

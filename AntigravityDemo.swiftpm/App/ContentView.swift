@@ -35,8 +35,12 @@ class AppViewModel: ObservableObject {
             
             DispatchQueue.main.async { self.status = "Loading weights..." }
             
-            // Mock safetensors load for the demo
-            let modelPath = "/Users/MohssineChazi2/moat/models/tinyllama/model_fp16.safetensors"
+            // Model location: ANTIGRAVITY_MODEL_DIR if set, else a bundled models/ directory.
+            // This replaced one developer's absolute path, which no other machine has.
+            let modelDir = ProcessInfo.processInfo.environment["ANTIGRAVITY_MODEL_DIR"]
+                ?? Bundle.main.resourcePath.map { $0 + "/models" }
+                ?? "models"
+            let modelPath = modelDir + "/tinyllama/model_fp16.safetensors"
             let res = AntigravityEngineLoadModel(ctx, modelPath)
             if res != 0 {
                 DispatchQueue.main.async { self.status = "Failed to load weights (err \(res))" }
