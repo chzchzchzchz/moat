@@ -2,7 +2,10 @@ import SwiftUI
 import AntigravityCore
 
 class AppViewModel: ObservableObject {
-    @Published var prompt: String = "Prove that 2^x = 16"
+    // This target links no tokenizer, so it cannot turn typed text into token IDs.
+    // The benchmark therefore runs a fixed, pre-tokenized prompt. This used to be an
+    // editable @Published field bound to a TextField whose value was never read.
+    let benchmarkPrompt = "Prove that 2^x = 16"
     @Published var status: String = "Ready to test Antigravity N=8 Test-Time Search."
     @Published var throughput: String = "-"
     @Published var ttft: String = "-"
@@ -50,7 +53,9 @@ class AppViewModel: ObservableObject {
             
             DispatchQueue.main.async { self.status = "Running 8 parallel rollouts on Metal GPU..." }
             
-            let promptTokens: [Int32] = [1, 15043, 29892, 1125, 29892, 29871, 313, 29906] // "Prove that"
+            // Pre-tokenized form of benchmarkPrompt, fixed because this target has no
+            // tokenizer. Keep in sync with benchmarkPrompt if that string changes.
+            let promptTokens: [Int32] = [1, 15043, 29892, 1125, 29892, 29871, 313, 29906]
             var outTokens = [Int32](repeating: 0, count: 8 * 32)
             var outLogprobs = [Float](repeating: 0, count: 8)
             var outCounts = [Int32](repeating: 0, count: 8)
@@ -109,7 +114,10 @@ struct ContentView: View {
                 }
                 
                 Section(header: Text("Task")) {
-                    TextField("Prompt", text: $viewModel.prompt)
+                    Text(viewModel.benchmarkPrompt)
+                    Text("Fixed benchmark prompt. This target links no tokenizer, so the prompt is pre-tokenized and cannot be edited here.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     Button(action: {
                         viewModel.runTest()
                     }) {

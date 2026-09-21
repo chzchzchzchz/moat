@@ -1,12 +1,17 @@
 import os
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
+
 def generate():
     # Read the actual C++ engine code
-    with open('/Users/MohssineChazi2/moat/antigravity-engine/src/transformer_engine.mm', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'antigravity-engine/src/transformer_engine.mm'), 'r') as f:
         metal_code = f.read()
     
     # Read the Verifier code
-    with open('/Users/MohssineChazi2/moat/antigravity-engine/src/verifier.py', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'antigravity-engine/src/verifier.py'), 'r') as f:
         verifier_code = f.read()
         
     doc = r"""# Project Antigravity: Achieving Cloud-Tier Mathematical Reasoning on iPhone Constraints via Edge Test-Time Compute
@@ -119,7 +124,7 @@ By utilizing the idle A17 Pro neural engines, the application completely bypasse
 The Antigravity Engine demonstrates that the physical limitations of mobile devices do not preclude the deployment of elite reasoning models. By intelligently decoupling memory requirements across time and substituting parameter scale with test-time search, we have successfully run cloud-tier mathematical logic natively on Apple Silicon. This breakthrough paves the way for a new generation of fully private, disconnected, and highly capable AI agents operating entirely on the edge.
 """
 
-    with open("/Users/MohssineChazi2/moat/antigravity_whitepaper_extended.md", "w") as f:
+    with open(os.path.join(MOAT_ROOT, "antigravity_whitepaper_extended.md"), "w") as f:
         f.write(doc)
 
 if __name__ == "__main__":

@@ -5,9 +5,15 @@ from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler
 import numpy as np
 import copy
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 print("Loading 4B Model for MCTS...")
-model, tokenizer = load("/Users/MohssineChazi2/moat/models/qwen3_5_4b_4bit", model_config={"trust_remote_code": True})
+model, tokenizer = load(os.path.join(MOAT_ROOT, "models/qwen3_5_4b_4bit"), model_config={"trust_remote_code": True})
 
 def score_chunk(text: str) -> float:
     # Basic Process Reward heuristic for a chunk of text

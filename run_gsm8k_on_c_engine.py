@@ -3,12 +3,18 @@ import subprocess
 import sys
 import re
 
-sys.path.insert(0, '/Users/MohssineChazi2/moat/antigravity-engine/src')
+sys.path.insert(0, os.path.join(MOAT_ROOT, 'antigravity-engine/src'))
 from tokenizer import LlamaTokenizer
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 def load_gsm8k():
     data = []
-    with open('/Users/MohssineChazi2/moat/data/gsm8k/test.jsonl', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'data/gsm8k/test.jsonl'), 'r') as f:
         for i, line in enumerate(f):
             if i >= 1: break # Just run 1 question for the demo
             data.append(json.loads(line))
@@ -16,13 +22,13 @@ def load_gsm8k():
 
 def run_c_engine(prompt_ids):
     prompt_str = ",".join(map(str, prompt_ids))
-    cmd = ["/Users/MohssineChazi2/moat/test_qwen_runner", prompt_str]
+    cmd = [os.path.join(MOAT_ROOT, "test_qwen_runner"), prompt_str]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.stdout
 
 def main():
     print("Loading Tokenizer...")
-    tok = LlamaTokenizer('/Users/MohssineChazi2/moat/models/tinyllama/tokenizer.json')
+    tok = LlamaTokenizer(os.path.join(MOAT_ROOT, 'models/tinyllama/tokenizer.json'))
     
     questions = load_gsm8k()
     q = questions[0]

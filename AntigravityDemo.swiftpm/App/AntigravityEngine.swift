@@ -6,6 +6,12 @@
 import Foundation
 import AntigravityCore
 
+// NOTE: nothing in this demo app currently calls this wrapper — ContentView drives the
+// C API directly. It is kept because it is the clean entry point once a tokenizer is
+// linked into this target, but it is therefore NOT exercised by running the demo.
+// Verify it against the C bridge before relying on it: the sibling copy of that bridge
+// drifted into returning fabricated output precisely because nothing exercised it.
+
 /// Public configuration for the Antigravity local inference engine.
 public struct EngineConfig {
     /// Maximum allowed physical RAM in bytes (default: 4.5GB iOS app entitlement ceiling)

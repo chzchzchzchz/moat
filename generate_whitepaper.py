@@ -1,5 +1,10 @@
 import os
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
+
 SECTIONS = {
     "0_title": r"""# Project Antigravity: Achieving Cloud-Tier Mathematical Reasoning on iPhone Constraints via Edge Test-Time Compute
 
@@ -193,7 +198,7 @@ kernel void batched_gemm_4bit(
         doc += f"- Path 3: Perfect execution of logical chain. Result: CORRECT.\n"
         doc += f"**Verifier Decision:** The ListWiseVerifier successfully selected Path 3 due to its superior length-normalized density ($\Delta = +0.{i}42$) compared to the repetitive loops of Paths 1 and 2.\n\n"
 
-    with open("/Users/MohssineChazi2/moat/antigravity_whitepaper_extended.md", "w") as f:
+    with open(os.path.join(MOAT_ROOT, "antigravity_whitepaper_extended.md"), "w") as f:
         f.write(doc)
         
 if __name__ == "__main__":

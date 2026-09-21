@@ -20,8 +20,12 @@ def get_dylib_path() -> str:
     for candidate in [
         Path.cwd() / "libantigravity_engine.dylib",
         Path(__file__).resolve().parent.parent / "libantigravity_engine.dylib",
-        Path("/Users/MohssineChazi2/moat/libantigravity_engine.dylib"),
-        Path("/Users/MohssineChazi2/moat/antigravity-engine/libantigravity_engine.dylib")
+        # ANTIGRAVITY_DYLIB_DIR replaces the absolute paths of one developer's machine
+        # that used to be hardcoded here, and which no installing user could ever have.
+        *(
+            [Path(os.environ["ANTIGRAVITY_DYLIB_DIR"]) / "libantigravity_engine.dylib"]
+            if os.environ.get("ANTIGRAVITY_DYLIB_DIR") else []
+        ),
     ]:
         if candidate.exists():
             return str(candidate)

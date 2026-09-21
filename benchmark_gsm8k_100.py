@@ -12,11 +12,16 @@ import torch
 from collections import Counter
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-sys.path.insert(0, "/Users/MohssineChazi2/moat/antigravity-engine/src")
-sys.path.insert(0, "/Users/MohssineChazi2/moat/antigravity-engine")
+sys.path.insert(0, os.path.join(MOAT_ROOT, "antigravity-engine/src"))
+sys.path.insert(0, os.path.join(MOAT_ROOT, "antigravity-engine"))
 
 from genprm_verifier import GenPRMVerifier
 from dora_clustering import DORAClusterer
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 def get_peak_rss_mb() -> float:
     rusage = resource.getrusage(resource.RUSAGE_SELF)
