@@ -51,7 +51,11 @@ final class AntigravityEngineTests: XCTestCase {
     }
 
     func testVisionEncoderFallbackEncoding() throws {
-        let encoder = VisionEncoder(modelURL: nil, hiddenDim: 64, patchSize: 14, imageSize: 28)
+        // The fallback is opt-in: it returns patch colour averages, not vision embeddings.
+        let encoder = VisionEncoder(
+            modelURL: nil, hiddenDim: 64, patchSize: 14, imageSize: 28,
+            allowsNonSemanticFallback: true
+        )
         // 28 / 14 = 2, 2 * 2 = 4 patches
         XCTAssertEqual(encoder.patchCount, 4)
 
@@ -74,6 +78,17 @@ final class AntigravityEngineTests: XCTestCase {
         XCTAssertEqual(embeddings.count, 4 * 64, "Expected 4 patches * 64 hidden_dim = 256 floats")
         // No NaN or Inf values
         XCTAssertFalse(embeddings.contains(where: { $0.isNaN || $0.isInfinite }))
+        XCTAssertFalse(encoder.canProduceEmbeddings, "No CoreML model was supplied")
+
+        // Without the opt-in, the same encoder must refuse rather than return these vectors.
+        let strict = VisionEncoder(
+            modelURL: nil, hiddenDim: 64, patchSize: 14, imageSize: 28
+        )
+        XCTAssertThrowsError(try strict.encode(image: image)) { error in
+            guard case AntigravityError.visionEncodingFailed = error else {
+                return XCTFail("Expected visionEncodingFailed, got \(error)")
+            }
+        }
     }
 
     // MARK: - AgentTool Tests

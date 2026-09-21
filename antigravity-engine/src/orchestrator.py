@@ -5,6 +5,7 @@ Integrates engine subsystems into a pipeline:
   1. Native C++ Metal Transformer (via ctypes bridge) — PRIMARY PATH
      Drives full 22-layer autoregressive decode on Apple Silicon GPU.
   2. PyTorch MPS Transformer — FALLBACK (only if dylib missing)
+     If neither backend has weights, generation raises rather than inventing output.
   3. INT4 Quantized Super-Block Weights & Softmax LUT
   4. Batched parallel rollout coordinator (N=8 reasoning traces)
   5. Paged KV-cache memory manager
@@ -43,60 +44,6 @@ from genprm_verifier import GenPRMVerifier
 from dora_clustering import DORAClusterer
 
 
-class RealTransformerLayer:
-    """
-    Transformer Layer with SwiGLU MLP and self-attention.
-
-    NOTE: Weights are random-initialized (not trained).
-    This validates the forward-pass pipeline shape and numerics.
-    For real inference, replace weights with loaded model parameters.
-    """
-
-    def __init__(self, hidden_dim: int = 256, intermediate_dim: int = 512, seed: int = 42):
-        self.hidden_dim = hidden_dim
-        self.intermediate_dim = intermediate_dim
-        
-        # Initialize deterministic weights
-        rng = np.random.RandomState(seed)
-        self.w_q = (rng.randn(hidden_dim, hidden_dim) * 0.02).astype(np.float16)
-        self.w_k = (rng.randn(hidden_dim, hidden_dim) * 0.02).astype(np.float16)
-        self.w_v = (rng.randn(hidden_dim, hidden_dim) * 0.02).astype(np.float16)
-        self.w_o = (rng.randn(hidden_dim, hidden_dim) * 0.02).astype(np.float16)
-        self.w_gate = (rng.randn(hidden_dim, intermediate_dim) * 0.02).astype(np.float16)
-        self.w_up = (rng.randn(hidden_dim, intermediate_dim) * 0.02).astype(np.float16)
-        self.w_down = (rng.randn(intermediate_dim, hidden_dim) * 0.02).astype(np.float16)
-
-    def forward_batch(self, x: np.ndarray) -> np.ndarray:
-        """
-        Execute forward pass across N channels simultaneously: shape (N, K).
-        """
-        N, K = x.shape
-        # Attention projection
-        q = x @ self.w_q
-        k = x @ self.w_k
-        v = x @ self.w_v
-        
-        # Simplified self-attention with scaling
-        scale = 1.0 / np.sqrt(K)
-        attn_scores = (q @ k.T) * scale
-        
-        # Softmax
-        exp_scores = np.exp(attn_scores - np.max(attn_scores, axis=-1, keepdims=True))
-        attn_probs = exp_scores / np.sum(exp_scores, axis=-1, keepdims=True)
-        
-        attn_out = attn_probs @ v
-        x_attn = x + (attn_out @ self.w_o)
-        
-        # SwiGLU MLP: (silu(x @ w_gate) * (x @ w_up)) @ w_down
-        gate = x_attn @ self.w_gate
-        up = x_attn @ self.w_up
-        # SiLU activation: x * sigmoid(x)
-        silu_gate = gate * (1.0 / (1.0 + np.exp(-np.clip(gate, -10, 10))))
-        mlp_out = (silu_gate * up) @ self.w_down
-        
-        return (x_attn + mlp_out).astype(np.float16)
-
-
 class AntigravityEngine:
     """
     Engine orchestrator for parallel Best-of-N decode.
@@ -104,7 +51,9 @@ class AntigravityEngine:
     Generation priority:
       1. Native C++ Metal engine (via ctypes) — zero Python overhead
       2. PyTorch MPS model — fallback if dylib missing
-      3. Pipeline validator — last resort with random weights
+
+    There is no third path. When neither backend has weights, generate() raises
+    RuntimeError rather than returning output derived from random parameters.
     """
 
     def __init__(
@@ -218,16 +167,6 @@ class AntigravityEngine:
                 except Exception as e:
                     print(f"[AntigravityEngine] Notice: MPS fallback failed ({e})")
                     self.real_model = None
-
-        # ======================================================================
-        # PATH 3 missing attributes
-        # ======================================================================
-        import logging
-        logging.warning("PATH 3 uses random weights.")
-        rng = np.random.RandomState(42)
-        self.embedding_table = (rng.randn(self.vocab_size, self.hidden_dim) * 0.02).astype(np.float16)
-        self.lm_head_weight = (rng.randn(self.hidden_dim, self.vocab_size) * 0.02).astype(np.float16)
-        self.transformer_layer = RealTransformerLayer(hidden_dim=self.hidden_dim, intermediate_dim=self.hidden_dim * 2)
 
         # ======================================================================
         # Verifier & Support Components
@@ -384,7 +323,7 @@ class AntigravityEngine:
             cum_logprobs = np.array(channel_logprobs_list, dtype=np.float32)
 
         # ============================================================
-        # PATH 3: Pipeline Validator (no real model)
+        # No backend has weights — refuse rather than invent output
         # ============================================================
         else:
             raise RuntimeError('No model weights found. Cannot generate. Please download model weights first.')
