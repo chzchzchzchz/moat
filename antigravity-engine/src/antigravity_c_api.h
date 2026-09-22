@@ -159,14 +159,24 @@ int32_t AntigravityEngineNativeGenerate(
 /**
  * Execute native Speculative Decoding decode using a Draft Engine.
  *
+ * NOTE: `temperature` and `top_p` are accepted but currently IGNORED. Decoding is
+ * greedy in both the draft and the target. The acceptance test compares the draft
+ * token against the target's own greedy pick for exact equality, which is only
+ * distribution-correct under greedy decoding; sampling without the probability-ratio
+ * accept/reject step would silently change the output distribution. Stochastic
+ * speculative sampling is roadmapped. Pass any values you like -- the output will be
+ * the same as temperature=0.
+ *
+ * NOTE: output is single-channel regardless of the context's n_channels.
+ *
  * @param ctx               Target Engine handle pointer (e.g. 4.0B model).
  * @param draft_ctx         Draft Engine handle pointer (e.g. 0.5B model).
  * @param prompt_tokens     Array of prompt token IDs.
  * @param prompt_len        Length of prompt_tokens array.
  * @param max_new_tokens    Maximum new tokens to generate.
  * @param k_draft           Number of draft tokens per speculative step.
- * @param temperature       Sampling temperature.
- * @param top_p             Nucleus sampling probability threshold.
+ * @param temperature       IGNORED; see note above.
+ * @param top_p             IGNORED; see note above.
  * @param out_tokens        Output buffer [max_new_tokens] for generated tokens.
  * @param out_token_counts  Output pointer for actual tokens generated.
  * @param out_ttft_ms       Output: time to first token in milliseconds.

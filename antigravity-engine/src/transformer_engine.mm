@@ -1073,7 +1073,8 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
     }
     
     auto start_time = std::chrono::high_resolution_clock::now();
-    std::mt19937 rng(42);
+    std::random_device rd;
+    std::mt19937 rng(rd());
 
     GenerationResult res;
     res.channel_tokens.resize(1); // Speculative decoding prototype is 1-channel for now
@@ -1170,6 +1171,11 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
             
             _Float16* d_logits = (_Float16*)[draft_engine->scratchLogits_ contents];
             // Force greedy for draft
+            // Greedy (temperature 0, top_p 1) deliberately, NOT the caller's temperature
+            // and top_p. The acceptance test below is an exact match against the target's
+            // own greedy pick, which is only distribution-correct for greedy decoding.
+            // Sampling here without the probability-ratio accept/reject step would silently
+            // change the output distribution. See AntigravityEngineNativeGenerateSpeculative.
             int32_t next_t = draft_engine->sampleToken(d_logits, draft_engine->config_.vocab_size, 0.0f, 1.0f, rng);
             draft_tokens.push_back(next_t);
             draft_current_token = next_t;
@@ -1211,6 +1217,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         int accepted = 0;
         for (int i = 0; i < q_len; i++) {
             _Float16* row_logits = t_logits + i * config_.vocab_size;
+            // Greedy for the same reason as the draft sampling above.
             int32_t target_tok = sampleToken(row_logits, config_.vocab_size, 0.0f, 1.0f, rng);
             
             res.channel_tokens[0].push_back(target_tok);
@@ -1470,11 +1477,22 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
     }
 
     const uint32_t H = config_.hidden_dim;
-    const int EOS_TOKEN = 2;
 
+    // EOS was hardcoded to 2, which is Llama's. On a Qwen vocabulary that token never
+    // appears as a stop, so multimodal decode ran to max_new_tokens every time and
+    // emitted tokens past the end of the response. Match generate()'s detection.
+    const bool is_qwen = (config_.vocab_size > 32000);
+    const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
+    const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
+    const int EOS_TOKEN = EOS_TOKEN_1;
+
+    // Seeds were fixed constants, so every call produced identical rollouts and the
+    // channels differed only by a constant offset. generate() already seeds from
+    // std::random_device; do the same here.
+    std::random_device rd;
     std::vector<std::mt19937> channel_rngs(config_.n_channels);
     for (int c = 0; c < config_.n_channels; c++) {
-        channel_rngs[c].seed(1337 + c * 10007);
+        channel_rngs[c].seed(rd() + c * 10007);
     }
 
     std::vector<bool> channel_active(config_.n_channels, true);
@@ -1603,7 +1621,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             result.channel_tokens[c].push_back(next_token);
             result.total_tokens++;
 
-            if (next_token == EOS_TOKEN) {
+            if (next_token == EOS_TOKEN_1 || next_token == EOS_TOKEN_2 || next_token == 2) {
                 channel_active[c] = false;
             }
         }
