@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Only main on push: every other branch is covered by its pull request, and
+  # listing both made each commit on a PR branch build twice.
   push:
-    branches: [main, 'claude/**']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -78,6 +80,11 @@ jobs:
         working-directory: antigravity-engine/frameworks
         run: |
           unzip -q -o AntigravityEngine.xcframework.zip
+          # The committed zip carries AppleDouble resource forks (._*, __MACOSX).
+          # Clang sees ._AntigravityEngine.h etc. as headers missing from the module
+          # umbrella and warns on every build. Drop them.
+          rm -rf __MACOSX
+          find AntigravityEngine.xcframework -name '._*' -delete
           test -d AntigravityEngine.xcframework
 
       - name: Show toolchain

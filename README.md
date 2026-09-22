@@ -265,6 +265,8 @@ To maintain full transparency, here is the current engineering status of all sys
   - **Cross-Platform**: Windows ARM64 and Vulkan shader backends are experimental drafts and not yet functional for production use.
 
 - **Notes on Verification**:
-  - The C++, Swift and Python suite results quoted above were measured on Apple Silicon. They require the Apple toolchain and real model weights, so they cannot be reproduced on Linux or in a GPU-less CI runner.
-  - `tests/test_bridge_contract.cpp` is the exception: it links the pure-C++ bridge against stub implementations of the Metal C API and runs anywhere, with no GPU and no weights.
+  - CI (`.github/workflows/ci.yml`) runs on every pull request: the C++ bridge contract test and C API compile checks under `-Werror` on Linux, the Python security and verifier tests on Linux, and `swift build` plus `swift test` on a macOS arm64 runner.
+  - What CI does **not** cover: the tests needing TinyLlama weights self-skip on a runner with no model, so `testRealMetalEngineSOAPGenerationAndStorage` and `testTokenizerRealBPEWithTinyLlamaVocab` report as passed without exercising anything. The figures quoted above for the full C++ and Python suites still require Apple Silicon and real weights, and are not reproduced by CI.
+  - Several Python suites are excluded from CI because they need `torch` or do not terminate (soak, thermal, forensic hardware). They need fixing before they can be wired in.
+  - `Package.swift` points its `binaryTarget` at `frameworks/AntigravityEngine.xcframework`, but only the `.zip` is committed. Unzip it before `swift build`, as the CI job does, or the build fails to resolve the target.
   - Set `ANTIGRAVITY_MODEL_DIR` to point the engine, the PRM weight loader and the test clients at a model directory outside the working tree.
