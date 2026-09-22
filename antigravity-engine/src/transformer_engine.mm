@@ -563,6 +563,28 @@ bool MetalTransformerEngine::loadWeights(const std::string& safetensors_path) {
 // Metal Dispatch Helpers
 // ============================================================================
 
+void MetalTransformerEngine::dispatchGrid(
+    id<MTLComputeCommandEncoder> enc,
+    id<MTLComputePipelineState> pso,
+    MTLSize grid
+) {
+    if (!pso) return;
+    if (grid.width == 0 || grid.height == 0 || grid.depth == 0) return;
+
+    // Budget threads per group, clamped to what this pipeline allows. 256 is a
+    // common sweet spot on Apple GPUs: several SIMD groups per threadgroup without
+    // starving occupancy.
+    NSUInteger budget = std::min<NSUInteger>(256, pso.maxTotalThreadsPerThreadgroup);
+
+    // Fill from x outward, because thread_position_in_grid.x varies fastest and so
+    // determines whether adjacent lanes touch adjacent memory.
+    NSUInteger tx = std::min<NSUInteger>(grid.width, budget);
+    NSUInteger ty = std::min<NSUInteger>(grid.height, std::max<NSUInteger>(1, budget / tx));
+    NSUInteger tz = std::min<NSUInteger>(grid.depth, std::max<NSUInteger>(1, budget / (tx * ty)));
+
+    [enc dispatchThreads:grid threadsPerThreadgroup:MTLSizeMake(tx, ty, tz)];
+}
+
 void MetalTransformerEngine::dispatchGEMM(
     id<MTLComputeCommandEncoder> enc,
     id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C,
@@ -621,11 +643,12 @@ void MetalTransformerEngine::dispatchRMSNorm(
     
     // One threadgroup per batch element, 256 threads per group
     uint32_t threadsPerTG = std::min(dim, (uint32_t)256);
-    MTLSize tg = MTLSizeMake(1, 1, 1);
     MTLSize threads = MTLSizeMake(threadsPerTG, 1, 1);
-    
-    // batch threadgroups
-    tg = MTLSizeMake(batch, 1, 1);
+
+    // One threadgroup per batch element. (This previously carried a dead
+    // MTLSizeMake(1,1,1) initialiser that made the site look like the
+    // one-thread dispatches elsewhere in this file, which it never was.)
+    MTLSize tg = MTLSizeMake(batch, 1, 1);
     [enc dispatchThreadgroups:tg threadsPerThreadgroup:threads];
 }
 
@@ -657,8 +680,7 @@ void MetalTransformerEngine::dispatchRoPE(
     // Grid: (batch * seq_len, max(n_heads, n_kv_heads), head_dim / 2)
     uint32_t max_heads = std::max(n_heads, n_kv_heads);
     MTLSize grid = MTLSizeMake(batch * seq_len, max_heads, head_dim / 2);
-    MTLSize tg = MTLSizeMake(1, 1, 1);
-    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    dispatchGrid(enc, ropePipeline_, grid);
 }
 
 
@@ -716,13 +738,12 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
             MTLSize grid = MTLSizeMake(ql, nkv, hdim);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
 
             // Append V
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][ch].v_cache offset:0 atIndex:1];
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
         }
 
         uint32_t cur_seq_len = seq_pos + 1;
@@ -740,8 +761,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(nh, ql, sl);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnScoresPipeline_, grid);
         }
 
         if (softmaxPipeline_) {
@@ -769,8 +789,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(nh, ql, hd);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnValuePipeline_, grid);
         }
     }
 
@@ -786,8 +805,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 
     // 7. MLP RMSNorm: scratch1_ = RMSNorm(scratch3_, post_attn_norm)
@@ -807,8 +825,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_inter = M * I;
         [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_inter, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, siluMulPipeline_, grid);
     }
 
     // 10. Down Projection (Batched GEMM M x I @ I x H)
@@ -823,8 +840,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 }
 
@@ -872,12 +888,11 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
             MTLSize grid = MTLSizeMake(ql, nkv, hdim);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
 
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
         }
 
         uint32_t cur_seq_len = seq_pos + q_len;
@@ -895,8 +910,7 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(1 * nh, ql, sl);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnScoresPipeline_, grid);
         }
 
         if (softmaxPipeline_) {
@@ -925,8 +939,7 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(1 * nh, ql, hd);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnValuePipeline_, grid);
         }
     }
 
@@ -940,8 +953,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 
     dispatchRMSNorm(enc, scratch3_, lw.post_attn_norm, scratch1_, M, H);
@@ -958,8 +970,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_inter = M * I;
         [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_inter, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, siluMulPipeline_, grid);
     }
 
     dispatchGEMM(enc, scratch2_, lw.down_proj, scratch1_, M, I, H);
@@ -972,8 +983,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 }
 
@@ -1099,8 +1109,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H_draft = draft_engine->config_.hidden_dim;
         [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
         MTLSize gridD = MTLSizeMake(1, H_draft, 1);
-        MTLSize tgD = MTLSizeMake(1, 1, 1);
-        [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+        draft_engine->dispatchGrid(encDraft, draft_engine->embedPipeline_, gridD);
 
         for (int l = 0; l < draft_engine->config_.n_layers; l++) {
             draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos);
@@ -1119,8 +1128,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H = config_.hidden_dim;
         [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(1, H, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, embedPipeline_, grid);
 
         for (int l = 0; l < config_.n_layers; l++) {
             forwardLayer(cmdBuf, enc, l, scratch1_, scratch1_, 1, seq_pos);
@@ -1155,8 +1163,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
             uint32_t H_draft = draft_engine->config_.hidden_dim;
             [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
             MTLSize gridD = MTLSizeMake(1, H_draft, 1);
-            MTLSize tgD = MTLSizeMake(1, 1, 1);
-            [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+            draft_engine->dispatchGrid(encDraft, draft_engine->embedPipeline_, gridD);
 
             for (int l = 0; l < draft_engine->config_.n_layers; l++) {
                 draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos + k);
@@ -1197,8 +1204,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H = config_.hidden_dim;
         [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(q_len, H, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, embedPipeline_, grid);
 
         for (int l = 0; l < config_.n_layers; l++) {
             forwardBatched(cmdBuf, enc, l, scratch1_, scratch1_, 1, q_len, seq_pos);
@@ -1315,8 +1321,7 @@ GenerationResult MetalTransformerEngine::generate(
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
             
@@ -1361,8 +1366,7 @@ GenerationResult MetalTransformerEngine::generate(
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
             
@@ -1538,8 +1542,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
 
@@ -1585,8 +1588,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                 uint32_t hdim = H;
                 [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                 MTLSize grid = MTLSizeMake(1, H, 1);
-                MTLSize tg = MTLSizeMake(1, 1, 1);
-                [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                dispatchGrid(enc, embedPipeline_, grid);
             }
 
             for (int l = 0; l < config_.n_layers; l++) {

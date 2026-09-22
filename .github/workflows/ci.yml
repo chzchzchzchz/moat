@@ -141,6 +141,24 @@ jobs:
 
       # Nothing has ever compiled these. A syntax error in a kernel would only
       # surface at runtime on a device, as a pipeline that silently fails to build.
+      # swift build links the PREBUILT xcframework, so the Objective-C++ engine
+      # sources are never compiled by it. Any change to transformer_engine.mm was
+      # therefore unverified by CI. Compile them directly.
+      - name: Compile the Objective-C++ Metal engine
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
+            src/transformer_engine.mm \
+            -framework Metal -framework Foundation
+          echo "transformer_engine.mm compiles"
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
+            src/antigravity_c_api.cpp \
+            -framework Metal -framework Foundation
+          echo "antigravity_c_api.cpp compiles"
+
       - name: Compile Metal shaders
         working-directory: antigravity-engine
         run: |

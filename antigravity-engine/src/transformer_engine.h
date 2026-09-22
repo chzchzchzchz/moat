@@ -163,6 +163,20 @@ private:
     uint64_t allocatedBytes_;
     
     // Internal helpers
+    // Launch exactly `grid` threads, packed into threadgroups of a sensible width.
+    //
+    // Most dispatch sites in this engine passed the total thread count as the
+    // THREADGROUP count with threadsPerThreadgroup = (1,1,1). On Apple GPUs a
+    // threadgroup is scheduled onto a 32-lane SIMD group, so that masks off 31 of
+    // every 32 lanes and, worse, leaves almost no memory requests in flight --
+    // which is what a bandwidth-bound decode needs. dispatchThreads takes the total
+    // thread count directly and handles a non-uniform remainder itself, so
+    // thread_position_in_grid keeps exactly the same meaning and no out-of-range
+    // threads are launched.
+    void dispatchGrid(id<MTLComputeCommandEncoder> enc,
+                      id<MTLComputePipelineState> pso,
+                      MTLSize grid);
+
     void dispatchGEMM(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C, uint32_t M, uint32_t K, uint32_t N);
     void dispatchRMSNorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> input, id<MTLBuffer> weight, id<MTLBuffer> output, uint32_t batch, uint32_t dim);
     void dispatchRoPE(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> q, id<MTLBuffer> k, uint32_t start_pos, uint32_t batch, uint32_t seq_len = 1);
