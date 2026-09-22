@@ -20,6 +20,18 @@ import json
 import numpy as np
 import pytest
 
+# These exercise real generation, which needs TinyLlama weights on disk. Without
+# them the orchestrator correctly raises rather than inventing output, so the test
+# cannot run. Skip instead of failing, the way the Swift suite skips its
+# weight-dependent cases.
+_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "tinyllama")
+_HAS_WEIGHTS = os.path.exists(os.path.join(_MODEL_DIR, "model.safetensors"))
+requires_weights = pytest.mark.skipif(
+    not _HAS_WEIGHTS,
+    reason=f"TinyLlama weights not found at {_MODEL_DIR}; real generation cannot run",
+)
+
+
 # Ensure source directory is in sys.path
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if SRC_DIR not in sys.path:
@@ -176,7 +188,15 @@ def test_05_pillar_b_vericoding_shell():
     assert res_sat.counterexample is not None
 
     # 3. In-process safe code executor
-    executor = iOSCodeExecutor()
+    # In-process exec is off by default: a restricted-builtins namespace is not a
+    # sandbox, and attribute traversal reaches the interpreter without any builtin.
+    # Assert the refusal, then opt in explicitly to exercise the executor itself.
+    default_executor = iOSCodeExecutor()
+    refused, _, refusal_msg = default_executor.execute_simple_program("print(1)")
+    assert refused is False
+    assert "disabled" in refusal_msg
+
+    executor = iOSCodeExecutor(allow_unrestricted_exec=True)
     success, out, err = executor.execute_simple_program("nums = [1, 2, 3, 4, 5]\nprint(sum(nums))")
     assert success is True
     assert out == "15"
@@ -235,6 +255,7 @@ def test_06_pillar_c_model_bus_and_virtual_context():
     print(f"✅ Test 6: Pillar C Virtual Context (512 hot / 1024 virtual, {fault_latency_ms:.2f}ms fault) verified.")
 
 
+@requires_weights
 def test_07_end_to_end_orchestrator_flow():
     """Verify AntigravityEngine full end-to-end multi-channel reasoning pipeline on Metal GPU."""
     from orchestrator import AntigravityEngine

@@ -62,20 +62,7 @@ jobs:
       # which defeated the previous __builtins__ whitelist.
       #
       # Deliberately excluded, with reasons:
-      #   test_benchmark_rollout.py  a hardware benchmark, not a correctness test. It
-      #                              repeats 2048x32000 fp16 projections and asserts
-      #                              <= 1.0s, which holds on MPS. On a CPU runner the
-      #                              same work takes ~13 minutes and then fails on
-      #                              timing. It needs an MPS guard before it can run
-      #                              anywhere but Apple Silicon.
-      #   test_model_loader.py       imports safetensors.torch, so it needs torch even
-      #                              though safetensors alone installs cleanly. 6 of its
-      #                              8 tests pass without it; the reader test does not.
-      #   test_orchestrator.py, test_therapist_sentinel.py,
-      #   test_soak_thermal.py, test_forensic_hardware_physics.py,
-      #   test_full_system_top_to_bottom.py
-      #                              require torch, and the last three also assume
-      #                              specific hardware.
+      # Suites needing torch run in the python-torch job below instead.
       - name: Run Python test suites
         working-directory: antigravity-engine
         env:
@@ -97,6 +84,38 @@ jobs:
 
       - name: Syntax-check every Python source file
         run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
+
+  python-torch:
+    name: Python suites requiring torch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Split from the fast job so that job keeps sub-20s feedback; the CPU torch
+      # wheel alone takes about a minute to install.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip pytest numpy safetensors tokenizers psutil
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+
+      # Cases needing TinyLlama weights or Apple Silicon self-skip: the benchmark
+      # guards on MPS, and the generation tests guard on the weights being present.
+      # Excluded entirely: test_orchestrator.py and test_soak_thermal.py, whose every
+      # test drives real generation and so has nothing left to run without weights.
+      - name: Run torch-dependent suites
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -v \
+            tests/test_model_loader.py \
+            tests/test_therapist_sentinel.py \
+            tests/test_benchmark_rollout.py \
+            tests/test_full_system_top_to_bottom.py \
+            tests/test_forensic_hardware_physics.py
 
   swift-build:
     name: Swift SDK build + tests (macOS)
