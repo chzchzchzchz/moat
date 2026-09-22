@@ -56,14 +56,44 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip pytest numpy z3-solver
 
-      # These cover the two code-execution paths: that model-generated code is not
-      # run by default, and that the restricted expression evaluator rejects the
-      # interpreter escapes that defeated the previous __builtins__ whitelist.
-      - name: Run security and verifier tests
+      # Every suite here runs in under a few seconds without torch, a GPU or model
+      # weights. Among them: that model-generated code is not executed by default,
+      # and that the restricted expression evaluator rejects the interpreter escapes
+      # which defeated the previous __builtins__ whitelist.
+      #
+      # Deliberately excluded, with reasons:
+      #   test_benchmark_rollout.py  a hardware benchmark, not a correctness test. It
+      #                              repeats 2048x32000 fp16 projections and asserts
+      #                              <= 1.0s, which holds on MPS. On a CPU runner the
+      #                              same work takes ~13 minutes and then fails on
+      #                              timing. It needs an MPS guard before it can run
+      #                              anywhere but Apple Silicon.
+      #   test_model_loader.py       imports safetensors.torch, so it needs torch even
+      #                              though safetensors alone installs cleanly. 6 of its
+      #                              8 tests pass without it; the reader test does not.
+      #   test_orchestrator.py, test_therapist_sentinel.py,
+      #   test_soak_thermal.py, test_forensic_hardware_physics.py,
+      #   test_full_system_top_to_bottom.py
+      #                              require torch, and the last three also assume
+      #                              specific hardware.
+      - name: Run Python test suites
         working-directory: antigravity-engine
         env:
           PYTHONPATH: src
-        run: python -m pytest tests/test_restricted_eval.py tests/test_genprm.py -v
+        run: |
+          python -m pytest -v \
+            tests/test_restricted_eval.py \
+            tests/test_genprm.py \
+            tests/test_ast_adversarial_suite.py \
+            tests/test_attention.py \
+            tests/test_batch_generator.py \
+            tests/test_batched_speed.py \
+            tests/test_batched_speed_metal.py \
+            tests/test_dora.py \
+            tests/test_fuzz_extreme_inputs.py \
+            tests/test_quantization.py \
+            tests/test_speculative_alpha.py \
+            tests/test_verifier.py
 
       - name: Syntax-check every Python source file
         run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
