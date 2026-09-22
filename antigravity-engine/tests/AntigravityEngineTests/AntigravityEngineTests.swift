@@ -313,13 +313,15 @@ final class AntigravityEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(tokenizer.vocabSize, 256, "Byte-fallback vocabulary must contain at least 256 bytes")
     }
 
-    func testTokenizerRealBPEWithTinyLlamaVocab() {
+    func testTokenizerRealBPEWithTinyLlamaVocab() throws {
         // Load real TinyLlama tokenizer.json with 32000 tokens and 61249 merge rules
         let tokenizerPath = NSHomeDirectory() + "/moat/models/tinyllama/tokenizer.json"
-        guard FileManager.default.fileExists(atPath: tokenizerPath) else {
-            print("Skipping testTokenizerRealBPEWithTinyLlamaVocab: tokenizer.json not found at \(tokenizerPath)")
-            return
-        }
+        // XCTSkip, not print-and-return: returning early reports the test as passed,
+        // so a run with no tokenizer looked like it had verified the BPE vocabulary.
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: tokenizerPath),
+            "tokenizer.json not found at \(tokenizerPath)"
+        )
 
         let tokenizer = AntigravityTokenizer(tokenizerJSONURL: URL(fileURLWithPath: tokenizerPath))
 
@@ -506,6 +508,9 @@ final class AntigravityEngineTests: XCTestCase {
         let modelPath = NSHomeDirectory() + "/moat/models/tinyllama/model.safetensors"
         let tokenizerPath = NSHomeDirectory() + "/moat/models/tinyllama/tokenizer.json"
 
+        // The assertions above this point exercise Metal allocation and run everywhere.
+        // Everything below needs real weights; without them this half is silently not
+        // covered, which the run output gives no sign of.
         if FileManager.default.fileExists(atPath: modelPath) && FileManager.default.fileExists(atPath: tokenizerPath) {
             try engine.loadModel(at: modelPath)
             XCTAssertTrue(engine.hasWeights, "hasWeights must be true after loading model")
@@ -560,10 +565,13 @@ final class AntigravityEngineTests: XCTestCase {
     func testRealMetalEngineSOAPGenerationAndStorage() async throws {
         let modelPath = NSHomeDirectory() + "/moat/models/tinyllama/model.safetensors"
         let tokenizerPath = NSHomeDirectory() + "/moat/models/tinyllama/tokenizer.json"
-        guard FileManager.default.fileExists(atPath: modelPath) && FileManager.default.fileExists(atPath: tokenizerPath) else {
-            print("Skipping testRealMetalEngineSOAPGenerationAndStorage: model files missing")
-            return
-        }
+        // XCTSkip rather than an early return, for the same reason: this test reported
+        // as passed on every runner that has no TinyLlama weights.
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: modelPath)
+                && FileManager.default.fileExists(atPath: tokenizerPath),
+            "TinyLlama weights not found; real generation cannot run"
+        )
 
         let config = EngineConfig(
             memoryLimitBytes: 4096 * 1024 * 1024,

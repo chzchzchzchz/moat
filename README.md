@@ -266,7 +266,7 @@ To maintain full transparency, here is the current engineering status of all sys
 
 - **Notes on Verification**:
   - CI (`.github/workflows/ci.yml`) runs on every pull request: the C++ bridge contract test and C API compile checks under `-Werror` on Linux, the Python security and verifier tests on Linux, and `swift build` plus `swift test` on a macOS arm64 runner.
-  - What CI does **not** cover: the tests needing TinyLlama weights self-skip on a runner with no model, so `testRealMetalEngineSOAPGenerationAndStorage` and `testTokenizerRealBPEWithTinyLlamaVocab` report as passed without exercising anything. The figures quoted above for the full C++ and Python suites still require Apple Silicon and real weights, and are not reproduced by CI.
-  - Several Python suites are excluded from CI because they need `torch` or do not terminate (soak, thermal, forensic hardware). They need fixing before they can be wired in.
+  - Tests needing TinyLlama weights or Apple Silicon report as **skipped**, not passed, so the run output distinguishes what was verified from what could not run. The figures quoted above for full-weight inference still require Apple Silicon and real model weights, and are not reproduced by CI.
+  - `test_orchestrator.py` and `test_soak_thermal.py` remain outside CI: every test in them drives real generation, so nothing would run without weights.
   - `Package.swift` points its `binaryTarget` at `frameworks/AntigravityEngine.xcframework`, but only the `.zip` is committed. Unzip it before `swift build`, as the CI job does, or the build fails to resolve the target.
   - Set `ANTIGRAVITY_MODEL_DIR` to point the engine, the PRM weight loader and the test clients at a model directory outside the working tree.
