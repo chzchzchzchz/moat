@@ -70,6 +70,7 @@ jobs:
         run: |
           python -m pytest -v \
             tests/test_restricted_eval.py \
+            tests/test_superblock_format.py \
             tests/test_genprm.py \
             tests/test_ast_adversarial_suite.py \
             tests/test_attention.py \
