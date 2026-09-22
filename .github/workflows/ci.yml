@@ -139,6 +139,27 @@ jobs:
           find AntigravityEngine.xcframework -name '._*' -delete
           test -d AntigravityEngine.xcframework
 
+      # Nothing has ever compiled these. A syntax error in a kernel would only
+      # surface at runtime on a device, as a pipeline that silently fails to build.
+      - name: Compile Metal shaders
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          mkdir -p build/metal
+          fail=0
+          for f in src/shaders/*.metal; do
+            name=$(basename "$f" .metal)
+            echo "--- $name ---"
+            if xcrun -sdk macosx metal -Werror -c "$f" -o "build/metal/$name.air"; then
+              xcrun -sdk macosx metallib "build/metal/$name.air" -o "build/metal/$name.metallib"
+              echo "    ok -> $name.metallib"
+            else
+              echo "    FAILED to compile $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
       - name: Show toolchain
         run: swift --version
 
