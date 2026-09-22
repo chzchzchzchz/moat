@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp-bridge-contract:
+    name: C++ bridge contract (no GPU, no weights)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The bridge is pure C++ behind an opaque handle, so it links against stub
+      # implementations of the Metal C API and runs anywhere. This is the test that
+      # catches buffer-layout drift between generation and verification.
+      - name: Build contract test
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            src/antigravity_engine_c.cpp tests/test_bridge_contract.cpp \
+            -o bin/test_bridge_contract
+
+      - name: Run contract test
+        working-directory: antigravity-engine
+        run: ./bin/test_bridge_contract
+
+      - name: Compile-check the C API surface
+        run: |
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -Iantigravity-engine/src antigravity-engine/src/antigravity_engine_c.cpp
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -Iantigravity-engine/src antigravity-engine/src/test_c_api_client.cpp
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -IAntigravityDemo.swiftpm/Core/include AntigravityDemo.swiftpm/Core/antigravity_engine_c.cpp
+
+  python-security:
+    name: Python security + verifier tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pytest numpy z3-solver
+
+      # These cover the two code-execution paths: that model-generated code is not
+      # run by default, and that the restricted expression evaluator rejects the
+      # interpreter escapes that defeated the previous __builtins__ whitelist.
+      - name: Run security and verifier tests
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: python -m pytest tests/test_restricted_eval.py tests/test_genprm.py -v
+
+      - name: Syntax-check every Python source file
+        run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
+
+  swift-build:
+    name: Swift SDK build + tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
+      # but only the .zip is committed, so a clean checkout cannot resolve it.
+      - name: Unpack the prebuilt xcframework
+        working-directory: antigravity-engine/frameworks
+        run: |
+          unzip -q -o AntigravityEngine.xcframework.zip
+          test -d AntigravityEngine.xcframework
+
+      - name: Show toolchain
+        run: swift --version
+
+      # This is the step that was missing: every Swift change gets compiled.
+      - name: Build
+        working-directory: antigravity-engine
+        run: swift build -v
+
+      # Tests needing TinyLlama weights self-skip via FileManager.fileExists, so the
+      # weight-free tests (tokenizer, SOAP parsing, encryption, vision refusal) still run.
+      - name: Test
+        working-directory: antigravity-engine
+        run: swift test
