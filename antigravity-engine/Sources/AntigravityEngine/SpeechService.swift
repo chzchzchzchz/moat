@@ -121,8 +121,12 @@ public actor SpeechService {
                     }
                     let rms = sqrt(sumSquares / Float(frames))
                     let level = min(1.0, max(0.02, rms * 6.0))
-                    Task {
-                        await self?.dispatchAudioLevel(level)
+                    // Bind to a let before the Task. Referencing the weak-captured
+                    // `self` var from inside concurrently-executing code is a warning
+                    // today and an error under Swift 6. The recognitionTask closure
+                    // below already does this correctly.
+                    if let self {
+                        Task { await self.dispatchAudioLevel(level) }
                     }
                 }
             }
