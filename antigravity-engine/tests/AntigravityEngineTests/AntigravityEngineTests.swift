@@ -222,6 +222,37 @@ final class AntigravityEngineTests: XCTestCase {
         XCTAssertTrue(note.formattedReport.contains("CLINICAL PSYCHOTHERAPY DOCUMENTATION"))
     }
 
+    func testMissingRiskSectionIsNotReportedAsNoRisk() {
+        // A model response with no [RISK] section means risk was not evaluated. The note
+        // must not assert a negative finding: previously this defaulted to
+        // "No acute risk factors identified during session.", putting an unverified
+        // absence-of-self-harm-risk claim into a clinical record.
+        let engine = SOAPTemplateEngine()
+        let outputWithoutRisk = """
+        [SUBJECTIVE]
+        Reports poor sleep.
+        [OBJECTIVE]
+        Alert and oriented.
+        [ASSESSMENT]
+        Insomnia.
+        [PLAN]
+        Sleep hygiene education.
+        """
+
+        let note = engine.parseModelOutput(outputWithoutRisk, patientId: "P-202", clinician: "Dr. Smith")
+
+        XCTAssertFalse(
+            note.riskAssessment.lowercased().contains("no acute risk"),
+            "Absent risk evaluation must not render as a negative finding"
+        )
+        XCTAssertFalse(
+            note.riskAssessment.lowercased().contains("no immediate self-harm"),
+            "Absent risk evaluation must not render as a negative finding"
+        )
+        XCTAssertTrue(note.riskAssessment.contains("NOT ASSESSED"))
+        XCTAssertTrue(note.formattedReport.contains("NOT ASSESSED"))
+    }
+
     // MARK: - PDFExportService Tests
 
     func testPDFExportGeneratesNonEmptyData() throws {
