@@ -21,10 +21,13 @@ kernel void moe_router(
     
     // Simple naive router max-search for top-k
     int token_offset = gid * hidden_dim;
-    int router_out_offset = gid * num_experts;
-    
+
+    // logits is a fixed 64-entry thread array, but num_experts is a runtime value.
+    // Without this guard a model with more than 64 experts writes past the end of it.
+    if (num_experts > 64) return;
+
     // Accumulate logits (hidden * router_weights^T)
-    thread float logits[64]; // Max 64 experts
+    thread float logits[64];
     for (int e = 0; e < num_experts; ++e) {
         float val = 0.0f;
         for (int d = 0; d < hidden_dim; ++d) {
@@ -48,10 +51,15 @@ kernel void moe_router(
         logits[max_idx] = -1e9; // Mask out
     }
     
-    // Softmax normalization over the Top-K
+    // Softmax normalization over the Top-K.
+    // Subtract the maximum first. exp() of a raw router logit overflows to inf for
+    // large activations, and the whole Top-K then normalises to NaN. Top-K was
+    // selected in descending order, so entry 0 is the maximum. This matches the
+    // row-max subtraction already used by softmax_kernel in transformer_ops.metal.
+    float max_logit = expert_weights[gid * top_k];
     float sum_exp = 0.0f;
     for (int k = 0; k < top_k; ++k) {
-        expert_weights[gid * top_k + k] = exp(expert_weights[gid * top_k + k]);
+        expert_weights[gid * top_k + k] = exp(expert_weights[gid * top_k + k] - max_logit);
         sum_exp += expert_weights[gid * top_k + k];
     }
     for (int k = 0; k < top_k; ++k) {

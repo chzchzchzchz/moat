@@ -30,7 +30,10 @@ kernel void fused_batched_gemm_int4(
 
         simdgroup_load(a_tile, activations + row_start * K_dim + k, K_dim);
 
-        half b_elements[8][8];
+        // Must be threadgroup, not thread-local: simdgroup_load reads the tile
+        // cooperatively across the simdgroup, so a per-thread copy is both the wrong
+        // address space (this file has never compiled) and the wrong data.
+        threadgroup half b_elements[8][8];
         for (uint r = 0; r < 8; r++) {
             uint global_k = k + r;
             for (uint c = 0; c < 8; c++) {
@@ -52,7 +55,9 @@ kernel void fused_batched_gemm_int4(
             }
         }
 
-        simdgroup_load(b_tile, &b_elements[0][0], 8);
+        // Barrier before the cooperative read: without it the tile is raced.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_load(b_tile, (const threadgroup half*)&b_elements[0][0], 8);
         simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix);
     }
 
