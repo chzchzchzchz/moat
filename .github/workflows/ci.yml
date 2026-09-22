@@ -98,7 +98,10 @@ jobs:
       # wheel alone takes about a minute to install.
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip pytest numpy safetensors tokenizers psutil
+          # Derived from the imports these suites actually reach, not from memory:
+          # numpy, psutil, pytest, safetensors, tokenizers, torch, z3. transformers is
+          # imported lazily inside try blocks, so it is not required here.
+          python -m pip install --upgrade pip pytest numpy z3-solver safetensors tokenizers psutil
           python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
 
       # Cases needing TinyLlama weights or Apple Silicon self-skip: the benchmark
