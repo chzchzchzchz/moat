@@ -39,6 +39,11 @@ if engine_src not in sys.path:
 
 from verifier import ListWiseVerifier
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+
+
 
 # ==============================================================================
 # 1. NETWORK EGRESS AUDITOR (Informational Telemetry)
@@ -268,9 +273,9 @@ class LocalClinicalEngine:
         
         # Priority order of local models
         candidates = [
-            "/Users/MohssineChazi2/moat/models/tinyllama",
-            "/Users/MohssineChazi2/moat/models/qwen",
-            "/Users/MohssineChazi2/moat/models/qwen3.5"
+            os.path.join(MOAT_ROOT, "models/tinyllama"),
+            os.path.join(MOAT_ROOT, "models/qwen"),
+            os.path.join(MOAT_ROOT, "models/qwen3.5")
         ]
         
         selected_path = model_path

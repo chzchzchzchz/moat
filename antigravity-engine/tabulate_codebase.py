@@ -1,7 +1,17 @@
 import os
 
-repo_root = "/Users/MohssineChazi2/moat/antigravity-engine"
-artifact_path = "/Users/MohssineChazi2/.gemini/antigravity/brain/b92473e6-9895-4e4f-b819-d0054584ec38/codebase_tabulation.md"
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+
+repo_root = os.path.join(MOAT_ROOT, "antigravity-engine")
+# Output location. The default used to be a scratch directory belonging to an external
+# tool on one developer's machine, so the script wrote nowhere on any other checkout.
+artifact_path = os.environ.get(
+    "CODEBASE_TABULATION_PATH",
+    os.path.join(MOAT_ROOT, "codebase_tabulation.md"),
+)
 
 allowed_exts = {".py", ".cpp", ".mm", ".h", ".metal", ".swift", ".kt", ".md"}
 exclude_dirs = {".git", "venv", "build", ".build", "mcache", "build_xcf", "src/shaders"}
@@ -46,6 +56,7 @@ for root, dirs, files in os.walk(repo_root):
 
 results.sort(key=lambda x: x['path'])
 
+os.makedirs(os.path.dirname(os.path.abspath(artifact_path)), exist_ok=True)
 with open(artifact_path, "w", encoding="utf-8") as f:
     f.write("# Project Antigravity Codebase Tabulation\n\n")
     f.write("A comprehensive file-by-file audit of the entire Antigravity repository, mapping the Metal/Vulkan engines, Python Verifiers, and Native SDKs.\n\n")

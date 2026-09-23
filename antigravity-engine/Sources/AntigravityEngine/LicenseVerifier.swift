@@ -4,7 +4,12 @@
 //
 
 import Foundation
-import CryptoKit
+// CryptoKit predates strict concurrency checking and does not mark
+// Curve25519.Signing.PublicKey as Sendable, which warns on this type's stored
+// property. The key is immutable and only read, so suppress at the import as the
+// compiler's own remark suggests rather than weakening LicenseVerifier's Sendable
+// conformance.
+@preconcurrency import CryptoKit
 #if canImport(UIKit)
 import UIKit
 #else

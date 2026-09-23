@@ -29,6 +29,12 @@ models/
 antigravity-engine/src/metal_runner
 antigravity-engine/src/test_c_api_client
 
+# Test binaries CI builds into antigravity-engine/bin/ on every run. The older
+# ones in that directory are tracked; new ones are build outputs, not sources.
+antigravity-engine/bin/test_embedded_shaders
+antigravity-engine/bin/test_superblock_pack
+antigravity-engine/bin/test_int4_gemv_math
+
 # Xcode / SwiftPM
 *.xcuserdata
 DerivedData/

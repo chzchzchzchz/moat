@@ -115,7 +115,10 @@ int32_t AntigravityEngineVerifyCandidates(
 uint64_t AntigravityEngineGetAllocatedMemoryBytes(const AntigravityEngineContext* ctx);
 
 /**
- * Zero out all internal Metal buffers for Secure Enclave compliance.
+ * Zero out all internal Metal buffers (activations, weights, output, KV cache).
+ *
+ * This is a plain memory wipe of shared MTLBuffers. It is not a Secure Enclave
+ * operation and carries no hardware-backed guarantee.
  *
  * @param ctx Engine handle pointer.
  */
@@ -156,14 +159,24 @@ int32_t AntigravityEngineNativeGenerate(
 /**
  * Execute native Speculative Decoding decode using a Draft Engine.
  *
+ * NOTE: `temperature` and `top_p` are accepted but currently IGNORED. Decoding is
+ * greedy in both the draft and the target. The acceptance test compares the draft
+ * token against the target's own greedy pick for exact equality, which is only
+ * distribution-correct under greedy decoding; sampling without the probability-ratio
+ * accept/reject step would silently change the output distribution. Stochastic
+ * speculative sampling is roadmapped. Pass any values you like -- the output will be
+ * the same as temperature=0.
+ *
+ * NOTE: output is single-channel regardless of the context's n_channels.
+ *
  * @param ctx               Target Engine handle pointer (e.g. 4.0B model).
  * @param draft_ctx         Draft Engine handle pointer (e.g. 0.5B model).
  * @param prompt_tokens     Array of prompt token IDs.
  * @param prompt_len        Length of prompt_tokens array.
  * @param max_new_tokens    Maximum new tokens to generate.
  * @param k_draft           Number of draft tokens per speculative step.
- * @param temperature       Sampling temperature.
- * @param top_p             Nucleus sampling probability threshold.
+ * @param temperature       IGNORED; see note above.
+ * @param top_p             IGNORED; see note above.
  * @param out_tokens        Output buffer [max_new_tokens] for generated tokens.
  * @param out_token_counts  Output pointer for actual tokens generated.
  * @param out_ttft_ms       Output: time to first token in milliseconds.
@@ -238,13 +251,21 @@ typedef struct {
 } AntigravityMCTSResult;
 
 /**
- * Execute native chunk-based Monte Carlo Tree Search (MCTS) with Process Reward branch pruning.
+ * Execute chunk-wise best-of-N search with Process Reward branch pruning.
  *
- * NOTE: The Process Reward function currently uses a heuristic formula:
+ * NOTE: This is NOT Monte Carlo Tree Search, despite the name, which is retained
+ * because it is part of the published ABI. Each of num_chunks rounds generates
+ * branches_per_chunk continuations of chunk_tokens each, scores them, appends the
+ * single best one to the prefix and continues. There is no tree, no visit counts,
+ * no UCT selection and no backpropagation: a losing branch is discarded at once and
+ * never revisited, so the search cannot recover from an early wrong turn.
+ *
+ * NOTE: The Process Reward function is a heuristic, not a learned value network or
+ * trained reward model:
  *   score = log_prob_density + token_diversity * 3.0 + log(1 + length) * 0.5
- * This is NOT a learned value network or trained reward model. It approximates
- * sequence quality using log-probability density, vocabulary diversity, and length.
- * A trained PRM checkpoint would improve MCTS search quality substantially.
+ * A trained PRM checkpoint would improve search quality substantially.
+ *
+ * Writes a SINGLE best sequence to out_tokens, not one sequence per channel.
  *
  * @param ctx               Engine handle pointer.
  * @param prompt_tokens     Array of prompt token IDs.

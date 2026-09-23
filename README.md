@@ -89,6 +89,7 @@ The engine supports multi-channel parallel decoding (e.g., N=4 channels). During
 
 ### 5. Security and Data Protection
 - **Zero Network Egress**: Inference runs locally with no external socket connections. The included `ZeroEgressNetworkAuditor` monitors OS socket counters to verify no outbound data leaves during processing.
+- **Model-Generated Code Execution (off by default)**: `GenPRMVerifier` can score a reasoning trace by running the Python the model emitted and comparing its output to the stated answer. Because the model's output is shaped by whatever text reaches the prompt, enabling this turns a prompt injection into code execution on the host, with filesystem and network access — which would also break the zero-egress property above. It is therefore disabled unless you pass `enable_code_execution=True`. When enabled, the subprocess is limited by a wall-clock timeout, `RLIMIT_AS` at `max_memory_mb` (POSIX), a scrubbed environment, an empty working directory and `python -I`. That is confinement, not a sandbox: there is no syscall filter, namespace, or network restriction.
 - **Encrypted Persistence**: Clinical notes and patient identifiers are encrypted at rest using AES-256-GCM via Apple CryptoKit. Keys are retrieved from the macOS/iOS Keychain (`kSecClassGenericPassword`), and decryption operations authenticate tag integrity before releasing plaintext.
 
 ---
@@ -258,7 +259,14 @@ To maintain full transparency, here is the current engineering status of all sys
   - AES-256-GCM column encryption backed by Keychain Data Protection.
 
 - **Work in Progress & Roadmapped**:
-  - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics. Training an on-device neural verifier is in progress.
-  - **Tree Search**: The Best-of-N decoding currently conducts sequential multi-channel rollouts; full Monte Carlo Tree Search (MCTS) expansion is planned.
-  - **Speculative Sampling**: Speculative drafting currently uses greedy decoding rather than stochastic top-p sampling.
+  - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics — concretely `logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5`, hand-tuned rather than learned. Training an on-device neural verifier is in progress.
+  - **Tree Search**: Despite the name, `generateMCTS` / `AntigravityEngineNativeMCTSGenerate` is **not** Monte Carlo Tree Search. It is a chunk-wise greedy hill climb: each round generates N continuations, scores them with the PRM heuristic, appends the single best one and moves on. There is no tree, no visit counts, no UCT selection and no backpropagation, so it cannot recover from an early wrong turn. The name is retained because it is part of the published ABI. Real UCT expansion and backpropagation are planned.
+  - **Speculative Sampling**: `AntigravityEngineNativeGenerateSpeculative` accepts `temperature` and `top_p` but **ignores them** — both draft and target decode greedily, because the acceptance test is an exact match against the target's greedy pick, which is only distribution-correct for greedy. Proper stochastic speculative sampling needs a probability-ratio accept/reject step and is roadmapped. Output is also single-channel regardless of `n_channels`.
   - **Cross-Platform**: Windows ARM64 and Vulkan shader backends are experimental drafts and not yet functional for production use.
+
+- **Notes on Verification**:
+  - CI (`.github/workflows/ci.yml`) runs on every pull request: the C++ bridge contract test and C API compile checks under `-Werror` on Linux, the Python security and verifier tests on Linux, and `swift build` plus `swift test` on a macOS arm64 runner.
+  - Tests needing TinyLlama weights or Apple Silicon report as **skipped**, not passed, so the run output distinguishes what was verified from what could not run. The figures quoted above for full-weight inference still require Apple Silicon and real model weights, and are not reproduced by CI.
+  - `test_orchestrator.py` and `test_soak_thermal.py` remain outside CI: every test in them drives real generation, so nothing would run without weights.
+  - `Package.swift` points its `binaryTarget` at `frameworks/AntigravityEngine.xcframework`, but only the `.zip` is committed. Unzip it before `swift build`, as the CI job does, or the build fails to resolve the target.
+  - Set `ANTIGRAVITY_MODEL_DIR` to point the engine, the PRM weight loader and the test clients at a model directory outside the working tree.

@@ -59,7 +59,10 @@ public struct SOAPNote: Sendable, Codable, Identifiable {
         assessment: String = "",
         plan: String = "",
         identifiedSymptoms: [String] = [],
-        riskAssessment: String = "No immediate self-harm or acute safety risks reported.",
+        // A missing risk evaluation means risk was NOT assessed, which is not the same as
+        // risk being absent. Defaulting to a negative finding would place an unverified
+        // "no self-harm risk" assertion into a clinical record.
+        riskAssessment: String = "NOT ASSESSED — no risk evaluation was produced for this session. Requires clinician review.",
         diagnosticImpressions: [String] = [],
         billingCodes: [String] = ["90837 - Psychotherapy 53+ min"],
         rawGeneratedText: String = ""
@@ -115,7 +118,7 @@ public struct SOAPNote: Sendable, Codable, Identifiable {
         \(symptomsText)
         
         Risk Assessment:
-        \(riskAssessment)
+        \(riskAssessment.trimmingCharacters(in: .whitespacesAndNewlines))
 
         [P] PLAN:
         \(plan.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -178,7 +181,9 @@ public struct SOAPTemplateEngine: Sendable {
         var assessment = ""
         var plan = ""
         var symptoms: [String] = []
-        var risk = "No acute risk factors identified during session."
+        // Stays this way unless the model actually emitted a [RISK] section. See the
+        // note on SOAPNote.init: absence of an evaluation is not a negative finding.
+        var risk = "NOT ASSESSED — no risk evaluation was produced for this session. Requires clinician review."
 
         let pattern = #"(?i)\[(SUBJECTIVE|OBJECTIVE|ASSESSMENT|PLAN|SYMPTOMS|RISK)\]\s*([\s\S]*?)(?=(?:\[(?:SUBJECTIVE|OBJECTIVE|ASSESSMENT|PLAN|SYMPTOMS|RISK)\])|\z)"#
         

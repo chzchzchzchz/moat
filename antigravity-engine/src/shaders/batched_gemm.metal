@@ -186,3 +186,47 @@ kernel void fused_batched_gemm_int4(
     simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
 }
 
+// =============================================================================
+// KERNEL 4: INT4 Super-Block GEMV (single-row decode)
+//
+// This is the kernel that makes quantization a throughput win rather than only a
+// memory win. Autoregressive decode is memory-bandwidth bound: every token streams
+// the entire weight set through the GPU. Reading 4-bit super-blocks instead of FP16
+// moves ~1/5.5 the bytes per token, which raises the bandwidth ceiling by the same
+// factor. The dequantized value is materialised only in registers, so the weights
+// stay 4-bit in VRAM for the whole decode.
+//
+// The batched simdgroup kernels above tile 8x8; with a single row (M = 1) they
+// would leave 7 of 8 rows idle, so decode needs its own GEMV.
+//
+// Layout matches repack_to_superblocks() in src/dequant.py exactly: 8 FP16 scales
+// then 128 packed bytes, 256 INT4 values per block, low nibble = even element,
+// values stored biased by +8, one scale per 32 elements.
+// =============================================================================
+kernel void gemv_int4_kernel(
+    device const half*       x           [[buffer(0)]], // [K]
+    device const SuperBlock* superblocks [[buffer(1)]], // [(K*N)/256] over B[K x N]
+    device half*             y           [[buffer(2)]], // [N]
+    constant uint&           K_dim       [[buffer(3)]],
+    constant uint&           N_dim       [[buffer(4)]],
+    uint col [[thread_position_in_grid]]
+) {
+    if (col >= N_dim) return;
+
+    float sum = 0.0f;
+    for (uint k = 0; k < K_dim; k++) {
+        uint flat   = k * N_dim + col;
+        uint sb_idx = flat >> 8;          // / ELEMENTS_PER_SUPERBLOCK
+        uint in_sb  = flat & 255;         // % ELEMENTS_PER_SUPERBLOCK
+
+        device const SuperBlock& sb = superblocks[sb_idx];
+        uchar packed = sb.packed_nibbles[in_sb >> 1];
+        int   nib    = (in_sb & 1u) ? (int((packed >> 4) & 0x0F) - 8)
+                                    : (int( packed       & 0x0F) - 8);
+        half  scale  = sb.scales[in_sb >> 5];   // / GROUP_SIZE
+
+        sum += float(x[k]) * (float(nib) * float(scale));
+    }
+
+    y[col] = half(sum);
+}

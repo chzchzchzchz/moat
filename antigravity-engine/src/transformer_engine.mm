@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <map>
 #include "transformer_engine.h"
+#include "superblock_pack.h"
+#include "shader_sources.h"
 
 // BFloat16 → Float16 conversion helper
 static inline uint16_t bf16_to_fp16(uint16_t bf16) {
@@ -66,6 +68,116 @@ static inline uint16_t bf16_to_fp16(uint16_t bf16) {
 
 
 // ============================================================================
+// Shader library loading
+// ============================================================================
+
+namespace {
+
+// Shader files are looked up relative to a handful of plausible roots so the
+// engine works from a repo checkout, from an app bundle, and from whatever
+// directory a harness happens to run in. ANTIGRAVITY_SHADER_DIR wins when set.
+NSArray<NSString*>* shaderSearchRoots() {
+    static NSArray<NSString*>* roots = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray<NSString*>* r = [NSMutableArray array];
+        const char* env = getenv("ANTIGRAVITY_SHADER_DIR");
+        if (env && *env) [r addObject:[NSString stringWithUTF8String:env]];
+        NSString* bundled = [[NSBundle mainBundle] resourcePath];
+        if (bundled) [r addObject:bundled];
+        [r addObject:[[NSFileManager defaultManager] currentDirectoryPath]];
+        [r addObject:@"."];
+        [r addObject:@"antigravity-engine"];
+        [r addObject:@".."];
+        [r addObject:@"../antigravity-engine"];
+        roots = [r copy];
+    });
+    return roots;
+}
+
+NSString* resolveShaderPath(NSString* rel) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if ([rel isAbsolutePath] && [fm fileExistsAtPath:rel]) return rel;
+    for (NSString* root in shaderSearchRoots()) {
+        NSString* candidate = [root stringByAppendingPathComponent:rel];
+        if ([fm fileExistsAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+bool libraryExportsAll(id<MTLLibrary> lib, NSArray<NSString*>* names) {
+    if (!lib) return false;
+    for (NSString* name in names) {
+        if (![lib newFunctionWithName:name]) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+id<MTLLibrary> MetalTransformerEngine::loadShaderLibrary(
+    NSString* metallibRelPath,
+    NSString* metalSourceRelPath,
+    NSArray<NSString*>* requiredFunctions
+) {
+    NSString* libPath = resolveShaderPath(metallibRelPath);
+    NSString* srcPath = resolveShaderPath(metalSourceRelPath);
+    NSError* err = nil;
+
+    id<MTLLibrary> prebuilt = nil;
+    if (libPath) {
+        prebuilt = [device_ newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&err];
+        if (prebuilt && libraryExportsAll(prebuilt, requiredFunctions)) {
+            return prebuilt;
+        }
+        if (prebuilt) {
+            // The .metallib is checked in; a kernel added to the .metal source since
+            // it was built is simply absent. Taking it anyway would drop that kernel
+            // with no error at all, so prefer recompiling the source.
+            std::cerr << "[MetalTransformerEngine] " << libPath.UTF8String
+                      << " does not export every required kernel (stale build); "
+                      << "compiling from source instead" << std::endl;
+        }
+    }
+
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+
+    if (srcPath) {
+        NSString* source = [NSString stringWithContentsOfFile:srcPath
+                                                     encoding:NSUTF8StringEncoding
+                                                        error:&err];
+        if (source) {
+            id<MTLLibrary> compiled = [device_ newLibraryWithSource:source options:opts error:&err];
+            if (compiled) return compiled;
+            std::cerr << "[MetalTransformerEngine] failed to compile " << srcPath.UTF8String
+                      << ": " << (err ? err.localizedDescription.UTF8String : "unknown error")
+                      << std::endl;
+        }
+    }
+
+    // The floor: the source is compiled into the binary. Neither the .metal files
+    // nor the .metallib files are packaged inside AntigravityEngine.xcframework, and
+    // every path above is resolved relative to the process working directory — so on
+    // a device nothing above this point can succeed, and without it every pipeline
+    // outside the one inline fallback kernel would simply be null.
+    const std::string stem = [[metalSourceRelPath.lastPathComponent
+                               stringByDeletingPathExtension] UTF8String];
+    if (const char* embedded = antigravity::shaders::find(stem.c_str())) {
+        id<MTLLibrary> compiled =
+            [device_ newLibraryWithSource:[NSString stringWithUTF8String:embedded]
+                                  options:opts
+                                    error:&err];
+        if (compiled) return compiled;
+        std::cerr << "[MetalTransformerEngine] failed to compile embedded " << stem
+                  << ".metal: " << (err ? err.localizedDescription.UTF8String : "unknown error")
+                  << std::endl;
+    }
+
+    // A stale library is still better than none for the kernels it does export.
+    return prebuilt;
+}
+
+// ============================================================================
 // Constructor
 // ============================================================================
 
@@ -81,50 +193,31 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     queue_ = [device_ newCommandQueue];
     
     // ---- Load Shader Libraries ----
-    NSError* err = nil;
+    // The engine ships prebuilt .metallib files, but they are checked in and go
+    // stale the moment a .metal source gains a kernel. loadShaderLibrary() accepts
+    // a .metallib only when it still exports everything we need, and otherwise
+    // compiles the source, so adding a kernel never silently does nothing.
+    gemmLib_ = loadShaderLibrary(@"src/shaders/batched_gemm.metallib",
+                                 @"src/shaders/batched_gemm.metal",
+                                 @[@"batched_gemm_simdgroup",
+                                   @"gemv_int4_kernel",
+                                   @"fused_batched_gemm_int4"]);
 
-    
-    
-    // Try compiled metallib first, fall back to runtime compilation
-    NSArray<NSString*>* gemmPaths = @[
-        @"src/shaders/batched_gemm.metallib",
-        @"antigravity-engine/src/shaders/batched_gemm.metallib"
-    ];
-    for (NSString* path in gemmPaths) {
-        NSURL* url = [NSURL fileURLWithPath:path];
-        gemmLib_ = [device_ newLibraryWithURL:url error:&err];
-        if (gemmLib_) break;
-    }
-    
-    // Compile transformer_ops from source if metallib not available
-    NSArray<NSString*>* opsPaths = @[
-        @"src/shaders/transformer_ops.metallib",
-        @"antigravity-engine/src/shaders/transformer_ops.metallib",
-        @"src/shaders/transformer_ops.metal",
-        @"antigravity-engine/src/shaders/transformer_ops.metal"
-    ];
-    for (NSString* path in opsPaths) {
-        if ([path hasSuffix:@".metallib"]) {
-            NSURL* url = [NSURL fileURLWithPath:path];
-            opsLib_ = [device_ newLibraryWithURL:url error:&err];
-        } else {
-            // Compile from source
-            NSString* source = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&err];
-            if (source) {
-                MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-                opsLib_ = [device_ newLibraryWithSource:source options:opts error:&err];
-            }
-        }
-        if (opsLib_) break;
-    }
-    
-    // Fall back: compile GEMM from inline source
+    opsLib_ = loadShaderLibrary(@"src/shaders/transformer_ops.metallib",
+                                @"src/shaders/transformer_ops.metal",
+                                @[@"gemv_kernel", @"rmsnorm_kernel", @"rope_kernel"]);
+
     if (!gemmLib_) {
-        NSString* gemmSrc = @"#include <metal_stdlib>\nusing namespace metal;\nkernel void batched_gemm_simdgroup(device const half* activations [[buffer(0)]], device const half* weights [[buffer(1)]], device half* output [[buffer(2)]], constant uint& N_batch [[buffer(3)]], constant uint& K_dim [[buffer(4)]], constant uint& M_dim [[buffer(5)]], uint2 group_id [[threadgroup_position_in_grid]]) { uint row_start = group_id.y * 8; uint col_start = group_id.x * 8; if (row_start >= N_batch || col_start >= M_dim) return; simdgroup_matrix<half, 8, 8> acc_matrix = simdgroup_matrix<half, 8, 8>(0.0h); for (uint k = 0; k < K_dim; k += 8) { simdgroup_matrix<half, 8, 8> a_tile; simdgroup_matrix<half, 8, 8> b_tile; simdgroup_load(a_tile, activations + row_start * K_dim + k, K_dim); simdgroup_load(b_tile, weights + k * M_dim + col_start, M_dim); simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix); } simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim); }\n";
-        MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-        gemmLib_ = [device_ newLibraryWithSource:gemmSrc options:opts error:&err];
+        std::cerr << "[MetalTransformerEngine] no GEMM shader library; "
+                     "set ANTIGRAVITY_SHADER_DIR to the directory holding src/shaders"
+                  << std::endl;
     }
-    
+    if (!opsLib_) {
+        std::cerr << "[MetalTransformerEngine] no transformer_ops shader library; "
+                     "set ANTIGRAVITY_SHADER_DIR to the directory holding src/shaders"
+                  << std::endl;
+    }
+
     // ---- Create Compute Pipelines ----
     auto makePipeline = [&](id<MTLLibrary> lib, NSString* name) -> id<MTLComputePipelineState> {
         if (!lib) return nil;
@@ -136,18 +229,22 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     
     gemmPipeline_      = makePipeline(gemmLib_, @"batched_gemm_simdgroup");
     gemvPipeline_      = makePipeline(opsLib_, @"gemv_kernel");
+    gemvInt4Pipeline_      = makePipeline(gemmLib_, @"gemv_int4_kernel");
+    fusedGemmInt4Pipeline_ = makePipeline(gemmLib_, @"fused_batched_gemm_int4");
     rmsnormPipeline_   = makePipeline(opsLib_, @"rmsnorm_kernel");
     ropePipeline_      = makePipeline(opsLib_, @"rope_kernel");
     
     // Load Qwen 3.5 4B Hybrid Shaders
     
-    NSURL* deltaUrl = [NSURL fileURLWithPath:@"src/shaders/deltanet.metallib"];
-    id<MTLLibrary> deltaLib = [device_ newLibraryWithURL:deltaUrl error:&err];
+    id<MTLLibrary> deltaLib = loadShaderLibrary(@"src/shaders/deltanet.metallib",
+                                                @"src/shaders/deltanet_forward.metal",
+                                                @[@"deltanet_forward"]);
     if (deltaLib) {
         deltanetPipeline_ = makePipeline(deltaLib, @"deltanet_forward");
     }
-    NSURL* moeUrl = [NSURL fileURLWithPath:@"src/shaders/moe.metallib"];
-    id<MTLLibrary> moeLib = [device_ newLibraryWithURL:moeUrl error:&err];
+    id<MTLLibrary> moeLib = loadShaderLibrary(@"src/shaders/moe.metallib",
+                                              @"src/shaders/moe_gemm.metal",
+                                              @[@"moe_router"]);
     if (moeLib) {
         moeRouterPipeline_ = makePipeline(moeLib, @"moe_router");
     }
@@ -159,6 +256,22 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     embedPipeline_     = makePipeline(opsLib_, @"embedding_lookup_kernel");
     kvAppendPipeline_  = makePipeline(opsLib_, @"kv_cache_append_kernel");
     
+    // Opt-in for now: INT4 changes numerics, so it is switched on explicitly by
+    // the benchmark and quality harnesses rather than silently by default.
+    if (const char* q = getenv("ANTIGRAVITY_INT4")) {
+        quantizeOnLoad_ = (q[0] == '1' || q[0] == 't' || q[0] == 'T' || q[0] == 'y' || q[0] == 'Y');
+    }
+    // Both are needed: decode (M == 1) takes the GEMV, prefill and the multi-channel
+    // step take the fused GEMM. Quantizing with only one available would leave the
+    // other path refusing to compute rather than producing a wrong answer, but that
+    // is still a dead engine, so fall back to FP16 up front instead.
+    if (quantizeOnLoad_ && (!gemvInt4Pipeline_ || !fusedGemmInt4Pipeline_)) {
+        std::cerr << "[MetalTransformerEngine] INT4 weights requested but "
+                  << (gemvInt4Pipeline_ ? "fused_batched_gemm_int4" : "gemv_int4_kernel")
+                  << " is unavailable; falling back to FP16 weights" << std::endl;
+        quantizeOnLoad_ = false;
+    }
+
     reinitBuffersAndRoPE();
     
     std::cout << "[MetalTransformerEngine] Initialized with " 
@@ -453,7 +566,11 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     const char* raw_data = mapped_data + data_start;
     
     // Helper: load a tensor into a Metal buffer as FP16
-    auto loadTensor = [&](const std::string& name, bool transpose_2d = false) -> id<MTLBuffer> {
+    // `quantizable` marks the big [K x N] projection matrices that dispatchGEMM
+    // consumes; norms and the embedding table are read by kernels that expect FP16.
+    auto loadTensor = [&](const std::string& name,
+                          bool transpose_2d = false,
+                          bool quantizable = false) -> id<MTLBuffer> {
         auto it = tensors.find(name);
         if (it == tensors.end()) {
             // Try with "model." prefix
@@ -505,16 +622,35 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         }
         
         allocatedBytes_ += fp16_bytes;
+
+        if (quantizable && quantizeOnLoad_ && info.shape.size() == 2) {
+            // The buffer is [K x N] row-major: safetensors stores [out, in], so a
+            // transposed load leaves in_features as the row stride, which is the
+            // layout both INT4 kernels index as B[k * N + col].
+            uint32_t K = (uint32_t)(transpose_2d ? info.shape[1] : info.shape[0]);
+            uint32_t N = (uint32_t)(transpose_2d ? info.shape[0] : info.shape[1]);
+            id<MTLBuffer> packed = quantizeToSuperblocks(dest, num_elements, K, N);
+            if (packed) {
+                // The FP16 staging buffer is released here; only the 4-bit copy is kept.
+                allocatedBytes_ -= fp16_bytes;
+                allocatedBytes_ += [packed length];
+                return packed;
+            }
+            std::cerr << "[loadTensor] " << name << " not quantizable ("
+                      << num_elements << " elements is not a multiple of 256); "
+                      << "keeping FP16" << std::endl;
+        }
+
         return buf;
     };
     
     // ---- Load Embedding & Output Head ----
     embedWeights_ = loadTensor("embed_tokens.weight", false);
     finalNorm_ = loadTensor("norm.weight", false);
-    lmHead_ = loadTensor("lm_head.weight", true);
+    lmHead_ = loadTensor("lm_head.weight", true, /*quantizable=*/true);
     if (!lmHead_ && embedWeights_) {
         std::cout << "[loadWeights] lm_head.weight tied to embed_tokens.weight (transposing)" << std::endl;
-        lmHead_ = loadTensor("embed_tokens.weight", true);
+        lmHead_ = loadTensor("embed_tokens.weight", true, /*quantizable=*/true);
     }
     
     if (!embedWeights_ || !finalNorm_ || !lmHead_) {
@@ -528,14 +664,14 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         std::string prefix = "layers." + std::to_string(i) + ".";
         
         layerWeights_[i].input_norm  = loadTensor(prefix + "input_layernorm.weight", false);
-        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true);
-        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true);
-        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true);
-        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true);
+        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true, /*quantizable=*/true);
         layerWeights_[i].post_attn_norm = loadTensor(prefix + "post_attention_layernorm.weight", false);
-        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true);
-        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true);
-        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true);
+        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true, /*quantizable=*/true);
         
         // Validate all loaded
         if (!layerWeights_[i].input_norm || !layerWeights_[i].q_proj || !layerWeights_[i].k_proj ||
@@ -563,11 +699,84 @@ bool MetalTransformerEngine::loadWeights(const std::string& safetensors_path) {
 // Metal Dispatch Helpers
 // ============================================================================
 
+id<MTLBuffer> MetalTransformerEngine::quantizeToSuperblocks(
+    const uint16_t* fp16, size_t n_elements, uint32_t K, uint32_t N
+) {
+    const size_t bytes = antigravity::superblockBytesFor(n_elements);
+    if (bytes == 0) return nil;   // not a multiple of 256 elements
+
+    id<MTLBuffer> buf = [device_ newBufferWithLength:bytes
+                                             options:MTLResourceStorageModeShared];
+    if (!buf) return nil;
+
+    if (!antigravity::packSuperblocks(fp16, n_elements, (uint8_t*)[buf contents])) {
+        return nil;
+    }
+
+    quantizedWeights_[(__bridge void*)buf] = QuantizedWeight{K, N};
+    return buf;
+}
+
+void MetalTransformerEngine::dispatchGrid(
+    id<MTLComputeCommandEncoder> enc,
+    id<MTLComputePipelineState> pso,
+    MTLSize grid
+) {
+    if (!pso) return;
+    if (grid.width == 0 || grid.height == 0 || grid.depth == 0) return;
+
+    // Budget threads per group, clamped to what this pipeline allows. 256 is a
+    // common sweet spot on Apple GPUs: several SIMD groups per threadgroup without
+    // starving occupancy.
+    NSUInteger budget = std::min<NSUInteger>(256, pso.maxTotalThreadsPerThreadgroup);
+
+    // Fill from x outward, because thread_position_in_grid.x varies fastest and so
+    // determines whether adjacent lanes touch adjacent memory.
+    NSUInteger tx = std::min<NSUInteger>(grid.width, budget);
+    NSUInteger ty = std::min<NSUInteger>(grid.height, std::max<NSUInteger>(1, budget / tx));
+    NSUInteger tz = std::min<NSUInteger>(grid.depth, std::max<NSUInteger>(1, budget / (tx * ty)));
+
+    [enc dispatchThreads:grid threadsPerThreadgroup:MTLSizeMake(tx, ty, tz)];
+}
+
 void MetalTransformerEngine::dispatchGEMM(
     id<MTLComputeCommandEncoder> enc,
     id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C,
     uint32_t M, uint32_t K, uint32_t N
 ) {
+    // Quantized weights take the INT4 kernels: the packed bytes are not an FP16
+    // matrix and must not be fed to the dense path.
+    if (isQuantized(B)) {
+        if (M == 1 && gemvInt4Pipeline_) {
+            [enc setComputePipelineState:gemvInt4Pipeline_];
+            [enc setBuffer:A offset:0 atIndex:0];
+            [enc setBuffer:B offset:0 atIndex:1];
+            [enc setBuffer:C offset:0 atIndex:2];
+            uint32_t uK = K, uN = N;
+            [enc setBytes:&uK length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&uN length:sizeof(uint32_t) atIndex:4];
+            dispatchGrid(enc, gemvInt4Pipeline_, MTLSizeMake(N, 1, 1));
+            return;
+        }
+        if (fusedGemmInt4Pipeline_) {
+            [enc setComputePipelineState:fusedGemmInt4Pipeline_];
+            [enc setBuffer:A offset:0 atIndex:0];
+            [enc setBuffer:B offset:0 atIndex:1];
+            [enc setBuffer:C offset:0 atIndex:2];
+            uint32_t uN = M, uK = K, uM = N;
+            [enc setBytes:&uN length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&uK length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&uM length:sizeof(uint32_t) atIndex:5];
+            MTLSize tg = MTLSizeMake((N + 7) / 8, (M + 7) / 8, 1);
+            [enc dispatchThreadgroups:tg threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+            return;
+        }
+        // No INT4 pipeline: refuse rather than reinterpret packed bytes as FP16.
+        std::cerr << "[dispatchGEMM] quantized weights but no INT4 pipeline available"
+                  << std::endl;
+        return;
+    }
+
     if (M == 1 && gemvPipeline_) {
         [enc setComputePipelineState:gemvPipeline_];
         [enc setBuffer:A offset:0 atIndex:0];   // vector x [K]
@@ -621,11 +830,12 @@ void MetalTransformerEngine::dispatchRMSNorm(
     
     // One threadgroup per batch element, 256 threads per group
     uint32_t threadsPerTG = std::min(dim, (uint32_t)256);
-    MTLSize tg = MTLSizeMake(1, 1, 1);
     MTLSize threads = MTLSizeMake(threadsPerTG, 1, 1);
-    
-    // batch threadgroups
-    tg = MTLSizeMake(batch, 1, 1);
+
+    // One threadgroup per batch element. (This previously carried a dead
+    // MTLSizeMake(1,1,1) initialiser that made the site look like the
+    // one-thread dispatches elsewhere in this file, which it never was.)
+    MTLSize tg = MTLSizeMake(batch, 1, 1);
     [enc dispatchThreadgroups:tg threadsPerThreadgroup:threads];
 }
 
@@ -657,8 +867,7 @@ void MetalTransformerEngine::dispatchRoPE(
     // Grid: (batch * seq_len, max(n_heads, n_kv_heads), head_dim / 2)
     uint32_t max_heads = std::max(n_heads, n_kv_heads);
     MTLSize grid = MTLSizeMake(batch * seq_len, max_heads, head_dim / 2);
-    MTLSize tg = MTLSizeMake(1, 1, 1);
-    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    dispatchGrid(enc, ropePipeline_, grid);
 }
 
 
@@ -716,13 +925,12 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
             MTLSize grid = MTLSizeMake(ql, nkv, hdim);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
 
             // Append V
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][ch].v_cache offset:0 atIndex:1];
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
         }
 
         uint32_t cur_seq_len = seq_pos + 1;
@@ -740,8 +948,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(nh, ql, sl);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnScoresPipeline_, grid);
         }
 
         if (softmaxPipeline_) {
@@ -769,8 +976,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(nh, ql, hd);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnValuePipeline_, grid);
         }
     }
 
@@ -786,8 +992,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 
     // 7. MLP RMSNorm: scratch1_ = RMSNorm(scratch3_, post_attn_norm)
@@ -807,8 +1012,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_inter = M * I;
         [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_inter, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, siluMulPipeline_, grid);
     }
 
     // 10. Down Projection (Batched GEMM M x I @ I x H)
@@ -823,8 +1027,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 }
 
@@ -872,12 +1075,11 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
             MTLSize grid = MTLSizeMake(ql, nkv, hdim);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
 
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
         }
 
         uint32_t cur_seq_len = seq_pos + q_len;
@@ -895,8 +1097,7 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(1 * nh, ql, sl);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnScoresPipeline_, grid);
         }
 
         if (softmaxPipeline_) {
@@ -925,8 +1126,7 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(1 * nh, ql, hd);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnValuePipeline_, grid);
         }
     }
 
@@ -940,8 +1140,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 
     dispatchRMSNorm(enc, scratch3_, lw.post_attn_norm, scratch1_, M, H);
@@ -958,8 +1157,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_inter = M * I;
         [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_inter, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, siluMulPipeline_, grid);
     }
 
     dispatchGEMM(enc, scratch2_, lw.down_proj, scratch1_, M, I, H);
@@ -972,8 +1170,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 }
 
@@ -1073,7 +1270,8 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
     }
     
     auto start_time = std::chrono::high_resolution_clock::now();
-    std::mt19937 rng(42);
+    std::random_device rd;
+    std::mt19937 rng(rd());
 
     GenerationResult res;
     res.channel_tokens.resize(1); // Speculative decoding prototype is 1-channel for now
@@ -1098,8 +1296,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H_draft = draft_engine->config_.hidden_dim;
         [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
         MTLSize gridD = MTLSizeMake(1, H_draft, 1);
-        MTLSize tgD = MTLSizeMake(1, 1, 1);
-        [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+        draft_engine->dispatchGrid(encDraft, draft_engine->embedPipeline_, gridD);
 
         for (int l = 0; l < draft_engine->config_.n_layers; l++) {
             draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos);
@@ -1118,8 +1315,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H = config_.hidden_dim;
         [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(1, H, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, embedPipeline_, grid);
 
         for (int l = 0; l < config_.n_layers; l++) {
             forwardLayer(cmdBuf, enc, l, scratch1_, scratch1_, 1, seq_pos);
@@ -1154,8 +1350,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
             uint32_t H_draft = draft_engine->config_.hidden_dim;
             [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
             MTLSize gridD = MTLSizeMake(1, H_draft, 1);
-            MTLSize tgD = MTLSizeMake(1, 1, 1);
-            [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+            draft_engine->dispatchGrid(encDraft, draft_engine->embedPipeline_, gridD);
 
             for (int l = 0; l < draft_engine->config_.n_layers; l++) {
                 draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos + k);
@@ -1170,6 +1365,11 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
             
             _Float16* d_logits = (_Float16*)[draft_engine->scratchLogits_ contents];
             // Force greedy for draft
+            // Greedy (temperature 0, top_p 1) deliberately, NOT the caller's temperature
+            // and top_p. The acceptance test below is an exact match against the target's
+            // own greedy pick, which is only distribution-correct for greedy decoding.
+            // Sampling here without the probability-ratio accept/reject step would silently
+            // change the output distribution. See AntigravityEngineNativeGenerateSpeculative.
             int32_t next_t = draft_engine->sampleToken(d_logits, draft_engine->config_.vocab_size, 0.0f, 1.0f, rng);
             draft_tokens.push_back(next_t);
             draft_current_token = next_t;
@@ -1191,8 +1391,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H = config_.hidden_dim;
         [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(q_len, H, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, embedPipeline_, grid);
 
         for (int l = 0; l < config_.n_layers; l++) {
             forwardBatched(cmdBuf, enc, l, scratch1_, scratch1_, 1, q_len, seq_pos);
@@ -1211,6 +1410,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         int accepted = 0;
         for (int i = 0; i < q_len; i++) {
             _Float16* row_logits = t_logits + i * config_.vocab_size;
+            // Greedy for the same reason as the draft sampling above.
             int32_t target_tok = sampleToken(row_logits, config_.vocab_size, 0.0f, 1.0f, rng);
             
             res.channel_tokens[0].push_back(target_tok);
@@ -1308,8 +1508,7 @@ GenerationResult MetalTransformerEngine::generate(
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
             
@@ -1354,8 +1553,7 @@ GenerationResult MetalTransformerEngine::generate(
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
             
@@ -1470,11 +1668,22 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
     }
 
     const uint32_t H = config_.hidden_dim;
-    const int EOS_TOKEN = 2;
 
+    // EOS was hardcoded to 2, which is Llama's. On a Qwen vocabulary that token never
+    // appears as a stop, so multimodal decode ran to max_new_tokens every time and
+    // emitted tokens past the end of the response. Match generate()'s detection.
+    const bool is_qwen = (config_.vocab_size > 32000);
+    const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
+    const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
+    const int EOS_TOKEN = EOS_TOKEN_1;
+
+    // Seeds were fixed constants, so every call produced identical rollouts and the
+    // channels differed only by a constant offset. generate() already seeds from
+    // std::random_device; do the same here.
+    std::random_device rd;
     std::vector<std::mt19937> channel_rngs(config_.n_channels);
     for (int c = 0; c < config_.n_channels; c++) {
-        channel_rngs[c].seed(1337 + c * 10007);
+        channel_rngs[c].seed(rd() + c * 10007);
     }
 
     std::vector<bool> channel_active(config_.n_channels, true);
@@ -1520,8 +1729,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
 
@@ -1567,8 +1775,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                 uint32_t hdim = H;
                 [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                 MTLSize grid = MTLSizeMake(1, H, 1);
-                MTLSize tg = MTLSizeMake(1, 1, 1);
-                [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                dispatchGrid(enc, embedPipeline_, grid);
             }
 
             for (int l = 0; l < config_.n_layers; l++) {
@@ -1603,7 +1810,7 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             result.channel_tokens[c].push_back(next_token);
             result.total_tokens++;
 
-            if (next_token == EOS_TOKEN) {
+            if (next_token == EOS_TOKEN_1 || next_token == EOS_TOKEN_2 || next_token == 2) {
                 channel_active[c] = false;
             }
         }

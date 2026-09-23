@@ -1,0 +1,301 @@
+name: CI
+
+on:
+  # Only main on push: every other branch is covered by its pull request, and
+  # listing both made each commit on a PR branch build twice.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp-bridge-contract:
+    name: C++ bridge contract (no GPU, no weights)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The bridge is pure C++ behind an opaque handle, so it links against stub
+      # implementations of the Metal C API and runs anywhere. This is the test that
+      # catches buffer-layout drift between generation and verification.
+      - name: Build contract test
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            src/antigravity_engine_c.cpp tests/test_bridge_contract.cpp \
+            -o bin/test_bridge_contract
+
+      - name: Run contract test
+        working-directory: antigravity-engine
+        run: ./bin/test_bridge_contract
+
+      # The xcframework packages only the static library — no .metal and no
+      # .metallib travel with it — and every shader path the engine tries is
+      # relative to the process working directory, which on a device resolves to
+      # nothing. src/shader_sources.h is the floor beneath that. If a kernel is
+      # edited and the header is not regenerated, the shipped binary keeps running
+      # the old kernel silently, so check both that the header matches the sources
+      # and that regenerating it is a no-op.
+      - name: Check embedded shader sources
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_embedded_shaders.cpp -o bin/test_embedded_shaders
+          ./bin/test_embedded_shaders
+          python3 scripts/embed_shaders.py
+          git diff --exit-code -- src/shader_sources.h \
+            || { echo "src/shader_sources.h is out of date; run python3 scripts/embed_shaders.py"; exit 1; }
+
+      # The INT4 packer decides the exact bytes the GPU reads. A layout that is off
+      # by one nibble or one scale index does not crash — it makes plausible garbage.
+      - name: Build and run the INT4 super-block packer test
+        working-directory: antigravity-engine
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_superblock_pack.cpp -o bin/test_superblock_pack
+          ./bin/test_superblock_pack
+
+      # Whether gemv_int4_kernel computes the right thing depends on something
+      # outside the kernel: that loadTensor really hands it a [K x N] row-major
+      # buffer. Get that wrong and every index stays in bounds — the answer is just
+      # wrong. This runs the kernel's arithmetic on the host against an FP16 GEMV.
+      - name: Check the INT4 GEMV arithmetic
+        working-directory: antigravity-engine
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_int4_gemv_math.cpp -o bin/test_int4_gemv_math
+          ./bin/test_int4_gemv_math
+
+      # Two implementations of the same format live in this repo: src/dequant.py,
+      # which the quantization tests are written against, and src/superblock_pack.h,
+      # which the engine actually calls at weight-load time. Nothing tied them
+      # together, so they could drift apart and the GPU would read bytes no test had
+      # ever checked. This compares them byte for byte.
+      - name: Cross-check the packer against src/dequant.py
+        working-directory: antigravity-engine
+        run: |
+          python3 -m pip install --quiet --upgrade pip numpy
+          python3 tests/superblock_crosscheck.py bin/test_superblock_pack
+
+      - name: Compile-check the C API surface
+        run: |
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -Iantigravity-engine/src antigravity-engine/src/antigravity_engine_c.cpp
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -Iantigravity-engine/src antigravity-engine/src/test_c_api_client.cpp
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -IAntigravityDemo.swiftpm/Core/include AntigravityDemo.swiftpm/Core/antigravity_engine_c.cpp
+
+  python-security:
+    name: Python security + verifier tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pytest numpy z3-solver
+
+      # Every suite here runs in under a few seconds without torch, a GPU or model
+      # weights. Among them: that model-generated code is not executed by default,
+      # and that the restricted expression evaluator rejects the interpreter escapes
+      # which defeated the previous __builtins__ whitelist.
+      #
+      # Deliberately excluded, with reasons:
+      # Suites needing torch run in the python-torch job below instead.
+      - name: Run Python test suites
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -v \
+            tests/test_restricted_eval.py \
+            tests/test_superblock_format.py \
+            tests/test_genprm.py \
+            tests/test_ast_adversarial_suite.py \
+            tests/test_attention.py \
+            tests/test_batch_generator.py \
+            tests/test_batched_speed.py \
+            tests/test_batched_speed_metal.py \
+            tests/test_dora.py \
+            tests/test_fuzz_extreme_inputs.py \
+            tests/test_quantization.py \
+            tests/test_speculative_alpha.py \
+            tests/test_verifier.py \
+            tests/test_quality_scoring.py \
+            tests/test_benchmark_quality_harness.py
+
+      - name: Syntax-check every Python source file
+        run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
+
+      # compileall only proves a file parses. A module that reads a name above the
+      # line binding it parses fine and then raises NameError on import — the script
+      # is dead and nothing notices. Four scripts in this repo were in exactly that
+      # state, all from one edit, and compileall passed every one of them.
+      - name: Check for names used at import time before they are defined
+        run: python3 tools/check_import_time_names.py .
+
+  python-torch:
+    name: Python suites requiring torch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Split from the fast job so that job keeps sub-20s feedback; the CPU torch
+      # wheel alone takes about a minute to install.
+      - name: Install dependencies
+        run: |
+          # Derived from the imports these suites actually reach, not from memory:
+          # numpy, psutil, pytest, safetensors, tokenizers, torch, z3. transformers is
+          # imported lazily inside try blocks, so it is not required here.
+          python -m pip install --upgrade pip pytest numpy z3-solver safetensors tokenizers psutil
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+
+      # Cases needing TinyLlama weights or Apple Silicon self-skip: the benchmark
+      # guards on MPS, and the generation tests guard on the weights being present.
+      # Excluded entirely: test_orchestrator.py and test_soak_thermal.py, whose every
+      # test drives real generation and so has nothing left to run without weights.
+      - name: Run torch-dependent suites
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -v \
+            tests/test_model_loader.py \
+            tests/test_therapist_sentinel.py \
+            tests/test_benchmark_rollout.py \
+            tests/test_full_system_top_to_bottom.py \
+            tests/test_forensic_hardware_physics.py
+
+  swift-build:
+    name: Swift SDK build + tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
+      # but only the .zip is committed, so a clean checkout cannot resolve it.
+      - name: Unpack the prebuilt xcframework
+        working-directory: antigravity-engine/frameworks
+        run: |
+          unzip -q -o AntigravityEngine.xcframework.zip
+          # The committed zip carries AppleDouble resource forks (._*, __MACOSX).
+          # Clang sees ._AntigravityEngine.h etc. as headers missing from the module
+          # umbrella and warns on every build. Drop them.
+          rm -rf __MACOSX
+          find AntigravityEngine.xcframework -name '._*' -delete
+          test -d AntigravityEngine.xcframework
+
+      # Nothing has ever compiled these. A syntax error in a kernel would only
+      # surface at runtime on a device, as a pipeline that silently fails to build.
+      # swift build links the PREBUILT xcframework, so the Objective-C++ engine
+      # sources are never compiled by it. Any change to transformer_engine.mm was
+      # therefore unverified by CI. Compile them directly.
+      - name: Compile the Objective-C++ Metal engine
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
+            src/transformer_engine.mm \
+            -framework Metal -framework Foundation
+          echo "transformer_engine.mm compiles"
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
+            src/antigravity_c_api.cpp \
+            -framework Metal -framework Foundation
+          echo "antigravity_c_api.cpp compiles"
+
+      - name: Compile Metal shaders
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          mkdir -p build/metal
+          fail=0
+          for f in src/shaders/*.metal; do
+            name=$(basename "$f" .metal)
+            echo "--- $name ---"
+            if xcrun -sdk macosx metal -Werror -c "$f" -o "build/metal/$name.air"; then
+              xcrun -sdk macosx metallib "build/metal/$name.air" -o "build/metal/$name.metallib"
+              echo "    ok -> $name.metallib"
+            else
+              echo "    FAILED to compile $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # The .metallib files are committed, and the engine prefers them over the
+      # .metal sources. A kernel added to a source after its .metallib was built is
+      # simply absent from the library: no error, the pipeline just never exists and
+      # whatever needed it silently does nothing. MetalTransformerEngine detects this
+      # at runtime and recompiles the source, but shipping a stale library costs the
+      # startup compile every launch, so flag it here.
+      #
+      # The pairings are not by filename — they mirror the loadShaderLibrary() calls
+      # in src/transformer_engine.mm, which is the only thing that decides which
+      # source backs which library.
+      - name: Check committed .metallib files against their sources
+        working-directory: antigravity-engine
+        run: |
+          set -u
+          stale=0
+          check() {
+            src="src/shaders/$1"; lib="src/shaders/$2"
+            [ -f "$lib" ] || { echo "no $lib committed; nothing to check"; return; }
+            echo "--- $lib vs $src ---"
+            for kernel in $(grep -oE '^kernel void [A-Za-z0-9_]+' "$src" | awk '{print $3}'); do
+              # metallib embeds each exported function name as a literal string.
+              if strings "$lib" | grep -qx "$kernel"; then
+                echo "    ok       $kernel"
+              else
+                echo "    MISSING  $kernel"
+                stale=1
+              fi
+            done
+          }
+          check batched_gemm.metal      batched_gemm.metallib
+          check transformer_ops.metal   transformer_ops.metallib
+          check deltanet_forward.metal  deltanet.metallib
+          check moe_gemm.metal          moe.metallib
+          if [ "$stale" -ne 0 ]; then
+            echo
+            echo "A committed .metallib is missing kernels its .metal source defines."
+            echo "Rebuild it from the freshly compiled libraries uploaded by this run:"
+            echo "  cp build/metal/<name>.metallib src/shaders/<name>.metallib"
+            exit 1
+          fi
+
+      - name: Upload freshly built metallibs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metallibs
+          path: antigravity-engine/build/metal/*.metallib
+          if-no-files-found: warn
+
+      - name: Show toolchain
+        run: swift --version
+
+      # This is the step that was missing: every Swift change gets compiled.
+      - name: Build
+        working-directory: antigravity-engine
+        run: swift build -v
+
+      # Tests needing TinyLlama weights self-skip via FileManager.fileExists, so the
+      # weight-free tests (tokenizer, SOAP parsing, encryption, vision refusal) still run.
+      - name: Test
+        working-directory: antigravity-engine
+        run: swift test

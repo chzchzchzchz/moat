@@ -73,9 +73,14 @@ public struct LongitudinalMetric: Identifiable, Sendable, Codable {
     }
 }
 
-/// Hardware-secured SQLite storage layer for zero-trust clinical documentation.
-/// Stores patient encounter notes, longitudinal metrics, and cross-session memory
-/// using hardware-backed Secure Enclave key derivation.
+/// Encrypted SQLite storage layer for zero-trust clinical documentation.
+/// Stores patient encounter notes, longitudinal metrics, and cross-session memory,
+/// encrypting sensitive columns with AES-256-GCM (CryptoKit) under a key held in the
+/// Keychain as kSecAttrAccessibleWhenUnlockedThisDeviceOnly.
+///
+/// The key is generated randomly and held as a Keychain item, which Data Protection
+/// class keys protect at rest. It is not derived by, nor stored inside, the Secure
+/// Enclave, and it leaves the Keychain as raw key material in order to be used.
 public final class ClinicalDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "org.antigravity.clinical-database", qos: .userInitiated)
@@ -148,11 +153,13 @@ public final class ClinicalDatabase: @unchecked Sendable {
 
     /// Apply Apple Data Protection to the database file.
     /// Uses NSFileProtectionCompleteUnlessOpen (Class B) — the file is encrypted at rest
-    /// when the device is locked. This provides hardware-backed encryption via Secure Enclave
-    /// without requiring SQLCipher.
+    /// when the device is locked, under Data Protection class keys. This is file-level
+    /// protection only, and it is not a Secure Enclave operation.
     ///
-    /// NOTE: For column-level encryption of individual fields (e.g., patient names, transcripts),
-    /// a full SQLCipher integration would be required. This provides file-level protection only.
+    /// Column-level encryption of individual fields is handled separately and does not
+    /// depend on SQLCipher: see encryptString/decryptString, which seal patient names,
+    /// dates of birth, transcripts, SOAP payloads and clinical interpretations with
+    /// AES-256-GCM before they reach SQLite.
     private func applyFileProtection() throws {
         #if os(iOS)
         guard FileManager.default.fileExists(atPath: dbURL.path) else { return }

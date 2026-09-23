@@ -29,7 +29,20 @@ except ImportError:
     HAS_TORCH = False
     HAS_MPS = False
 
+# Set ANTIGRAVITY_RUN_BENCHMARKS=1 to force these on a machine without MPS,
+# accepting that the timing assertions will not hold there.
+FORCE_BENCHMARKS = os.environ.get("ANTIGRAVITY_RUN_BENCHMARKS") == "1"
+RUN_BENCHMARKS = HAS_MPS or FORCE_BENCHMARKS
 
+_SKIP_REASON = (
+    "Timing benchmark requires Apple Silicon MPS. These assert 50 batched steps "
+    "in <= 1.0s, which holds on GPU; a single 2048x32000 fp16 projection takes "
+    "~3s on CPU, so the file needs ~13 minutes and then fails on timing. "
+    "Set ANTIGRAVITY_RUN_BENCHMARKS=1 to run anyway."
+)
+
+
+@unittest.skipUnless(RUN_BENCHMARKS, _SKIP_REASON)
 class TestBatchedRolloutBenchmark(unittest.TestCase):
     """
     Benchmark suite for BatchedRolloutCoordinator measuring execution time,

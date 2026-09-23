@@ -69,7 +69,8 @@ func runSwiftAppTest() {
         return
     }
     
-    let modelPath = "/Users/MohssineChazi2/moat/models/tinyllama/model_fp16.safetensors"
+    let modelDir = ProcessInfo.processInfo.environment["ANTIGRAVITY_MODEL_DIR"] ?? "models"
+    let modelPath = modelDir + "/tinyllama/model_fp16.safetensors"
     print("[Swift] Loading weights from \(modelPath)")
     
     let res = modelPath.withCString { cstr in

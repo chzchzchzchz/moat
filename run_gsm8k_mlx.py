@@ -1,9 +1,15 @@
 import json
 from mlx_lm import load, generate
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 def load_gsm8k():
     data = []
-    with open('/Users/MohssineChazi2/moat/gsm8k_test_set.jsonl', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'gsm8k_test_set.jsonl'), 'r') as f:
         for i, line in enumerate(f):
             if i >= 1: break
             data.append(json.loads(line))
@@ -12,7 +18,7 @@ def load_gsm8k():
 def main():
     print("Loading MLX Model...")
     try:
-        model, tokenizer = load("/Users/MohssineChazi2/moat/models/qwen3_5_4b")
+        model, tokenizer = load(os.path.join(MOAT_ROOT, "models/qwen3_5_4b"))
         q = load_gsm8k()[0]
         prompt = f"<|im_start|>system\nYou are a helpful math reasoning assistant.<|im_end|>\n<|im_start|>user\n{q['question']}\nLet's think step by step.<|im_end|>\n<|im_start|>assistant\n"
         
