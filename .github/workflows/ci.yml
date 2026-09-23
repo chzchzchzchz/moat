@@ -62,6 +62,17 @@ jobs:
             tests/test_superblock_pack.cpp -o bin/test_superblock_pack
           ./bin/test_superblock_pack
 
+      # Whether gemv_int4_kernel computes the right thing depends on something
+      # outside the kernel: that loadTensor really hands it a [K x N] row-major
+      # buffer. Get that wrong and every index stays in bounds — the answer is just
+      # wrong. This runs the kernel's arithmetic on the host against an FP16 GEMV.
+      - name: Check the INT4 GEMV arithmetic
+        working-directory: antigravity-engine
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_int4_gemv_math.cpp -o bin/test_int4_gemv_math
+          ./bin/test_int4_gemv_math
+
       # Two implementations of the same format live in this repo: src/dequant.py,
       # which the quantization tests are written against, and src/superblock_pack.h,
       # which the engine actually calls at weight-load time. Nothing tied them
