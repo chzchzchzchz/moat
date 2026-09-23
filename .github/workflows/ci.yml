@@ -130,7 +130,9 @@ jobs:
             tests/test_fuzz_extreme_inputs.py \
             tests/test_quantization.py \
             tests/test_speculative_alpha.py \
-            tests/test_verifier.py
+            tests/test_verifier.py \
+            tests/test_quality_scoring.py \
+            tests/test_benchmark_quality_harness.py
 
       - name: Syntax-check every Python source file
         run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
