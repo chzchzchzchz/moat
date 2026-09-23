@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <map>
 #include "transformer_engine.h"
+#include "superblock_pack.h"
+#include "shader_sources.h"
 
 // BFloat16 → Float16 conversion helper
 static inline uint16_t bf16_to_fp16(uint16_t bf16) {
@@ -66,6 +68,116 @@ static inline uint16_t bf16_to_fp16(uint16_t bf16) {
 
 
 // ============================================================================
+// Shader library loading
+// ============================================================================
+
+namespace {
+
+// Shader files are looked up relative to a handful of plausible roots so the
+// engine works from a repo checkout, from an app bundle, and from whatever
+// directory a harness happens to run in. ANTIGRAVITY_SHADER_DIR wins when set.
+NSArray<NSString*>* shaderSearchRoots() {
+    static NSArray<NSString*>* roots = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray<NSString*>* r = [NSMutableArray array];
+        const char* env = getenv("ANTIGRAVITY_SHADER_DIR");
+        if (env && *env) [r addObject:[NSString stringWithUTF8String:env]];
+        NSString* bundled = [[NSBundle mainBundle] resourcePath];
+        if (bundled) [r addObject:bundled];
+        [r addObject:[[NSFileManager defaultManager] currentDirectoryPath]];
+        [r addObject:@"."];
+        [r addObject:@"antigravity-engine"];
+        [r addObject:@".."];
+        [r addObject:@"../antigravity-engine"];
+        roots = [r copy];
+    });
+    return roots;
+}
+
+NSString* resolveShaderPath(NSString* rel) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if ([rel isAbsolutePath] && [fm fileExistsAtPath:rel]) return rel;
+    for (NSString* root in shaderSearchRoots()) {
+        NSString* candidate = [root stringByAppendingPathComponent:rel];
+        if ([fm fileExistsAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+bool libraryExportsAll(id<MTLLibrary> lib, NSArray<NSString*>* names) {
+    if (!lib) return false;
+    for (NSString* name in names) {
+        if (![lib newFunctionWithName:name]) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+id<MTLLibrary> MetalTransformerEngine::loadShaderLibrary(
+    NSString* metallibRelPath,
+    NSString* metalSourceRelPath,
+    NSArray<NSString*>* requiredFunctions
+) {
+    NSString* libPath = resolveShaderPath(metallibRelPath);
+    NSString* srcPath = resolveShaderPath(metalSourceRelPath);
+    NSError* err = nil;
+
+    id<MTLLibrary> prebuilt = nil;
+    if (libPath) {
+        prebuilt = [device_ newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&err];
+        if (prebuilt && libraryExportsAll(prebuilt, requiredFunctions)) {
+            return prebuilt;
+        }
+        if (prebuilt) {
+            // The .metallib is checked in; a kernel added to the .metal source since
+            // it was built is simply absent. Taking it anyway would drop that kernel
+            // with no error at all, so prefer recompiling the source.
+            std::cerr << "[MetalTransformerEngine] " << libPath.UTF8String
+                      << " does not export every required kernel (stale build); "
+                      << "compiling from source instead" << std::endl;
+        }
+    }
+
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+
+    if (srcPath) {
+        NSString* source = [NSString stringWithContentsOfFile:srcPath
+                                                     encoding:NSUTF8StringEncoding
+                                                        error:&err];
+        if (source) {
+            id<MTLLibrary> compiled = [device_ newLibraryWithSource:source options:opts error:&err];
+            if (compiled) return compiled;
+            std::cerr << "[MetalTransformerEngine] failed to compile " << srcPath.UTF8String
+                      << ": " << (err ? err.localizedDescription.UTF8String : "unknown error")
+                      << std::endl;
+        }
+    }
+
+    // The floor: the source is compiled into the binary. Neither the .metal files
+    // nor the .metallib files are packaged inside AntigravityEngine.xcframework, and
+    // every path above is resolved relative to the process working directory — so on
+    // a device nothing above this point can succeed, and without it every pipeline
+    // outside the one inline fallback kernel would simply be null.
+    const std::string stem = [[metalSourceRelPath.lastPathComponent
+                               stringByDeletingPathExtension] UTF8String];
+    if (const char* embedded = antigravity::shaders::find(stem.c_str())) {
+        id<MTLLibrary> compiled =
+            [device_ newLibraryWithSource:[NSString stringWithUTF8String:embedded]
+                                  options:opts
+                                    error:&err];
+        if (compiled) return compiled;
+        std::cerr << "[MetalTransformerEngine] failed to compile embedded " << stem
+                  << ".metal: " << (err ? err.localizedDescription.UTF8String : "unknown error")
+                  << std::endl;
+    }
+
+    // A stale library is still better than none for the kernels it does export.
+    return prebuilt;
+}
+
+// ============================================================================
 // Constructor
 // ============================================================================
 
@@ -81,50 +193,31 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     queue_ = [device_ newCommandQueue];
     
     // ---- Load Shader Libraries ----
-    NSError* err = nil;
+    // The engine ships prebuilt .metallib files, but they are checked in and go
+    // stale the moment a .metal source gains a kernel. loadShaderLibrary() accepts
+    // a .metallib only when it still exports everything we need, and otherwise
+    // compiles the source, so adding a kernel never silently does nothing.
+    gemmLib_ = loadShaderLibrary(@"src/shaders/batched_gemm.metallib",
+                                 @"src/shaders/batched_gemm.metal",
+                                 @[@"batched_gemm_simdgroup",
+                                   @"gemv_int4_kernel",
+                                   @"fused_batched_gemm_int4"]);
 
-    
-    
-    // Try compiled metallib first, fall back to runtime compilation
-    NSArray<NSString*>* gemmPaths = @[
-        @"src/shaders/batched_gemm.metallib",
-        @"antigravity-engine/src/shaders/batched_gemm.metallib"
-    ];
-    for (NSString* path in gemmPaths) {
-        NSURL* url = [NSURL fileURLWithPath:path];
-        gemmLib_ = [device_ newLibraryWithURL:url error:&err];
-        if (gemmLib_) break;
-    }
-    
-    // Compile transformer_ops from source if metallib not available
-    NSArray<NSString*>* opsPaths = @[
-        @"src/shaders/transformer_ops.metallib",
-        @"antigravity-engine/src/shaders/transformer_ops.metallib",
-        @"src/shaders/transformer_ops.metal",
-        @"antigravity-engine/src/shaders/transformer_ops.metal"
-    ];
-    for (NSString* path in opsPaths) {
-        if ([path hasSuffix:@".metallib"]) {
-            NSURL* url = [NSURL fileURLWithPath:path];
-            opsLib_ = [device_ newLibraryWithURL:url error:&err];
-        } else {
-            // Compile from source
-            NSString* source = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&err];
-            if (source) {
-                MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-                opsLib_ = [device_ newLibraryWithSource:source options:opts error:&err];
-            }
-        }
-        if (opsLib_) break;
-    }
-    
-    // Fall back: compile GEMM from inline source
+    opsLib_ = loadShaderLibrary(@"src/shaders/transformer_ops.metallib",
+                                @"src/shaders/transformer_ops.metal",
+                                @[@"gemv_kernel", @"rmsnorm_kernel", @"rope_kernel"]);
+
     if (!gemmLib_) {
-        NSString* gemmSrc = @"#include <metal_stdlib>\nusing namespace metal;\nkernel void batched_gemm_simdgroup(device const half* activations [[buffer(0)]], device const half* weights [[buffer(1)]], device half* output [[buffer(2)]], constant uint& N_batch [[buffer(3)]], constant uint& K_dim [[buffer(4)]], constant uint& M_dim [[buffer(5)]], uint2 group_id [[threadgroup_position_in_grid]]) { uint row_start = group_id.y * 8; uint col_start = group_id.x * 8; if (row_start >= N_batch || col_start >= M_dim) return; simdgroup_matrix<half, 8, 8> acc_matrix = simdgroup_matrix<half, 8, 8>(0.0h); for (uint k = 0; k < K_dim; k += 8) { simdgroup_matrix<half, 8, 8> a_tile; simdgroup_matrix<half, 8, 8> b_tile; simdgroup_load(a_tile, activations + row_start * K_dim + k, K_dim); simdgroup_load(b_tile, weights + k * M_dim + col_start, M_dim); simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix); } simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim); }\n";
-        MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-        gemmLib_ = [device_ newLibraryWithSource:gemmSrc options:opts error:&err];
+        std::cerr << "[MetalTransformerEngine] no GEMM shader library; "
+                     "set ANTIGRAVITY_SHADER_DIR to the directory holding src/shaders"
+                  << std::endl;
     }
-    
+    if (!opsLib_) {
+        std::cerr << "[MetalTransformerEngine] no transformer_ops shader library; "
+                     "set ANTIGRAVITY_SHADER_DIR to the directory holding src/shaders"
+                  << std::endl;
+    }
+
     // ---- Create Compute Pipelines ----
     auto makePipeline = [&](id<MTLLibrary> lib, NSString* name) -> id<MTLComputePipelineState> {
         if (!lib) return nil;
@@ -136,18 +229,22 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     
     gemmPipeline_      = makePipeline(gemmLib_, @"batched_gemm_simdgroup");
     gemvPipeline_      = makePipeline(opsLib_, @"gemv_kernel");
+    gemvInt4Pipeline_      = makePipeline(gemmLib_, @"gemv_int4_kernel");
+    fusedGemmInt4Pipeline_ = makePipeline(gemmLib_, @"fused_batched_gemm_int4");
     rmsnormPipeline_   = makePipeline(opsLib_, @"rmsnorm_kernel");
     ropePipeline_      = makePipeline(opsLib_, @"rope_kernel");
     
     // Load Qwen 3.5 4B Hybrid Shaders
     
-    NSURL* deltaUrl = [NSURL fileURLWithPath:@"src/shaders/deltanet.metallib"];
-    id<MTLLibrary> deltaLib = [device_ newLibraryWithURL:deltaUrl error:&err];
+    id<MTLLibrary> deltaLib = loadShaderLibrary(@"src/shaders/deltanet.metallib",
+                                                @"src/shaders/deltanet_forward.metal",
+                                                @[@"deltanet_forward"]);
     if (deltaLib) {
         deltanetPipeline_ = makePipeline(deltaLib, @"deltanet_forward");
     }
-    NSURL* moeUrl = [NSURL fileURLWithPath:@"src/shaders/moe.metallib"];
-    id<MTLLibrary> moeLib = [device_ newLibraryWithURL:moeUrl error:&err];
+    id<MTLLibrary> moeLib = loadShaderLibrary(@"src/shaders/moe.metallib",
+                                              @"src/shaders/moe_gemm.metal",
+                                              @[@"moe_router"]);
     if (moeLib) {
         moeRouterPipeline_ = makePipeline(moeLib, @"moe_router");
     }
@@ -159,6 +256,22 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     embedPipeline_     = makePipeline(opsLib_, @"embedding_lookup_kernel");
     kvAppendPipeline_  = makePipeline(opsLib_, @"kv_cache_append_kernel");
     
+    // Opt-in for now: INT4 changes numerics, so it is switched on explicitly by
+    // the benchmark and quality harnesses rather than silently by default.
+    if (const char* q = getenv("ANTIGRAVITY_INT4")) {
+        quantizeOnLoad_ = (q[0] == '1' || q[0] == 't' || q[0] == 'T' || q[0] == 'y' || q[0] == 'Y');
+    }
+    // Both are needed: decode (M == 1) takes the GEMV, prefill and the multi-channel
+    // step take the fused GEMM. Quantizing with only one available would leave the
+    // other path refusing to compute rather than producing a wrong answer, but that
+    // is still a dead engine, so fall back to FP16 up front instead.
+    if (quantizeOnLoad_ && (!gemvInt4Pipeline_ || !fusedGemmInt4Pipeline_)) {
+        std::cerr << "[MetalTransformerEngine] INT4 weights requested but "
+                  << (gemvInt4Pipeline_ ? "fused_batched_gemm_int4" : "gemv_int4_kernel")
+                  << " is unavailable; falling back to FP16 weights" << std::endl;
+        quantizeOnLoad_ = false;
+    }
+
     reinitBuffersAndRoPE();
     
     std::cout << "[MetalTransformerEngine] Initialized with " 
@@ -453,7 +566,11 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     const char* raw_data = mapped_data + data_start;
     
     // Helper: load a tensor into a Metal buffer as FP16
-    auto loadTensor = [&](const std::string& name, bool transpose_2d = false) -> id<MTLBuffer> {
+    // `quantizable` marks the big [K x N] projection matrices that dispatchGEMM
+    // consumes; norms and the embedding table are read by kernels that expect FP16.
+    auto loadTensor = [&](const std::string& name,
+                          bool transpose_2d = false,
+                          bool quantizable = false) -> id<MTLBuffer> {
         auto it = tensors.find(name);
         if (it == tensors.end()) {
             // Try with "model." prefix
@@ -505,16 +622,35 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         }
         
         allocatedBytes_ += fp16_bytes;
+
+        if (quantizable && quantizeOnLoad_ && info.shape.size() == 2) {
+            // The buffer is [K x N] row-major: safetensors stores [out, in], so a
+            // transposed load leaves in_features as the row stride, which is the
+            // layout both INT4 kernels index as B[k * N + col].
+            uint32_t K = (uint32_t)(transpose_2d ? info.shape[1] : info.shape[0]);
+            uint32_t N = (uint32_t)(transpose_2d ? info.shape[0] : info.shape[1]);
+            id<MTLBuffer> packed = quantizeToSuperblocks(dest, num_elements, K, N);
+            if (packed) {
+                // The FP16 staging buffer is released here; only the 4-bit copy is kept.
+                allocatedBytes_ -= fp16_bytes;
+                allocatedBytes_ += [packed length];
+                return packed;
+            }
+            std::cerr << "[loadTensor] " << name << " not quantizable ("
+                      << num_elements << " elements is not a multiple of 256); "
+                      << "keeping FP16" << std::endl;
+        }
+
         return buf;
     };
     
     // ---- Load Embedding & Output Head ----
     embedWeights_ = loadTensor("embed_tokens.weight", false);
     finalNorm_ = loadTensor("norm.weight", false);
-    lmHead_ = loadTensor("lm_head.weight", true);
+    lmHead_ = loadTensor("lm_head.weight", true, /*quantizable=*/true);
     if (!lmHead_ && embedWeights_) {
         std::cout << "[loadWeights] lm_head.weight tied to embed_tokens.weight (transposing)" << std::endl;
-        lmHead_ = loadTensor("embed_tokens.weight", true);
+        lmHead_ = loadTensor("embed_tokens.weight", true, /*quantizable=*/true);
     }
     
     if (!embedWeights_ || !finalNorm_ || !lmHead_) {
@@ -528,14 +664,14 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         std::string prefix = "layers." + std::to_string(i) + ".";
         
         layerWeights_[i].input_norm  = loadTensor(prefix + "input_layernorm.weight", false);
-        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true);
-        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true);
-        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true);
-        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true);
+        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true, /*quantizable=*/true);
         layerWeights_[i].post_attn_norm = loadTensor(prefix + "post_attention_layernorm.weight", false);
-        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true);
-        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true);
-        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true);
+        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true, /*quantizable=*/true);
         
         // Validate all loaded
         if (!layerWeights_[i].input_norm || !layerWeights_[i].q_proj || !layerWeights_[i].k_proj ||
@@ -562,6 +698,24 @@ bool MetalTransformerEngine::loadWeights(const std::string& safetensors_path) {
 // ============================================================================
 // Metal Dispatch Helpers
 // ============================================================================
+
+id<MTLBuffer> MetalTransformerEngine::quantizeToSuperblocks(
+    const uint16_t* fp16, size_t n_elements, uint32_t K, uint32_t N
+) {
+    const size_t bytes = antigravity::superblockBytesFor(n_elements);
+    if (bytes == 0) return nil;   // not a multiple of 256 elements
+
+    id<MTLBuffer> buf = [device_ newBufferWithLength:bytes
+                                             options:MTLResourceStorageModeShared];
+    if (!buf) return nil;
+
+    if (!antigravity::packSuperblocks(fp16, n_elements, (uint8_t*)[buf contents])) {
+        return nil;
+    }
+
+    quantizedWeights_[(__bridge void*)buf] = QuantizedWeight{K, N};
+    return buf;
+}
 
 void MetalTransformerEngine::dispatchGrid(
     id<MTLComputeCommandEncoder> enc,
@@ -590,6 +744,39 @@ void MetalTransformerEngine::dispatchGEMM(
     id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C,
     uint32_t M, uint32_t K, uint32_t N
 ) {
+    // Quantized weights take the INT4 kernels: the packed bytes are not an FP16
+    // matrix and must not be fed to the dense path.
+    if (isQuantized(B)) {
+        if (M == 1 && gemvInt4Pipeline_) {
+            [enc setComputePipelineState:gemvInt4Pipeline_];
+            [enc setBuffer:A offset:0 atIndex:0];
+            [enc setBuffer:B offset:0 atIndex:1];
+            [enc setBuffer:C offset:0 atIndex:2];
+            uint32_t uK = K, uN = N;
+            [enc setBytes:&uK length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&uN length:sizeof(uint32_t) atIndex:4];
+            dispatchGrid(enc, gemvInt4Pipeline_, MTLSizeMake(N, 1, 1));
+            return;
+        }
+        if (fusedGemmInt4Pipeline_) {
+            [enc setComputePipelineState:fusedGemmInt4Pipeline_];
+            [enc setBuffer:A offset:0 atIndex:0];
+            [enc setBuffer:B offset:0 atIndex:1];
+            [enc setBuffer:C offset:0 atIndex:2];
+            uint32_t uN = M, uK = K, uM = N;
+            [enc setBytes:&uN length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&uK length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&uM length:sizeof(uint32_t) atIndex:5];
+            MTLSize tg = MTLSizeMake((N + 7) / 8, (M + 7) / 8, 1);
+            [enc dispatchThreadgroups:tg threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+            return;
+        }
+        // No INT4 pipeline: refuse rather than reinterpret packed bytes as FP16.
+        std::cerr << "[dispatchGEMM] quantized weights but no INT4 pipeline available"
+                  << std::endl;
+        return;
+    }
+
     if (M == 1 && gemvPipeline_) {
         [enc setComputePipelineState:gemvPipeline_];
         [enc setBuffer:A offset:0 atIndex:0];   // vector x [K]

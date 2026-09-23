@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 #include <vector>
+#include <unordered_map>
 #include <string>
 #include <cstdint>
 #include <random>
@@ -96,6 +97,12 @@ public:
     // Query physical memory usage
     uint64_t getAllocatedBytes() const override;
     
+    // Store projection weights as INT4 super-blocks instead of FP16. Must be set
+    // before loadWeights(); afterwards the buffers already exist. Defaults from
+    // the ANTIGRAVITY_INT4 environment variable.
+    void setQuantizeOnLoad(bool on) { quantizeOnLoad_ = on; }
+    bool quantizeOnLoad() const { return quantizeOnLoad_; }
+
     void sanitizeBuffers() override;
     void print_l2_norm(id<MTLBuffer> buf, uint32_t elements, const std::string& name);
     void rollbackKVCache(uint32_t step); // Allows reverting KV cache for speculative rollback
@@ -121,6 +128,8 @@ private:
     id<MTLComputePipelineState> residualPipeline_;
     id<MTLComputePipelineState> embedPipeline_;
     id<MTLComputePipelineState> kvAppendPipeline_;
+    id<MTLComputePipelineState> gemvInt4Pipeline_;        // INT4 super-block GEMV (decode)
+    id<MTLComputePipelineState> fusedGemmInt4Pipeline_;   // INT4 super-block GEMM (prefill)
     
     // Model weight buffers (one per layer)
     struct LayerWeights {
@@ -136,6 +145,24 @@ private:
     };
     
     std::vector<LayerWeights> layerWeights_;
+
+    // Weight buffers holding INT4 super-blocks rather than FP16, and their [K x N]
+    // shape, which the packed bytes no longer carry. Decode is bandwidth-bound, so
+    // keeping these 4-bit in VRAM is what raises the throughput ceiling; they are
+    // dequantized into registers inside the kernel and never materialised as FP16.
+    struct QuantizedWeight { uint32_t K; uint32_t N; };
+    std::unordered_map<void*, QuantizedWeight> quantizedWeights_;
+    bool quantizeOnLoad_ = false;
+
+    bool isQuantized(id<MTLBuffer> b) const {
+        return b && quantizedWeights_.count((__bridge void*)b) > 0;
+    }
+
+    // Pack an FP16 tensor into 144-byte super-blocks. Mirrors
+    // quantize_weights_int4 + repack_to_superblocks in src/dequant.py.
+    id<MTLBuffer> quantizeToSuperblocks(const uint16_t* fp16, size_t n_elements,
+                                        uint32_t K, uint32_t N);
+
     id<MTLBuffer> embedWeights_;      // [vocab_size, hidden_dim]
     id<MTLBuffer> finalNorm_;         // [hidden_dim]
     id<MTLBuffer> lmHead_;            // [vocab_size, hidden_dim]
@@ -203,6 +230,13 @@ private:
     int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p, std::mt19937& rng);
     
     // Safetensors parser
+    // Load a shader library, preferring a prebuilt .metallib but only when it
+    // exports every kernel in `requiredFunctions`; a .metallib committed before a
+    // .metal change would otherwise silently shadow the new kernels.
+    id<MTLLibrary> loadShaderLibrary(NSString* metallibRelPath,
+                                     NSString* metalSourceRelPath,
+                                     NSArray<NSString*>* requiredFunctions);
+
     bool parseSafetensors(const std::string& path);
     void reinitBuffersAndRoPE();
 };
