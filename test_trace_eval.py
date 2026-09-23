@@ -1,13 +1,13 @@
 import sys
 import os
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-sys.path.insert(0, os.path.join(MOAT_ROOT, "antigravity-engine/src"))
-from genprm_verifier import GenPRMVerifier
 
 # Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
 # absolute paths from one developer's machine that no other checkout has.
 MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+sys.path.insert(0, os.path.join(MOAT_ROOT, "antigravity-engine/src"))
+from genprm_verifier import GenPRMVerifier
 
 
 model_dir = "models/qwen"

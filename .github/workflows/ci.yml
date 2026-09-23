@@ -135,6 +135,13 @@ jobs:
       - name: Syntax-check every Python source file
         run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
 
+      # compileall only proves a file parses. A module that reads a name above the
+      # line binding it parses fine and then raises NameError on import — the script
+      # is dead and nothing notices. Four scripts in this repo were in exactly that
+      # state, all from one edit, and compileall passed every one of them.
+      - name: Check for names used at import time before they are defined
+        run: python3 tools/check_import_time_names.py .
+
   python-torch:
     name: Python suites requiring torch
     runs-on: ubuntu-latest
