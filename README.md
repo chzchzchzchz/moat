@@ -94,19 +94,63 @@ The engine supports multi-channel parallel decoding (e.g., N=4 channels). During
 
 ---
 
-## Empirical Performance (Verified)
+## Performance — what is measured, and what is not
 
-Performance measured on Apple Silicon M-series hardware with TinyLlama 1.1B:
+Every throughput number this project has ever published, with its source:
 
-| Metric | Measured Value | Notes |
+| Claim | Where it comes from | Status |
 | :--- | :--- | :--- |
-| **Single-Channel Native Metal** | **~5.3 tokens/sec** | End-to-end custom C++ Metal compute shaders |
-| **4-Channel Parallel Decode** | **~27.6 aggregate tokens/sec** | 4 parallel rollout channels executed simultaneously |
-| **PyTorch MPS Fallback** | **~27.0 tokens/sec** | Single-channel reference via PyTorch MPS |
-| **Model VRAM Footprint** | **3,037 MB** | TinyLlama 1.1B in FP16 / BF16 representation |
-| **Post-Unload Memory** | **0 MB** | Full VRAM deallocation verified via Metal allocator |
+| 5.13763 tok/s single-channel | `antigravity-engine/benchmark_metrics.json` | committed artifact, no hardware, model, date or sample count recorded |
+| 5.28812 tok/s single-channel | `antigravity-engine/benchmark_real_weights.json` | committed artifact, same run description, different number |
+| 855.62 tok/s single-channel | `antigravity-engine/benchmark_results_v2.json` | committed artifact, 166x the other two for the same quantity |
+| 30,327.6 tok/s | `metal_hardware_proof.md` | **not token throughput** — `src/metal_runner.cpp` times one 8x2048x2048 GEMM and divides by the batch size. A TinyLlama decode step is 154 GEMMs plus attention, norms, RoPE and sampling |
+| ~27.0 tok/s (PyTorch MPS) | this README, until now | **no artifact contains this number** |
+| ~27.6 tok/s (4-channel) | this README, until now | **no artifact contains this number** |
 
-> **Note on Benchmarking**: Early iterations of this codebase contained mock loops that reported unverified throughputs (e.g., 243 tok/s). The figures above represent actual measured hardware execution with real weights generating verified text.
+Three committed artifacts give three different figures for single-channel
+decode, and two of the numbers this README used to headline are in no artifact
+at all. None of the artifacts records which chip, which OS, which model, when,
+or over how many samples — so none of them can be reproduced or compared, and
+this table is the honest summary: the engine's throughput is currently unknown.
+
+`tools/benchmark_throughput.py` is what replaces them. It measures the native
+engine against PyTorch MPS on one machine in one run and writes a JSON artifact
+carrying the hardware profile, every individual sample rather than the best one,
+the weight footprint, and the fraction of the machine's memory bandwidth reached.
+It exits non-zero and records the failure if anything did not run.
+
+Memory, which is measured and does reproduce:
+
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| Model VRAM footprint (FP16) | 3,037 MB | TinyLlama 1.1B, FP16/BF16, plus KV caches |
+| Post-unload memory | 0 MB | full deallocation verified via the Metal allocator |
+
+INT4 super-block weights are now on the inference path (`ANTIGRAVITY_INT4=1`),
+which should cut the projection weights to roughly a quarter of that. The
+resulting footprint and throughput have not been measured on hardware, so no
+number is quoted for them here.
+
+### Accuracy
+
+The claim this project exists to make is that N parallel reasoning channels buy
+accuracy. **That has not been demonstrated on this engine.**
+
+`antigravity-engine/antigravity_benchmark_results.json` is the only artifact
+that measures it. Its accuracies run 40%, 0%, 0%, 20%, 40% as channels go 1, 2,
+4, 8, 16 — read as a scaling curve, except the token counts show about five
+problems per row, where one problem is worth 20 points. The repo's other
+`antigravity_benchmark_results.json` scores 0% at every channel count.
+
+The often-quoted 68.8% -> 74.2% (n=449) result is real, but it came from
+HuggingFace running Qwen2.5-Math-1.5B. It is evidence that best-of-N works. It
+is not evidence about this engine, which did not run it.
+
+`tools/benchmark_quality.py` measures the engine itself on GSM8K. It reports
+each condition's Wilson interval, runs an exact paired test on the same
+problems, refuses to call a difference a lift when it cannot be distinguished
+from chance, and on a null result prints the sample size that would have been
+needed. Run it on a device; the artifact it writes is the number.
 
 ---
 
