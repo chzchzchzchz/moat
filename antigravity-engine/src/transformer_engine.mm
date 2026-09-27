@@ -396,7 +396,7 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
                   << " bytes, too short to be a safetensors file: " << path << std::endl;
         return false;
     }
-    const uint64_t file_size = (uint64_t)file_end;
+    const uint64_t validated_file_size = (uint64_t)file_end;
     file.seekg(0, std::ios::beg);
 
     // Read header length (8-byte LE uint64). Check the read: a short read used to leave
@@ -411,9 +411,9 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         std::cerr << "[loadWeights] Header too large: " << header_len << std::endl;
         return false;
     }
-    if (header_len == 0 || header_len > file_size - 8) {
+    if (header_len == 0 || header_len > validated_file_size - 8) {
         std::cerr << "[loadWeights] Header claims " << header_len
-                  << " bytes but the file holds only " << (file_size - 8)
+                  << " bytes but the file holds only " << (validated_file_size - 8)
                   << " after the length field; the file is truncated or not safetensors: "
                   << path << std::endl;
         return false;
@@ -448,7 +448,7 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     //
     // And nothing compared any offset to the file size.
     const antigravity::HeaderParseResult parsed =
-        antigravity::parseSafetensorsHeader(header_json, data_start, file_size);
+        antigravity::parseSafetensorsHeader(header_json, data_start, validated_file_size);
     if (!parsed.ok) {
         std::cerr << "[loadWeights] Refusing to load " << path << ": " << parsed.error
                   << std::endl;
@@ -564,7 +564,21 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         return false;
     }
     size_t file_size = sb.st_size;
-    
+
+    // parseSafetensorsHeader validated every tensor's offsets against the size this file
+    // had when the header was read. The mapping below is sized from fstat instead, so if
+    // the two disagree the file changed underneath us and those offsets no longer describe
+    // what is about to be mapped. Cheap to check, and the alternative is reading past the
+    // end of the mapping with offsets that were "already validated".
+    if ((uint64_t)file_size != validated_file_size) {
+        std::cerr << "[loadWeights] File size changed while loading, from "
+                  << validated_file_size << " to " << file_size
+                  << " bytes; refusing to use offsets validated against the old size: "
+                  << path << std::endl;
+        close(fd);
+        return false;
+    }
+
     const char* mapped_data = (const char*)mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (mapped_data == MAP_FAILED) {
         std::cerr << "[loadWeights] mmap failed for: " << path << std::endl;
