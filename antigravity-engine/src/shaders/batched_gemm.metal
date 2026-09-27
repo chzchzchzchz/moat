@@ -138,7 +138,10 @@ kernel void fused_batched_gemm_int4(
     constant uint&           N_batch       [[buffer(3)]],
     constant uint&           K_dim         [[buffer(4)]],
     constant uint&           M_dim         [[buffer(5)]],
-    uint2 group_id  [[threadgroup_position_in_grid]],
+    // group_id is uint3 rather than uint2 only so that it matches tg_size: MSL
+    // requires every vector kernel input to have the same element count, and
+    // mixing uint2 with uint3 is rejected outright.
+    uint3 group_id  [[threadgroup_position_in_grid]],
     uint  tid_in_tg [[thread_index_in_threadgroup]],
     uint3 tg_size   [[threads_per_threadgroup]]
 ) {
