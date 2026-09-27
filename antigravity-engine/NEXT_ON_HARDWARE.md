@@ -106,3 +106,40 @@ These two items are the leading candidates.
 
 **Do not start here.** Optimising a path whose correctness is unestablished is how this
 repository arrived at a 0.3% benchmark that nobody noticed.
+
+---
+
+## Appendix: shader audit coverage
+
+Every kernel in `src/shaders` has been read looking for the cause of the degenerate
+587-problem run. Recorded so the ground is not re-covered, and so the gaps are visible.
+
+| kernel | outcome |
+| :--- | :--- |
+| `rmsnorm_kernel` | **fixed** — tree reduction only summed a power-of-two prefix of its threads |
+| `rope_kernel` | **fixed** — read the frequency tables with no bound on `absolute_pos` |
+| `kv_cache_append_kernel` | **fixed** — took `max_seq` and never used it as a bound; overrun lands in the next head's cache |
+| `fused_batched_gemm_int4` | **fixed** — dequantized every tile 32x over, raced the staging tile, and stored edge tiles out of bounds |
+| `gemv_int4_kernel` | verified against a host reference: RMS error 0.017914 vs an analytic 0.017972 |
+| `moe_router` | **fixed earlier** — `thread float logits[64]` indexed by a runtime count, and a softmax with no maximum subtracted |
+| `batched_gemm_simdgroup` | correct, including its bounds-checked edge store |
+| `gqa_attention_scores_kernel` | correct — `batch_idx` is always 0 because the grid's x extent is `n_heads`, matching a per-channel cache; mask is right for decode |
+| `softmax_kernel` | correct — dispatched at 32 threads so the cross-SIMD reduction degenerates properly; in-place is safe |
+| `attention_value_kernel` | correct — probs stride matches what the scores kernel wrote |
+| `silu_elementwise_mul_kernel` | correct for finite inputs; guards `gid >= size` |
+| `residual_add_kernel` | correct; guards `gid >= size` |
+| `embedding_lookup_kernel` | bounds check added at both multimodal call sites |
+| `gemv_kernel` | correct; `B[k * N + col]` is contiguous across adjacent threads |
+| `dequantize_superblocks_kernel` | **dead, and should stay dead** — materialising FP16 weights undoes the bandwidth saving INT4 exists for |
+| `deltanet_forward`, `moe_router` pipelines | **created, never dispatched** — `forwardLayer()` is dense for every layer, so the hybrid architecture is not implemented; `loadWeights()` now warns on such a checkpoint |
+
+Three pipelines are created and never dispatched: `deltanetPipeline_`, `moeRouterPipeline_`
+and `antigravity_c_api.cpp`'s `dequantPipeline`. None is deleted — each is the start of
+real work and two have had genuine bugs fixed in them — but each is now annotated where
+it is created, so none of them reads as a working feature.
+
+**No defect found in this audit explains the degenerate run.** Six of the fixes are
+latent: they need a dimension that is not a multiple of 8, a `hidden_dim` below 256, a
+sequence past `max_seq_len`, or a non-dense checkpoint, and none of those held for the
+TinyLlama run that produced it. Which means the cause is still open, and item 1 above is
+still the first thing to do.

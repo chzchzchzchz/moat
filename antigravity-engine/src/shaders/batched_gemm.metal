@@ -38,6 +38,20 @@ inline half2 dequantize_nibble_pair(uchar packed_byte, half scale_even, half sca
 // KERNEL 1: Fast INT4 Dequantization Kernel (Super-Block → Dense FP16 Matrix)
 // Decouples dequantization so it can feed standard Metal MPS or simdgroup GEMM
 // =============================================================================
+// NOT DISPATCHED ANYWHERE, and deliberately so.
+//
+// This expands super-blocks into a full FP16 weight buffer before the GEMM, which is the
+// approach INT4 was originally wired for and which gives up the entire point: decode is
+// memory-bandwidth bound, so materialising FP16 weights means streaming the same bytes
+// per token as never quantizing at all. The memory saving survives only on disk.
+//
+// gemv_int4_kernel and fused_batched_gemm_int4 below take the other route — they read the
+// packed bytes and dequantize into registers inside the inner loop, so the weights stay
+// 4-bit in VRAM for the whole decode and the bandwidth ceiling actually rises.
+//
+// Kept because antigravity_c_api.cpp still creates a pipeline for it (also never
+// dispatched) and because the reference semantics are useful. Do not wire it into the
+// decode path: doing so would quietly undo the reason INT4 exists.
 kernel void dequantize_superblocks_kernel(
     device const SuperBlock* superblocks [[buffer(0)]],
     device half*             out_weights [[buffer(1)]],
