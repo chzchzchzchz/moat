@@ -19,6 +19,13 @@
 name: Quality benchmark (Apple Silicon)
 
 on:
+  # A workflow_dispatch workflow can only be triggered once it is on the default
+  # branch, so until this merges the label is the way to run it: add
+  # "run-quality-benchmark" to the pull request. For a same-repository pull request
+  # GitHub uses the workflow definition from the head branch, so this works from
+  # here. Nothing runs unless the label is added, so it costs nothing per push.
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       problems:
@@ -41,6 +48,9 @@ on:
 jobs:
   measure:
     name: GSM8K on the native Metal engine
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'run-quality-benchmark'
     runs-on: macos-14
     timeout-minutes: 300
     steps:
@@ -116,7 +126,7 @@ jobs:
       - name: Download the weights
         working-directory: antigravity-engine
         env:
-          REPO: ${{ github.event.inputs.model_repo }}
+          REPO: ${{ github.event.inputs.model_repo || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }}
         run: |
           set -e
           mkdir -p models/bench
@@ -137,9 +147,9 @@ jobs:
             --model-dir models/bench \
             --dataset ../gsm8k_test_set.jsonl \
             --dylib build/lib/libantigravity_engine.dylib \
-            --limit "${{ github.event.inputs.problems }}" \
-            --channels "${{ github.event.inputs.channels }}" \
-            --max-tokens "${{ github.event.inputs.max_tokens }}" \
+            --limit "${{ github.event.inputs.problems || '40' }}" \
+            --channels "${{ github.event.inputs.channels || '8' }}" \
+            --max-tokens "${{ github.event.inputs.max_tokens || '256' }}" \
             ${{ github.event.inputs.int4 == 'true' && '--int4' || '' }} \
             --out quality_gsm8k.json
         # A problem the engine throws on makes the harness exit non-zero after
