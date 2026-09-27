@@ -476,3 +476,53 @@ def test_every_warning_names_an_observation_not_a_diagnosis():
     warnings = sanity_checks(_records(counts, [7] * 50), 8, _comparison(0, 0, n=50))
     assert len(warnings) == 3
     assert all(any(ch.isdigit() for ch in w) for w in warnings)
+
+
+# --------------------------------------------------------------------------
+# The guards against the run that actually broke
+#
+# Everything above constructs inputs designed to trip sanity_checks(). This tests
+# it against the real artifact from the first 50-problem reference run, kept as a
+# fixture. The difference matters: data built to fail a check proves the check
+# reacts to what I imagined, not to what went wrong.
+# --------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+
+def _broken_run():
+    path = Path(__file__).resolve().parent / "fixtures" / "broken_reference_run.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_real_broken_run_is_caught():
+    data = _broken_run()
+    warnings = sanity_checks(data["records"], data["config"]["samples"], data["comparison"])
+
+    # All three patterns were present in that run, and all three must be reported: any
+    # one of them alone is enough to make the 18.0% figure meaningless.
+    assert len(warnings) == 3, warnings
+    assert any("batch-level signal" in w for w in warnings)
+    assert any("agree on all" in w for w in warnings)
+    assert any("yielded no" in w for w in warnings)
+
+
+def test_the_broken_run_looked_like_a_clean_null_result():
+    """Why it needed a guard rather than a better verdict.
+
+    The comparison itself is unremarkable: equal accuracy, no disagreements, a verdict
+    saying the difference cannot be told from chance. That is exactly what a correct
+    harness reports when a method does nothing, which is why nothing objected.
+    """
+    comparison = _broken_run()["comparison"]
+    assert comparison["baseline"]["accuracy"] == comparison["candidate"]["accuracy"]
+    assert not comparison["significant"]
+    assert comparison["p_value"] == 1.0
+    assert "distinguishable from chance" in comparison["verdict"]
+
+
+def test_the_fixture_shows_the_all_or_nothing_truncation_signature():
+    # 0 or 8, never in between: the fingerprint of a batch-wide signal reported per
+    # sample. Pinned so the fixture cannot be quietly replaced with something milder.
+    counts = {r["n_samples_truncated"] for r in _broken_run()["records"]}
+    assert counts == {0, 8}
