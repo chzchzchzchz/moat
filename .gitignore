@@ -35,6 +35,7 @@ antigravity-engine/bin/test_embedded_shaders
 antigravity-engine/bin/test_superblock_pack
 antigravity-engine/bin/test_int4_gemv_math
 antigravity-engine/bin/test_engine_limits
+antigravity-engine/bin/test_metal_int4_gpu
 
 # Xcode / SwiftPM
 *.xcuserdata

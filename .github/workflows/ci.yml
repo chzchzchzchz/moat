@@ -299,6 +299,23 @@ jobs:
           path: antigravity-engine/build/metal/*.metallib
           if-no-files-found: warn
 
+      # Everything else verifying the INT4 path reproduces the kernels' arithmetic on
+      # the CPU, which cannot catch a mistake in the shader itself — a wrong barrier,
+      # a threadgroup array in the wrong address space, a lane split that leaves tile
+      # cells unwritten. Those need the shader to actually run. The macos-14 runner is
+      # arm64, so if it exposes a Metal device these kernels get executed for the
+      # first time. The test skips with exit 0 when there is no device, and fails only
+      # when a kernel runs and disagrees with the host reference.
+      - name: Run the INT4 kernels on the GPU
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          clang++ -std=c++17 -fobjc-arc -x objective-c++ -Isrc \
+            tests/test_metal_int4_gpu.mm \
+            -framework Metal -framework Foundation \
+            -o bin/test_metal_int4_gpu
+          ./bin/test_metal_int4_gpu
+
       - name: Show toolchain
         run: swift --version
 
