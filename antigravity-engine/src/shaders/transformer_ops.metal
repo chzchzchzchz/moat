@@ -19,20 +19,35 @@ kernel void rmsnorm_kernel(
     device const half* x_b = x + batch_idx * dim;
     device half* out_b = out + batch_idx * dim;
     
-    threadgroup float sum_sq_shared[1024]; 
-    
+    // 1024 is the largest threadgroup an Apple GPU will schedule, so this bounds any
+    // dispatch. dispatchRMSNorm currently asks for min(dim, 256).
+    threadgroup float sum_sq_shared[1024];
+
     float local_sum = 0.0;
     for (uint i = tid; i < dim; i += threads_per_threadgroup) {
         float val = (float)x_b[i];
         local_sum += val * val;
     }
     sum_sq_shared[tid] = local_sum;
-    
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    // Reduction
-    for (uint s = threads_per_threadgroup / 2; s > 0; s >>= 1) {
-        if (tid < s) {
+
+    // Tree reduction, halving ROUNDED UP with a bounds guard.
+    //
+    // This previously started at threads_per_threadgroup / 2 and halved with >>= 1,
+    // which only sums every entry when the thread count is a power of two. At 200
+    // threads it summed 128 of them and silently discarded the other 72; at 100 it
+    // summed 64. The result is an RMS norm computed from a fraction of the row, which
+    // under-estimates mean_sq, over-scales the activations, and pushes them toward the
+    // Inf and NaN that then propagate through the rest of the layer.
+    //
+    // Not reachable at present: threads_per_threadgroup is min(dim, 256) and every real
+    // hidden_dim is at least 256, so the count is exactly 256 and the old loop was
+    // correct. It becomes reachable the moment that dispatch changes or a model with a
+    // hidden_dim below 256 is loaded, and it would fail silently, so it is fixed rather
+    // than noted.
+    for (uint s = (threads_per_threadgroup + 1u) / 2u; s > 0u; s = (s == 1u) ? 0u : (s + 1u) / 2u) {
+        if (tid < s && tid + s < threads_per_threadgroup) {
             sum_sq_shared[tid] += sum_sq_shared[tid + s];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
