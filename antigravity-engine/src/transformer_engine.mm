@@ -30,6 +30,7 @@
 #include "superblock_pack.h"
 #include "shader_sources.h"
 #include "engine_limits.h"
+#include "sampling.h"
 
 // BFloat16 → Float16 conversion helper
 static inline uint16_t bf16_to_fp16(uint16_t bf16) {
@@ -1184,59 +1185,23 @@ int32_t MetalTransformerEngine::sampleToken(
     const _Float16* logits, int vocab_size,
     float temperature, float top_p, std::mt19937& rng
 ) {
-    std::vector<float> probs(vocab_size);
-    float max_logit = -1e9f;
-    
-    // Temperature scaling
-    float inv_temp = 1.0f / std::max(temperature, 1e-6f);
-    
-    for (int i = 0; i < vocab_size; i++) {
-        probs[i] = (float)logits[i] * inv_temp;
-        if (probs[i] > max_logit) max_logit = probs[i];
+    // The arithmetic lives in src/sampling.h, which has no Metal dependency, so the
+    // NaN handling that used to pin every draw to token 0 is covered by a test that
+    // runs on any machine rather than only on a Mac.
+    antigravity::SamplingStats stats;
+    const int32_t token = antigravity::sampleTokenFromLogits(
+        logits, vocab_size, temperature, top_p, rng, stats);
+
+    nonFiniteLogitCount_ += stats.non_finite_logits;
+    if (stats.empty_distributions && emptyDistributionCount_ == 0) {
+        // Once, not once per token: a failed forward pass would otherwise print this
+        // for every position in every sequence.
+        std::cerr << "[sampleToken] every one of " << vocab_size << " logits is NaN or "
+                     "infinite; the forward pass produced no usable distribution"
+                  << std::endl;
     }
-    
-    // Stable softmax
-    float sum_exp = 0.0f;
-    for (int i = 0; i < vocab_size; i++) {
-        probs[i] = expf(probs[i] - max_logit);
-        sum_exp += probs[i];
-    }
-    for (int i = 0; i < vocab_size; i++) {
-        probs[i] /= sum_exp;
-    }
-    
-    // Top-P nucleus sampling
-    if (top_p < 1.0f && top_p > 0.0f) {
-        // Sort by probability descending
-        std::vector<int> indices(vocab_size);
-        std::iota(indices.begin(), indices.end(), 0);
-        std::sort(indices.begin(), indices.end(), [&](int a, int b) {
-            return probs[a] > probs[b];
-        });
-        
-        float cumsum = 0.0f;
-        int cutoff = vocab_size;
-        for (int i = 0; i < vocab_size; i++) {
-            cumsum += probs[indices[i]];
-            if (cumsum >= top_p) {
-                cutoff = i + 1;
-                break;
-            }
-        }
-        
-        // Zero out tokens below cutoff
-        for (int i = cutoff; i < vocab_size; i++) {
-            probs[indices[i]] = 0.0f;
-        }
-        
-        // Re-normalize
-        sum_exp = 0.0f;
-        for (int i = 0; i < vocab_size; i++) sum_exp += probs[i];
-        for (int i = 0; i < vocab_size; i++) probs[i] /= sum_exp;
-    }
-    
-    std::discrete_distribution<int> dist(probs.begin(), probs.end());
-    return dist(rng);
+    emptyDistributionCount_ += stats.empty_distributions;
+    return token;
 }
 
 
@@ -1682,7 +1647,22 @@ GenerationResult MetalTransformerEngine::generate(
               << "TTFT=" << result.ttft_ms << "ms, "
               << "TPOT=" << result.tpot_ms << "ms, "
               << "Total=" << result.total_ms << "ms" << std::endl;
-    
+
+    // A run that hit non-finite logits must not look clean. Before this, one NaN
+    // anywhere in the vocabulary silently pinned sampling to token 0 for the rest of
+    // the sequence, which reads as a model that has collapsed rather than as a fault.
+    if (emptyDistributionCount_ > 0) {
+        std::cerr << "[generate] WARNING: " << emptyDistributionCount_
+                  << " sampling step(s) had no finite logit at all. Those tokens are "
+                     "not model output." << std::endl;
+    }
+    if (nonFiniteLogitCount_ > 0) {
+        std::cerr << "[generate] WARNING: discarded " << nonFiniteLogitCount_
+                  << " non-finite logits during this generation. The forward pass is "
+                     "producing NaN or Inf; the output above is not trustworthy."
+                  << std::endl;
+    }
+
     return result;
 }
 

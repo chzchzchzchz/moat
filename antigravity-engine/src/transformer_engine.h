@@ -158,6 +158,17 @@ private:
     std::unordered_map<void*, QuantizedWeight> quantizedWeights_;
     bool quantizeOnLoad_ = false;
 
+    // How many non-finite logits sampleToken() has had to discard. Non-zero means the
+    // forward pass produced NaN or Inf, which used to collapse sampling to token 0
+    // with no indication at all. generate() reports it so a run cannot look clean.
+    uint64_t nonFiniteLogitCount_ = 0;
+    uint64_t emptyDistributionCount_ = 0;
+
+public:
+    uint64_t nonFiniteLogitCount() const { return nonFiniteLogitCount_; }
+    uint64_t emptyDistributionCount() const { return emptyDistributionCount_; }
+private:
+
     bool isQuantized(id<MTLBuffer> b) const {
         return b && quantizedWeights_.count((__bridge void*)b) > 0;
     }

@@ -35,6 +35,19 @@ jobs:
         working-directory: antigravity-engine
         run: ./bin/test_bridge_contract
 
+      # std::discrete_distribution given NaN weights returns index 0. The sampler fed
+      # it NaN whenever a single logit was non-finite, so a forward pass producing NaN
+      # emitted the same token forever and the run completed and wrote results — the
+      # shape of the 587-problem checkpoint in this repo. The arithmetic now lives in a
+      # Metal-free header so this is checked on every commit, not once by hand.
+      - name: Check token sampling against non-finite logits
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_sampling.cpp -o bin/test_sampling
+          ./bin/test_sampling
+
       # Both of these bounds stand between a caller-supplied integer and a write
       # past the end of a Metal buffer, which does not fault — it corrupts the next
       # allocation and yields plausible output. Neither was enforced anywhere:
