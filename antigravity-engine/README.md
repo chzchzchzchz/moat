@@ -62,6 +62,10 @@ shader with `-Werror` and checks the super-block layout, the packer against
 `src/dequant.py`, and the GEMV arithmetic against a host reference; it has never
 executed a kernel.
 
+> **Blocked on hardware:** the engine's own 587-problem benchmark shows it emitting
+> one character regardless of input. What to run on an Apple Silicon Mac, in priority
+> order, and what has already been ruled out: [NEXT_ON_HARDWARE.md](NEXT_ON_HARDWARE.md)
+
 ## What Works
 - ✅ Metal GPU transformer forward pass (real inference)
 - ✅ Safetensors model loading via mmap

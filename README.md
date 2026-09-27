@@ -171,6 +171,10 @@ claim for its own engine.
 
 ---
 
+> **Blocked on hardware:** the engine's own 587-problem benchmark shows it emitting
+> one character regardless of input. What to run on an Apple Silicon Mac, in priority
+> order, and what has already been ruled out: [antigravity-engine/NEXT_ON_HARDWARE.md](antigravity-engine/NEXT_ON_HARDWARE.md)
+
 ## Proof That It Works
 
 The engine is verified through three independent test suites across C++, Swift, and Python:
