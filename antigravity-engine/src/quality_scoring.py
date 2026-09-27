@@ -214,14 +214,70 @@ def compare_conditions(baseline: Sequence[bool], candidate: Sequence[bool],
 
 def min_detectable_problems(delta: float, base_rate: float = 0.5,
                             alpha: float = 0.05, power: float = 0.8) -> int:
-    """Roughly how many problems are needed to detect `delta` at this power.
+    """Problems needed to detect `delta` if the two conditions were INDEPENDENT.
 
-    Printed alongside a null result so "we saw nothing" can be read as either
-    "there is nothing" or "this run was far too small to tell", which is the
-    distinction the existing five-problem artifact leaves out.
+    This is the two-sample formula, n = 2p(1-p)(z_a + z_b)^2 / delta^2, and it is
+    the wrong test for this design: both conditions are graded on the same problems,
+    so the comparison is paired and McNemar's test needs substantially fewer. Kept
+    because it is a valid conservative upper bound, and because a caller that does
+    not yet know its discordance rate has nothing better to use.
+
+    Prefer min_detectable_problems_paired() once a run has produced a discordance.
     """
     if delta <= 0:
         raise ValueError("delta must be positive")
     z_alpha, z_beta = 1.959963985, 0.8416212336
     variance = 2 * base_rate * (1 - base_rate)
     return max(1, math.ceil(variance * (z_alpha + z_beta) ** 2 / (delta ** 2)))
+
+
+def min_detectable_problems_paired(delta: float, discordance: float,
+                                   alpha: float = 0.05, power: float = 0.8) -> int:
+    """Problems needed for McNemar's test to detect a net difference of `delta`.
+
+    This is the test compare_conditions() actually runs, so this is the number a null
+    result should be read against. It needs `discordance`: the fraction of problems
+    the two conditions answer differently. That is what McNemar's power turns on and
+    what the two-sample formula ignores — a method that changes many answers needs
+    more problems for the same net shift than one that changes few, because the extra
+    disagreements are noise the test has to see past.
+
+        n = (z_a * sqrt(p_d) + z_b * sqrt(p_d - delta^2))^2 / delta^2
+
+    Checked against the two-sample bound: for delta = 0.10 at 20% discordance this
+    gives 155 where the two-sample formula demands 393, and a simulated run with that
+    discordance at n = 100 already reaches p = 0.041. Over-stating the requirement
+    four-fold is not harmless — it invites the conclusion that a feasible run is
+    pointless.
+
+    Raises ValueError when the discordance is too small to carry the claimed
+    difference: the net shift cannot exceed the disagreements that produce it.
+    """
+    if delta <= 0:
+        raise ValueError("delta must be positive")
+    if not 0.0 < discordance <= 1.0:
+        raise ValueError("discordance must be in (0, 1]")
+    if discordance <= delta:
+        raise ValueError(
+            f"a net difference of {delta:.3f} cannot arise from a discordance of "
+            f"{discordance:.3f}: every net gain is a disagreement, so discordance "
+            f"must exceed it")
+
+    z_alpha, z_beta = 1.959963985, 0.8416212336
+    numerator = (z_alpha * math.sqrt(discordance)
+                 + z_beta * math.sqrt(discordance - delta * delta)) ** 2
+    return max(1, math.ceil(numerator / (delta * delta)))
+
+
+def observed_discordance(comparison: Dict) -> float:
+    """The discordance a completed comparison actually showed.
+
+    Feeding this back into min_detectable_problems_paired() answers the question a
+    null result raises — how much more data would settle this — using the run's own
+    behaviour rather than an assumed rate.
+    """
+    paired = comparison["paired"]
+    n = comparison["n_problems"]
+    if n == 0:
+        return 0.0
+    return (paired["only_candidate_correct"] + paired["only_baseline_correct"]) / n

@@ -25,6 +25,8 @@ from quality_scoring import (  # noqa: E402
     majority_vote,
     mcnemar_exact,
     min_detectable_problems,
+    min_detectable_problems_paired,
+    observed_discordance,
     parse_number,
     wilson_interval,
 )
@@ -309,6 +311,66 @@ def test_detecting_a_small_effect_needs_many_more_problems():
 
 def test_five_problems_is_nowhere_near_enough_for_a_twenty_point_effect():
     assert min_detectable_problems(0.20) > 5
+
+
+def test_the_paired_test_needs_far_fewer_problems_than_two_independent_groups():
+    """The reason the paired calculation exists.
+
+    compare_conditions() runs McNemar on the same problems, which is much more
+    sensitive than comparing two independent groups. Using the two-sample formula to
+    describe it overstated the requirement roughly 2.5x, and an inflated figure
+    invites the wrong conclusion — that a feasible run is not worth doing.
+    """
+    two_sample = min_detectable_problems(0.10)
+    paired = min_detectable_problems_paired(0.10, discordance=0.20)
+    assert paired < two_sample / 2
+    assert (two_sample, paired) == (393, 155)
+
+
+def test_more_disagreement_needs_more_problems_for_the_same_net_shift():
+    # This is what the two-sample formula cannot express: the extra disagreements are
+    # noise the test must see past, so a noisier method needs a bigger sample.
+    low = min_detectable_problems_paired(0.10, discordance=0.12)
+    high = min_detectable_problems_paired(0.10, discordance=0.50)
+    assert low < high
+
+
+def test_an_effect_larger_than_the_disagreement_is_refused():
+    # Every net gain is a disagreement, so a 20-point shift cannot come out of 10%
+    # discordance. Returning a number here would be nonsense.
+    with pytest.raises(ValueError, match="cannot arise from a discordance"):
+        min_detectable_problems_paired(0.20, discordance=0.10)
+    # Equality is refused too: it would require every disagreement to favour one side.
+    with pytest.raises(ValueError, match="must exceed it"):
+        min_detectable_problems_paired(0.20, discordance=0.20)
+
+
+@pytest.mark.parametrize("discordance", [0.0, -0.1, 1.5])
+def test_an_impossible_discordance_is_refused(discordance):
+    with pytest.raises(ValueError, match="discordance must be in"):
+        min_detectable_problems_paired(0.05, discordance)
+
+
+def test_observed_discordance_reads_the_comparison_back():
+    # 8 problems, candidate wins 2, baseline wins 1, 5 agree -> 3/8 discordant.
+    baseline  = [True, True, False, False, False, True, True, False]
+    candidate = [True, False, True, True, False, True, True, False]
+    result = compare_conditions(baseline, candidate)
+    assert result["paired"]["only_candidate_correct"] == 2
+    assert result["paired"]["only_baseline_correct"] == 1
+    assert observed_discordance(result) == pytest.approx(3 / 8)
+
+
+def test_observed_discordance_is_zero_when_the_conditions_never_differ():
+    result = compare_conditions([True, False, True], [True, False, True])
+    assert observed_discordance(result) == 0.0
+
+
+def test_the_paired_figure_beats_the_two_sample_one_across_the_range():
+    # Sanity across plausible effect sizes, so the relationship is not an artefact of
+    # the one case the first test pins.
+    for effect in (0.05, 0.10, 0.15):
+        assert min_detectable_problems_paired(effect, 0.20) < min_detectable_problems(effect)
 
 
 def test_a_nonpositive_effect_size_is_refused():

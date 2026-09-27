@@ -41,9 +41,18 @@ def main(argv) -> int:
     print(f"verdict    {c['verdict']}")
     if "power_note" in d:
         note = d["power_note"]
-        print(f"power      a 5-point effect needs about "
-              f"{note['problems_needed_for_5_point_effect']} problems; "
-              f"this run had {note['problems_run']}")
+        disc = note.get("observed_discordance")
+        if disc is not None:
+            print(f"power      at the {disc * 100:.0f}% discordance this run showed, "
+                  f"under {note.get('test', 'the paired test')}:")
+            for effect in (5, 10, 15):
+                need = note.get(f"problems_needed_for_{effect}_point_effect")
+                if need is not None:
+                    shown = f"{need} problems" if isinstance(need, int) else str(need)
+                    print(f"             a {effect}-point effect needs {shown}")
+            print(f"             this run had {note['problems_run']}")
+        else:
+            print(f"power      this run had {note['problems_run']} problems")
     if d.get("errors"):
         print(f"errors     {len(d['errors'])} problem(s) failed and were excluded")
     return 0

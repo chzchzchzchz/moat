@@ -43,6 +43,8 @@ from quality_scoring import (  # noqa: E402
     extract_model_answer,
     majority_vote,
     min_detectable_problems,
+    min_detectable_problems_paired,
+    observed_discordance,
 )
 
 PROMPT = ("Solve the problem step by step, then give the final answer after ####.\n\n"
@@ -204,11 +206,28 @@ def main() -> int:
         "records": records,
     }
     if not comparison["significant"]:
-        result["power_note"] = {
+        # A null result means nothing without the sample size it would have taken. The
+        # figure is computed for McNemar's test, which is the test actually run, and
+        # from the discordance this run observed rather than an assumed rate — the
+        # two-sample formula ignores discordance and overstates the requirement by
+        # roughly 2.5x, which invites the wrong conclusion that a feasible run is
+        # pointless.
+        discordance = observed_discordance(comparison)
+        note = {
             "problems_run": comparison["n_problems"],
-            "problems_needed_for_5_point_effect": min_detectable_problems(0.05),
-            "problems_needed_for_10_point_effect": min_detectable_problems(0.10),
+            "observed_discordance": discordance,
+            "test": "exact McNemar (paired)",
         }
+        for effect in (0.05, 0.10, 0.15):
+            key = f"problems_needed_for_{int(effect * 100)}_point_effect"
+            try:
+                note[key] = min_detectable_problems_paired(effect, discordance)
+            except ValueError as exc:
+                # Happens when this run's discordance is too small to carry an effect
+                # that size at all; saying so is more useful than a number.
+                note[key] = f"not reachable at this discordance: {exc}"
+        note["conservative_two_sample_bound_5_point"] = min_detectable_problems(0.05)
+        result["power_note"] = note
 
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
 
