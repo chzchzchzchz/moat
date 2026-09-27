@@ -18,7 +18,7 @@ struct EmbeddedShader {
     const char* source;    // the complete .metal source
 };
 
-// ---- batched_gemm.metal (11632 bytes) ----
+// ---- batched_gemm.metal (12840 bytes) ----
 inline const char* const kBatchedGemmSource = R"AGMETAL(#include <metal_stdlib>
 using namespace metal;
 
@@ -224,7 +224,28 @@ kernel void fused_batched_gemm_int4(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
+    // Bounds-checked store, matching batched_gemm_simdgroup. A simdgroup_store always
+    // writes a full 8x8 tile, and the guard at the top of this kernel only checks the
+    // tile's ORIGIN — so an edge tile writes up to 7 rows and 7 columns past the logical
+    // output. In a [rows x M_dim] buffer, running past the last column of row r lands in
+    // row r+1, corrupting values that were already computed. That needs M_dim or N_batch
+    // to not be a multiple of 8, which every dimension this engine uses today is
+    // (2048, 5632, 256, 32000, 151936), but vocabularies like GPT-2's 50257 are not, and
+    // the failure would be silently wrong logits rather than a crash.
+    if (row_start + 8 <= N_batch && col_start + 8 <= M_dim) {
+        simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
+    } else {
+        threadgroup half edge_tile[64];
+        simdgroup_store(acc_matrix, edge_tile, 8);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint e = tid_in_tg; e < 64; e += helpers) {
+            uint r = e >> 3;
+            uint c = e & 7;
+            if (row_start + r < N_batch && col_start + c < M_dim) {
+                output[(row_start + r) * M_dim + (col_start + c)] = edge_tile[e];
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -273,7 +294,7 @@ kernel void gemv_int4_kernel(
 }
 )AGMETAL";
 
-// ---- batched_gemm_fused.metal (3664 bytes) ----
+// ---- batched_gemm_fused.metal (4872 bytes) ----
 inline const char* const kBatchedGemmFusedSource = R"AGMETAL(#include <metal_stdlib>
 using namespace metal;
 
@@ -351,7 +372,28 @@ kernel void fused_batched_gemm_int4(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
+    // Bounds-checked store, matching batched_gemm_simdgroup. A simdgroup_store always
+    // writes a full 8x8 tile, and the guard at the top of this kernel only checks the
+    // tile's ORIGIN — so an edge tile writes up to 7 rows and 7 columns past the logical
+    // output. In a [rows x M_dim] buffer, running past the last column of row r lands in
+    // row r+1, corrupting values that were already computed. That needs M_dim or N_batch
+    // to not be a multiple of 8, which every dimension this engine uses today is
+    // (2048, 5632, 256, 32000, 151936), but vocabularies like GPT-2's 50257 are not, and
+    // the failure would be silently wrong logits rather than a crash.
+    if (row_start + 8 <= N_batch && col_start + 8 <= M_dim) {
+        simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
+    } else {
+        threadgroup half edge_tile[64];
+        simdgroup_store(acc_matrix, edge_tile, 8);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint e = tid_in_tg; e < 64; e += helpers) {
+            uint r = e >> 3;
+            uint c = e & 7;
+            if (row_start + r < N_batch && col_start + c < M_dim) {
+                output[(row_start + r) * M_dim + (col_start + c)] = edge_tile[e];
+            }
+        }
+    }
 }
 )AGMETAL";
 
