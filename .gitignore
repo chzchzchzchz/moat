@@ -34,6 +34,7 @@ antigravity-engine/src/test_c_api_client
 antigravity-engine/bin/test_embedded_shaders
 antigravity-engine/bin/test_superblock_pack
 antigravity-engine/bin/test_int4_gemv_math
+antigravity-engine/bin/test_engine_limits
 
 # Xcode / SwiftPM
 *.xcuserdata

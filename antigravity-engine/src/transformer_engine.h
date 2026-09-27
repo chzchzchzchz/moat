@@ -96,6 +96,10 @@ public:
     
     // Query physical memory usage
     uint64_t getAllocatedBytes() const override;
+
+    // The real limits this engine's buffers were sized for.
+    int32_t maxDraftChunkTokens() const override { return config_.q_len_max; }
+    int32_t maxSequenceLength() const override { return config_.max_seq_len; }
     
     // Store projection weights as INT4 super-blocks instead of FP16. Must be set
     // before loadWeights(); afterwards the buffers already exist. Defaults from

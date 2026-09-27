@@ -39,6 +39,14 @@ public:
     virtual ~ITransformerEngine() = default;
 
     virtual bool loadWeights(const std::string& safetensors_path) = 0;
+
+    // Limits callers must respect, reported by the engine rather than assumed by
+    // the caller. Both bound a write into a Metal buffer, so exceeding either
+    // corrupts memory instead of failing — see src/engine_limits.h. Non-pure so an
+    // implementation that has not been audited still compiles; the defaults match
+    // TransformerConfig's, and an engine sizing its buffers differently overrides.
+    virtual int32_t maxDraftChunkTokens() const { return 64; }   // q_len_max
+    virtual int32_t maxSequenceLength() const { return 2048; }   // max_seq_len
     
     // For pure compute benchmarking
     virtual void allocateUnifiedMemoryMap() = 0;

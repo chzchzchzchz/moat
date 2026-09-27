@@ -348,9 +348,16 @@ kernel void kv_cache_append_kernel(
     uint dim_idx = gid.z;
     
     if (q_idx >= q_len || head_idx >= n_kv_heads || dim_idx >= head_dim) return;
-    
+
+    // max_seq was passed in but never used as a bound. Without this, a seq_pos at
+    // or past the cache length writes outside this head's region: for heads before
+    // the last that silently corrupts the NEXT head's cache, and for the last head
+    // it runs off the end of the buffer. Neither shows up as a failure.
+    uint slot = seq_pos + q_idx;
+    if (slot >= max_seq) return;
+
     uint slice_idx = (q_idx * n_kv_heads + head_idx) * head_dim + dim_idx;
-    uint cache_idx = (head_idx * max_seq + seq_pos + q_idx) * head_dim + dim_idx;
-    
+    uint cache_idx = (head_idx * max_seq + slot) * head_dim + dim_idx;
+
     cache[cache_idx] = slice[slice_idx];
 }

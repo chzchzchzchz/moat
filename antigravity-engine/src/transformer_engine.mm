@@ -29,6 +29,7 @@
 #include "transformer_engine.h"
 #include "superblock_pack.h"
 #include "shader_sources.h"
+#include "engine_limits.h"
 
 // BFloat16 → Float16 conversion helper
 static inline uint16_t bf16_to_fp16(uint16_t bf16) {
@@ -1268,6 +1269,28 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         std::cerr << "[generateSpeculative] Weights not loaded!" << std::endl;
         return GenerationResult();
     }
+
+    // Also checked at the C API boundary, but this method is public and the Swift
+    // SDK reaches it directly. k_draft + 1 rows are forwarded in one pass and
+    // q_len_max is what the scratch buffers were sized for; past that, the GEMM
+    // writes outside them.
+    {
+        antigravity::LimitError lim = antigravity::checkDraftChunk(k_draft, config_.q_len_max);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generateSpeculative] " << antigravity::describe(lim)
+                      << " (k_draft=" << k_draft << ", q_len_max=" << config_.q_len_max
+                      << ")" << std::endl;
+            return GenerationResult();
+        }
+        lim = antigravity::checkSequence(prompt_len, max_new_tokens, config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generateSpeculative] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len << ", max_new_tokens="
+                      << max_new_tokens << ", max_seq_len=" << config_.max_seq_len
+                      << ")" << std::endl;
+            return GenerationResult();
+        }
+    }
     
     auto start_time = std::chrono::high_resolution_clock::now();
     std::random_device rd;
@@ -1463,7 +1486,24 @@ GenerationResult MetalTransformerEngine::generate(
         std::cerr << "[generate] Weights not loaded!" << std::endl;
         return result;
     }
-    
+
+    // The KV cache holds max_seq_len positions per layer and decode writes at
+    // seq_pos = prompt_len + step. Nothing bounded that before, so a long enough
+    // prompt or generation walked past the end of every layer's cache.
+    {
+        antigravity::LimitError lim =
+            antigravity::checkSequence(prompt_len, max_new_tokens, config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generate] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len << ", max_new_tokens="
+                      << max_new_tokens << ", max_seq_len=" << config_.max_seq_len
+                      << "); room for " << antigravity::remainingCapacity(prompt_len,
+                                                                          config_.max_seq_len)
+                      << " more tokens" << std::endl;
+            return result;
+        }
+    }
+
     const uint32_t H = config_.hidden_dim;
     const uint32_t C = config_.n_channels;
     const bool is_qwen = (config_.vocab_size > 32000);
@@ -1667,6 +1707,23 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
     if (!weightsLoaded_) {
         std::cerr << "[generateMultimodal] Weights not loaded!" << std::endl;
         return result;
+    }
+
+    // Prefill is the image patches followed by the text tokens, and both occupy KV
+    // cache positions, so the cache has to hold them plus everything generated.
+    {
+        const int64_t prefill = (int64_t)(n_patches > 0 ? n_patches : 0)
+                              + (int64_t)(text_len > 0 ? text_len : 0);
+        antigravity::LimitError lim = antigravity::checkSequence(
+            (int32_t)std::min<int64_t>(prefill, INT32_MAX), max_new_tokens,
+            config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generateMultimodal] " << antigravity::describe(lim)
+                      << " (patches=" << n_patches << ", text_len=" << text_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << config_.max_seq_len << ")" << std::endl;
+            return result;
+        }
     }
 
     const uint32_t H = config_.hidden_dim;

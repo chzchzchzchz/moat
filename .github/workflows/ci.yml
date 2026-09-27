@@ -35,6 +35,19 @@ jobs:
         working-directory: antigravity-engine
         run: ./bin/test_bridge_contract
 
+      # Both of these bounds stand between a caller-supplied integer and a write
+      # past the end of a Metal buffer, which does not fault — it corrupts the next
+      # allocation and yields plausible output. Neither was enforced anywhere:
+      # k_draft reached generateSpeculative straight from the public C API, and
+      # nothing compared prompt_len + max_new_tokens against the KV cache length.
+      - name: Check the generation argument bounds
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_engine_limits.cpp -o bin/test_engine_limits
+          ./bin/test_engine_limits
+
       # The xcframework packages only the static library — no .metal and no
       # .metallib travel with it — and every shader path the engine tries is
       # relative to the process working directory, which on a device resolves to

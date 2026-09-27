@@ -8,6 +8,8 @@
 #include "license_verifier.h"
 #include "gguf_reader.h"
 #include "prm_weights.h"
+#include "engine_limits.h"
+#include <climits>
 #if defined(USE_VULKAN) && __has_include(<vulkan/vulkan.h>)
 #include "vulkan_transformer_engine.h"
 #endif
@@ -526,6 +528,21 @@ int32_t AntigravityEngineNativeGenerate(
     double* out_total_ms
 ) {
     if (!ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
+    if (ctx->nativeEngine) {
+        // prompt_len + max_new_tokens has to fit the KV cache: decode writes at
+        // seq_pos, which advances once per token from prompt_len, and nothing
+        // downstream bounded it. See src/engine_limits.h.
+        antigravity::LimitError lim = antigravity::checkSequence(
+            prompt_len, max_new_tokens, ctx->nativeEngine->maxSequenceLength());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerate] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << ctx->nativeEngine->maxSequenceLength() << ")"
+                      << std::endl;
+            return -2;
+        }
+    }
     if (!ctx->nativeEngine) return -1;
     int32_t auth = CheckContextAuthorization(ctx, "sdk");
     if (auth != 0) return auth;
@@ -574,6 +591,31 @@ int32_t AntigravityEngineNativeGenerateSpeculative(
     double* out_total_ms
 ) {
     if (!ctx || !draft_ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
+    if (ctx->nativeEngine) {
+        // k_draft was the one generation argument nothing validated. Speculative
+        // decode forwards a chunk of k_draft + 1 rows in one pass, and q_len_max is
+        // what every scratch buffer was sized for, so an oversized k_draft writes
+        // past the end of all six of them by an amount the caller picks.
+        antigravity::LimitError lim = antigravity::checkDraftChunk(
+            k_draft, ctx->nativeEngine->maxDraftChunkTokens());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerateSpeculative] "
+                      << antigravity::describe(lim) << " (k_draft=" << k_draft
+                      << ", q_len_max=" << ctx->nativeEngine->maxDraftChunkTokens() << ")"
+                      << std::endl;
+            return -2;
+        }
+        lim = antigravity::checkSequence(prompt_len, max_new_tokens,
+                                        ctx->nativeEngine->maxSequenceLength());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerateSpeculative] "
+                      << antigravity::describe(lim) << " (prompt_len=" << prompt_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << ctx->nativeEngine->maxSequenceLength() << ")"
+                      << std::endl;
+            return -2;
+        }
+    }
     if (!ctx->nativeEngine || !draft_ctx->nativeEngine) return -1;
     if (!ctx->nativeEngine->weightsLoaded_ || !draft_ctx->nativeEngine->weightsLoaded_) return -1;
     int32_t auth = CheckContextAuthorization(ctx, "sdk");
@@ -616,6 +658,24 @@ int32_t AntigravityEngineNativeGenerateMultimodal(
     double* out_total_ms
 ) {
     if (!ctx || !out_tokens || max_new_tokens <= 0) return -2;
+    if (ctx->nativeEngine) {
+        // Prefill here is the image patches followed by the text tokens, so the
+        // cache has to hold both plus everything generated.
+        const int64_t prefill = (int64_t)(n_image_patches > 0 ? n_image_patches : 0)
+                              + (int64_t)(text_len > 0 ? text_len : 0);
+        antigravity::LimitError lim = antigravity::checkSequence(
+            (int32_t)std::min<int64_t>(prefill, INT32_MAX), max_new_tokens,
+            ctx->nativeEngine->maxSequenceLength());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerateMultimodal] "
+                      << antigravity::describe(lim) << " (patches=" << n_image_patches
+                      << ", text_len=" << text_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << ctx->nativeEngine->maxSequenceLength() << ")"
+                      << std::endl;
+            return -2;
+        }
+    }
     if (!ctx->nativeEngine) return -1;
     int32_t auth_mm = CheckContextAuthorization(ctx, "multimodal");
     if (auth_mm != 0) return auth_mm;
