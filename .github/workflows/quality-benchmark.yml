@@ -6,12 +6,19 @@
 # problem is worth 20 points, and the often-quoted 68.8% -> 74.2% (n=449) result
 # came from HuggingFace running Qwen2.5-Math-1.5B, not from this engine.
 #
-# macos-14 runners are arm64 with a Metal device, so the measurement is possible
-# here even without a physical device to hand.
+# REQUIRES A RUNNER WITH A GPU, WHICH GITHUB-HOSTED macOS RUNNERS DO NOT HAVE.
+# Measured, not assumed: on macos-14, MTLCreateSystemDefaultDevice() returns nil.
+# The CI job "INT4 kernels on a real GPU (macOS)" reports
 #
-# Manual trigger only, deliberately: it downloads ~2.2 GB of weights and macOS
-# minutes bill at 10x, so running it on every push would be wasteful. Trigger it
-# from the Actions tab, or with: gh workflow run quality-benchmark.yml
+#     no Metal device on this machine; nothing to verify here.
+#
+# so those runners are arm64 VMs without GPU passthrough and the engine cannot run
+# on them at all. Point this at a self-hosted macOS runner with the `runner` input,
+# or run scripts/run_quality_benchmark.sh directly on a Mac — that script does the
+# same steps and needs no Actions setup.
+#
+# Manual trigger only: it downloads ~2.2 GB of weights and macOS minutes bill at
+# 10x. Trigger from the Actions tab, or with: gh workflow run quality-benchmark.yml
 #
 # The JSON artifact it uploads is the result. It carries the hardware profile, the
 # weights file, every per-problem record, both conditions' Wilson intervals and an
@@ -44,6 +51,9 @@ on:
       model_repo:
         description: "HuggingFace repo to pull weights from"
         default: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+      runner:
+        description: "Runner label. GitHub-hosted macos-14 has NO GPU and will fail the probe; use a self-hosted macOS runner."
+        default: "macos-14"
 
 jobs:
   measure:
@@ -51,7 +61,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.label.name == 'run-quality-benchmark'
-    runs-on: macos-14
+    runs-on: ${{ github.event.inputs.runner || 'macos-14' }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +86,9 @@ jobs:
             -o bin/test_metal_int4_gpu
           ./bin/test_metal_int4_gpu | tee metal_probe.txt
           if grep -q "SKIPPED" metal_probe.txt; then
-            echo "::error::This runner exposes no Metal device, so the engine cannot run here."
+            echo "::error::This runner exposes no Metal device, so the engine cannot run here. \
+          GitHub-hosted macOS runners are VMs without GPU passthrough — use a self-hosted \
+          macOS runner via the 'runner' input, or run scripts/run_quality_benchmark.sh on a Mac."
             exit 1
           fi
 

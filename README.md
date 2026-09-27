@@ -150,7 +150,24 @@ is not evidence about this engine, which did not run it.
 each condition's Wilson interval, runs an exact paired test on the same
 problems, refuses to call a difference a lift when it cannot be distinguished
 from chance, and on a null result prints the sample size that would have been
-needed. Run it on a device; the artifact it writes is the number.
+needed.
+
+On any Apple Silicon Mac, one command does the whole thing — GPU check, dylib
+build, weight download, measurement:
+
+```
+antigravity-engine/scripts/run_quality_benchmark.sh          # 40 problems
+PROBLEMS=200 antigravity-engine/scripts/run_quality_benchmark.sh
+```
+
+**This cannot be run in CI.** GitHub-hosted macOS runners are arm64 VMs without
+GPU passthrough: `MTLCreateSystemDefaultDevice()` returns nil on `macos-14`, which
+the `INT4 kernels on a real GPU (macOS)` job measures and reports rather than
+assumes. So CI compiles every shader with `-Werror` and checks the INT4 layout,
+packing and GEMV arithmetic against a host reference, but no kernel has ever
+executed and no accuracy number exists yet. The artifact the script writes is the
+number; until someone runs it on hardware, this project has no measured accuracy
+claim for its own engine.
 
 ---
 

@@ -48,9 +48,19 @@ measured on hardware, so no figure is quoted.
 
 **Accuracy from parallel channels has not been demonstrated on this engine.**
 The only artifact that measures it covers about five problems per row, where one
-problem is worth 20 points. `tools/benchmark_quality.py` runs GSM8K on the
-engine and reports intervals, an exact paired test, and — on a null result — the
-sample size that would have been needed.
+problem is worth 20 points.
+
+`scripts/run_quality_benchmark.sh` measures it properly, in one command on any
+Apple Silicon Mac: it checks the GPU, verifies the INT4 kernels against a host
+reference, builds the dylib, fetches weights, and runs GSM8K reporting Wilson
+intervals and an exact paired test.
+
+It cannot run in CI. `MTLCreateSystemDefaultDevice()` returns nil on GitHub's
+`macos-14` runners — they are arm64 VMs with no GPU — which the `INT4 kernels on a
+real GPU (macOS)` job reports rather than assumes. CI therefore compiles every
+shader with `-Werror` and checks the super-block layout, the packer against
+`src/dequant.py`, and the GEMV arithmetic against a host reference; it has never
+executed a kernel.
 
 ## What Works
 - ✅ Metal GPU transformer forward pass (real inference)
