@@ -24,10 +24,22 @@ def main(argv) -> int:
     c = d["comparison"]
     hw = d.get("hardware", {})
 
+    if d.get("sanity_warnings"):
+        print("DO NOT TRUST THIS RESULT — the run itself looks wrong:")
+        for w in d["sanity_warnings"]:
+            print(f"  - {w}")
+        print()
+    if d.get("IS_THIS_THE_METAL_ENGINE") is False:
+        print(f"NOTE       {d.get('engine', 'reference')} run, NOT the Metal engine")
+
+    cfg = d["config"]
     print(f"hardware   {hw.get('chip') or hw.get('platform', 'unknown')}")
-    print(f"weights    {d['config'].get('weights_file', '?')}")
-    print(f"int4       {d['config'].get('int4_weights')}")
-    print(f"channels   {d['config'].get('channels')}")
+    # The engine artifact names a weights file and channels; the reference one names a
+    # model and samples. Print whichever this is rather than a row of question marks.
+    print(f"model      {cfg.get('weights_file') or cfg.get('model', '?')}")
+    if cfg.get("int4_weights") is not None:
+        print(f"int4       {cfg['int4_weights']}")
+    print(f"parallel   {cfg.get('channels') or cfg.get('samples', '?')}")
     print(f"graded     {c['n_problems']} problems in {d.get('elapsed_seconds', 0):.0f}s")
     for name in ("baseline", "candidate"):
         s = c[name]

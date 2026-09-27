@@ -28,6 +28,7 @@ from quality_scoring import (  # noqa: E402
     min_detectable_problems_paired,
     observed_discordance,
     parse_number,
+    sanity_checks,
     wilson_interval,
 )
 
@@ -381,3 +382,97 @@ def test_a_nonpositive_effect_size_is_refused():
 def test_returns_a_whole_number_of_problems():
     n = min_detectable_problems(0.1)
     assert isinstance(n, int) and n == math.ceil(n)
+
+
+# --------------------------------------------------------------------------
+# sanity_checks — telling a broken measurement from a null one
+#
+# These exist because a real run reported 18.0% for both conditions with zero
+# disagreements across 50 problems, and nothing objected. The verdict read "no
+# difference distinguishable from chance", which is what a working harness says
+# when the method does nothing — so the failure was invisible. The cause was
+# truncation judged from generate()'s padded sequence length: every sample in a
+# batch shares the padded length, so all 8 were marked truncated whenever one hit
+# the cap, and every answer on 35 of 50 problems was discarded.
+# --------------------------------------------------------------------------
+
+def _records(truncated_counts, no_answer_counts=None):
+    no_answer_counts = no_answer_counts or [0] * len(truncated_counts)
+    return [{"n_samples_truncated": t, "n_samples_with_no_answer": a}
+            for t, a in zip(truncated_counts, no_answer_counts)]
+
+
+def _comparison(only_cand=0, only_base=0, n=50):
+    baseline = [False] * n
+    candidate = [False] * n
+    for i in range(only_cand):
+        candidate[i] = True
+    for i in range(only_cand, only_cand + only_base):
+        baseline[i] = True
+    return compare_conditions(baseline, candidate)
+
+
+def test_all_or_nothing_truncation_is_flagged_as_batch_level():
+    # The observed pattern: 0 or 8, never in between, over 50 problems.
+    counts = [8 if i % 3 else 0 for i in range(50)]
+    warnings = sanity_checks(_records(counts), 8, _comparison(only_cand=5, only_base=3))
+    assert any("batch-level signal" in w for w in warnings)
+
+
+def test_truncation_that_varies_within_a_batch_is_not_flagged():
+    # What correct per-sample detection looks like: intermediate counts appear.
+    counts = [0, 3, 8, 1, 5, 8, 0, 2, 6, 4] * 5
+    warnings = sanity_checks(_records(counts), 8, _comparison(only_cand=5, only_base=3))
+    assert not any("batch-level signal" in w for w in warnings)
+
+
+def test_no_truncation_anywhere_is_not_flagged():
+    # All-zero is uniform but benign: nothing was cut off. Flagging it would cry wolf
+    # on every short-output run.
+    warnings = sanity_checks(_records([0] * 50), 8, _comparison(only_cand=5, only_base=3))
+    assert not any("batch-level signal" in w for w in warnings)
+
+
+def test_zero_disagreement_over_many_problems_is_flagged():
+    counts = [0, 2, 5] * 17
+    warnings = sanity_checks(_records(counts[:50]), 8, _comparison(0, 0, n=50))
+    assert any("agree on all" in w for w in warnings)
+
+
+def test_zero_disagreement_on_a_tiny_run_is_not_flagged():
+    # With few problems, agreeing everywhere is ordinary luck rather than a signal.
+    warnings = sanity_checks(_records([0, 1, 2]), 8, _comparison(0, 0, n=3))
+    assert not any("agree on all" in w for w in warnings)
+
+
+def test_a_high_no_answer_rate_is_flagged():
+    # The observed run: 267 of 400 samples, 66.8%.
+    warnings = sanity_checks(_records([0] * 50, [6] * 50), 8,
+                             _comparison(only_cand=5, only_base=3))
+    assert any("yielded no" in w for w in warnings)
+
+
+def test_a_low_no_answer_rate_is_not_flagged():
+    warnings = sanity_checks(_records([0] * 50, [1] * 50), 8,
+                             _comparison(only_cand=5, only_base=3))
+    assert not any("yielded no" in w for w in warnings)
+
+
+def test_a_healthy_run_produces_no_warnings():
+    counts = [0, 1, 3, 0, 2, 8, 1, 0, 4, 2] * 5
+    warnings = sanity_checks(_records(counts, [0, 1, 0, 2, 0, 1, 0, 0, 1, 0] * 5), 8,
+                             _comparison(only_cand=8, only_base=3))
+    assert warnings == []
+
+
+def test_no_records_is_reported_rather_than_passing_silently():
+    assert sanity_checks([], 8, _comparison(0, 0, n=1)) == ["no problems were graded"]
+
+
+def test_every_warning_names_an_observation_not_a_diagnosis():
+    # Each message must cite what was seen, so a reader can check it rather than
+    # trust a guessed cause.
+    counts = [8 if i % 2 else 0 for i in range(50)]
+    warnings = sanity_checks(_records(counts, [7] * 50), 8, _comparison(0, 0, n=50))
+    assert len(warnings) == 3
+    assert all(any(ch.isdigit() for ch in w) for w in warnings)

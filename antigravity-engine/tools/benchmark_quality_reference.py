@@ -43,6 +43,7 @@ from quality_scoring import (  # noqa: E402
     extract_model_answer,
     majority_vote,
     min_detectable_problems,
+    sanity_checks,
     min_detectable_problems_paired,
     observed_discordance,
 )
@@ -137,7 +138,18 @@ def main() -> int:
         # A sample that used its whole budget did not stop on its own, so its last
         # number is an intermediate step rather than an answer. See
         # extract_model_answer: reading it anyway makes a cut-off sample vote.
-        truncated = [len(g) >= args.max_tokens for g in generated]
+        # Truncation must be judged per sample, by whether the model emitted EOS.
+        # Length cannot do it: generate() with num_return_sequences pads every
+        # sequence to the batch's longest, so a length test is uniformly true or
+        # false for the whole batch. A first run marked all 8 samples truncated on
+        # 35 of 50 problems for that reason, discarded every answer on those
+        # problems, and produced exactly zero disagreements between the two
+        # conditions — an impossible result that is what exposed it.
+        #
+        # pad_token_id is EOS here, but padding only lands on sequences that already
+        # finished, so "EOS present" still means "stopped on its own".
+        eos_id = tok.eos_token_id
+        truncated = [eos_id not in g.tolist() for g in generated]
         answers = [extract_model_answer(t, truncated=c) for t, c in zip(texts, truncated)]
         selected = majority_vote(answers)
 
@@ -229,6 +241,12 @@ def main() -> int:
         note["conservative_two_sample_bound_5_point"] = min_detectable_problems(0.05)
         result["power_note"] = note
 
+    # A broken measurement and a null result read identically — "no difference
+    # distinguishable from chance" says nothing about whether the method did nothing
+    # or the harness discarded the data. These checks name the difference.
+    warnings = sanity_checks(records, args.samples, comparison)
+    result["sanity_warnings"] = warnings
+
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
 
     base, cand = comparison["baseline"], comparison["candidate"]
@@ -245,6 +263,11 @@ def main() -> int:
           f"({no_answer/total_samples*100:.1f}%)")
     if errors:
         print(f"errors       {len(errors)} problem(s) failed")
+    if warnings:
+        print()
+        print("DO NOT TRUST THIS RESULT — the run itself looks wrong:")
+        for w in warnings:
+            print(f"  - {w}")
     print(f"written      {args.out}")
     return 1 if errors else 0
 

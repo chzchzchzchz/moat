@@ -281,3 +281,57 @@ def observed_discordance(comparison: Dict) -> float:
     if n == 0:
         return 0.0
     return (paired["only_candidate_correct"] + paired["only_baseline_correct"]) / n
+
+def sanity_checks(records: Sequence[Dict], n_samples: int,
+                  comparison: Dict) -> List[str]:
+    """Patterns that mean the measurement is broken, not that the method failed.
+
+    Written after a run reported 18.0% for both conditions with *zero* disagreements
+    across 50 problems and 66.8% of samples yielding no answer. That is not a null
+    result, it is a broken one: truncation was being judged from the padded sequence
+    length, so generate()'s batch padding marked all 8 samples truncated whenever any
+    one of them hit the cap, and every answer on 35 of 50 problems was discarded.
+
+    Nothing in the pipeline objected. A verdict that says "no difference
+    distinguishable from chance" reads identically whether the method does nothing or
+    the harness threw the data away, and that is the failure mode worth guarding.
+
+    Returns a list of warnings, empty when nothing looks wrong. Each names the
+    observation rather than a guess at the cause.
+    """
+    warnings: List[str] = []
+    n = len(records)
+    if n == 0:
+        return ["no problems were graded"]
+
+    # Truncation should vary within a batch. All-or-nothing per problem means it is
+    # being read from something batch-wide, which is how the padded-length bug looked.
+    counts = [r.get("n_samples_truncated") for r in records]
+    if all(c is not None for c in counts) and n >= 5:
+        all_or_none = sum(1 for c in counts if c in (0, n_samples))
+        if all_or_none == n and any(c == n_samples for c in counts):
+            warnings.append(
+                f"truncation is 0 or {n_samples} on every one of {n} problems and never "
+                f"in between; that is a batch-level signal being reported per sample, "
+                f"not per-sample truncation")
+
+    # Independent samples at a non-zero temperature disagree. Never disagreeing means
+    # the samples are identical, or their answers are being discarded.
+    if n >= 20 and comparison["paired"]["only_candidate_correct"] == 0 \
+            and comparison["paired"]["only_baseline_correct"] == 0:
+        warnings.append(
+            f"the two conditions agree on all {n} problems; with {n_samples} sampled "
+            f"generations a majority vote that never differs from the first sample "
+            f"suggests the samples are identical or their answers are being dropped")
+
+    # A high no-answer rate makes the accuracy a measurement of extraction, not of
+    # reasoning, whichever direction it points.
+    no_answer = sum(r.get("n_samples_with_no_answer", 0) for r in records)
+    total = n * n_samples
+    if total and no_answer / total > 0.25:
+        warnings.append(
+            f"{no_answer} of {total} samples ({no_answer / total * 100:.1f}%) yielded no "
+            f"answer; above roughly a quarter the accuracy reflects answer extraction "
+            f"more than reasoning")
+
+    return warnings

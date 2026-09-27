@@ -55,6 +55,7 @@ from quality_scoring import (  # noqa: E402
     extract_model_answer,
     majority_vote,
     min_detectable_problems,
+    sanity_checks,
     min_detectable_problems_paired,
     observed_discordance,
 )
@@ -274,6 +275,12 @@ def main() -> int:
         note["conservative_two_sample_bound_5_point"] = min_detectable_problems(0.05)
         result["power_note"] = note
 
+    # A broken measurement and a null result read identically — "no difference
+    # distinguishable from chance" says nothing about whether the method did nothing
+    # or the harness discarded the data. These checks name the difference.
+    warnings = sanity_checks(records, args.channels, comparison)
+    result["sanity_warnings"] = warnings
+
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
 
     base, cand = comparison["baseline"], comparison["candidate"]
@@ -293,6 +300,11 @@ def main() -> int:
               f"this run had {note['problems_run']}")
     if errors:
         print(f"errors               {len(errors)} problem(s) failed and were excluded")
+    if warnings:
+        print()
+        print("DO NOT TRUST THIS RESULT — the run itself looks wrong:")
+        for w in warnings:
+            print(f"  - {w}")
     print(f"written              {args.out}")
 
     return 1 if errors else 0
