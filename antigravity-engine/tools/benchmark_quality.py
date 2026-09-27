@@ -47,6 +47,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
+from engine_paths import resolve_weights  # noqa: E402
 from quality_scoring import (  # noqa: E402
     answers_match,
     compare_conditions,
@@ -116,6 +117,9 @@ def main() -> int:
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--int4", action="store_true",
                         help="load weights as INT4 super-blocks (sets ANTIGRAVITY_INT4)")
+    parser.add_argument("--dylib", default=None,
+                        help="path to libantigravity_engine.dylib; "
+                             "searched in the usual package locations if omitted")
     parser.add_argument("--out", default="quality_gsm8k.json")
     args = parser.parse_args()
 
@@ -143,10 +147,17 @@ def main() -> int:
     from native_bridge import NativeMetalEngine   # noqa: PLC0415
     from tokenizer import LlamaTokenizer          # noqa: PLC0415
 
+    try:
+        weights = resolve_weights(model_dir)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    print(f"weights   {weights}")
+
     tokenizer = LlamaTokenizer(str(model_dir / "tokenizer.json"))
-    engine = NativeMetalEngine(n_channels=args.channels)
-    if not engine.load_weights(str(model_dir)):
-        print(f"engine failed to load weights from {model_dir}", file=sys.stderr)
+    engine = NativeMetalEngine(n_channels=args.channels, dylib_path=args.dylib)
+    if not engine.load_weights(str(weights)):
+        print(f"engine failed to load weights from {weights}", file=sys.stderr)
         return 1
 
     records, errors = [], []
@@ -215,6 +226,7 @@ def main() -> int:
         "hardware": hardware_profile(),
         "config": {
             "model_dir": str(model_dir),
+            "weights_file": str(weights),
             "dataset": str(dataset),
             "channels": args.channels,
             "max_new_tokens": args.max_tokens,

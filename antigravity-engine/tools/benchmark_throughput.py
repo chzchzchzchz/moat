@@ -77,10 +77,18 @@ def measure(fn, repeats: int) -> dict:
     }
 
 
-def bench_native(model_dir: str, prompt_ids, max_tokens: int, repeats: int) -> dict:
+def bench_native(model_dir: str, prompt_ids, max_tokens: int, repeats: int,
+                 dylib: str = None) -> dict:
     from native_bridge import NativeMetalEngine
-    engine = NativeMetalEngine(n_channels=1)
-    weights = os.path.join(model_dir, "model.safetensors")
+    from engine_paths import find_dylib, resolve_weights
+    # find_dylib() also looks in build/lib, where a straight repository build puts
+    # the dylib; NativeMetalEngine only searches installed-package locations.
+    found = find_dylib(dylib)
+    engine = NativeMetalEngine(n_channels=1, dylib_path=str(found) if found else None)
+    # Shared with the accuracy harness rather than hardcoding "model.safetensors",
+    # so an oddly named checkpoint works and a sharded one is refused rather than
+    # half-loaded.
+    weights = str(resolve_weights(model_dir))
     if not engine.load_weights(weights):
         raise RuntimeError(f"native engine failed to load {weights}")
 

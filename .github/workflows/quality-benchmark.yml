@@ -1,0 +1,179 @@
+# Runs the engine end to end on Apple Silicon and measures GSM8K accuracy.
+#
+# This exists because nothing in the repository has ever measured the project's
+# central claim — that N parallel reasoning channels buy accuracy — on this engine.
+# The one artifact that reports it covers about five problems per row, where one
+# problem is worth 20 points, and the often-quoted 68.8% -> 74.2% (n=449) result
+# came from HuggingFace running Qwen2.5-Math-1.5B, not from this engine.
+#
+# macos-14 runners are arm64 with a Metal device, so the measurement is possible
+# here even without a physical device to hand.
+#
+# Manual trigger only, deliberately: it downloads ~2.2 GB of weights and macOS
+# minutes bill at 10x, so running it on every push would be wasteful. Trigger it
+# from the Actions tab, or with: gh workflow run quality-benchmark.yml
+#
+# The JSON artifact it uploads is the result. It carries the hardware profile, the
+# weights file, every per-problem record, both conditions' Wilson intervals and an
+# exact paired test — so the number can be checked rather than quoted.
+name: Quality benchmark (Apple Silicon)
+
+on:
+  workflow_dispatch:
+    inputs:
+      problems:
+        description: "GSM8K problems to grade (more is better; see the power note in the output)"
+        default: "40"
+      channels:
+        description: "Parallel reasoning channels (the candidate condition)"
+        default: "8"
+      max_tokens:
+        description: "Max new tokens per channel per problem"
+        default: "256"
+      int4:
+        description: "Load weights as INT4 super-blocks"
+        type: boolean
+        default: false
+      model_repo:
+        description: "HuggingFace repo to pull weights from"
+        default: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+jobs:
+  measure:
+    name: GSM8K on the native Metal engine
+    runs-on: macos-14
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the machine
+        run: |
+          sysctl -n machdep.cpu.brand_string
+          sysctl -n hw.memsize
+          sw_vers
+          df -h / | tail -1
+
+      # Fail before spending 2.2 GB of download if the runner has no GPU. This also
+      # verifies the INT4 kernels against the host reference, so a kernel fault is
+      # reported as itself rather than as a bad accuracy number later.
+      - name: Verify Metal and the INT4 kernels
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          clang++ -std=c++17 -fobjc-arc -x objective-c++ -Isrc \
+            tests/test_metal_int4_gpu.mm \
+            -framework Metal -framework Foundation \
+            -o bin/test_metal_int4_gpu
+          ./bin/test_metal_int4_gpu | tee metal_probe.txt
+          if grep -q "SKIPPED" metal_probe.txt; then
+            echo "::error::This runner exposes no Metal device, so the engine cannot run here."
+            exit 1
+          fi
+
+      - name: Build the engine dylib
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          mkdir -p build/lib
+          clang -O3 -c src/monocypher.c -target arm64-apple-macos12.0 -Isrc -o build/monocypher.o
+          clang -O3 -c src/monocypher-ed25519.c -target arm64-apple-macos12.0 -Isrc -o build/monocypher_ed.o
+          clang++ -std=c++17 -x objective-c++ -O3 -dynamiclib \
+            -target arm64-apple-macos12.0 \
+            -install_name "@rpath/libantigravity_engine.dylib" \
+            -framework Metal -framework Foundation \
+            src/antigravity_c_api.cpp \
+            src/transformer_engine.mm \
+            src/antigravity_engine_c.cpp \
+            src/gguf_reader.cpp \
+            src/config_parser.cpp \
+            src/license_verifier.cpp \
+            -x none build/monocypher.o build/monocypher_ed.o \
+            -Isrc \
+            -o build/lib/libantigravity_engine.dylib
+          ls -la build/lib/libantigravity_engine.dylib
+
+      # The shaders are embedded in the binary (src/shader_sources.h), so no
+      # .metal or .metallib needs to travel with the dylib. Build the libraries
+      # anyway: when they are present the engine uses them and skips a startup
+      # compile, which keeps that cost out of the TTFT numbers.
+      - name: Compile the shader libraries
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          for name in batched_gemm transformer_ops; do
+            xcrun -sdk macosx metal -Werror -c "src/shaders/$name.metal" -o "build/$name.air"
+            xcrun -sdk macosx metallib "build/$name.air" -o "src/shaders/$name.metallib"
+            echo "built src/shaders/$name.metallib"
+          done
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the tokenizer
+        run: python -m pip install --upgrade pip tokenizers
+
+      - name: Download the weights
+        working-directory: antigravity-engine
+        env:
+          REPO: ${{ github.event.inputs.model_repo }}
+        run: |
+          set -e
+          mkdir -p models/bench
+          base="https://huggingface.co/${REPO}/resolve/main"
+          curl -fL --retry 3 --retry-delay 5 -o models/bench/tokenizer.json "$base/tokenizer.json"
+          curl -fL --retry 3 --retry-delay 5 -o models/bench/tokenizer_config.json "$base/tokenizer_config.json" || true
+          curl -fL --retry 3 --retry-delay 5 -o models/bench/config.json "$base/config.json" || true
+          curl -fL --retry 3 --retry-delay 5 -o models/bench/model.safetensors "$base/model.safetensors"
+          ls -la models/bench
+          df -h / | tail -1
+
+      - name: Measure GSM8K accuracy
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 tools/benchmark_quality.py \
+            --model-dir models/bench \
+            --dataset ../gsm8k_test_set.jsonl \
+            --dylib build/lib/libantigravity_engine.dylib \
+            --limit "${{ github.event.inputs.problems }}" \
+            --channels "${{ github.event.inputs.channels }}" \
+            --max-tokens "${{ github.event.inputs.max_tokens }}" \
+            ${{ github.event.inputs.int4 == 'true' && '--int4' || '' }} \
+            --out quality_gsm8k.json
+        # A problem the engine throws on makes the harness exit non-zero after
+        # writing what it did grade. Keep the artifact in that case.
+        continue-on-error: true
+
+      # Same machine, same run: the throughput and the accuracy then share one
+      # hardware profile, which is exactly what the four contradictory committed
+      # artifacts lack. torch is not installed here, so its MPS comparison self-skips
+      # and the native figure is recorded on its own.
+      - name: Measure throughput on the same machine
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 tools/benchmark_throughput.py \
+            --model models/bench \
+            --tokens 64 \
+            --repeats 3 \
+            --out throughput.json
+        continue-on-error: true
+
+      - name: Summarise
+        working-directory: antigravity-engine
+        if: always()
+        run: python3 tools/summarize_quality.py quality_gsm8k.json
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gsm8k
+          path: |
+            antigravity-engine/quality_gsm8k.json
+            antigravity-engine/throughput.json
+            antigravity-engine/metal_probe.txt
+          if-no-files-found: warn

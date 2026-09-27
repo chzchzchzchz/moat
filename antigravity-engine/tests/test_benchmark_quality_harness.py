@@ -100,6 +100,10 @@ def write_dataset(tmp_path, golds):
 
 
 def run(module, monkeypatch, tmp_path, dataset, extra=()):
+    # The harness resolves a .safetensors file inside --model-dir before it touches
+    # the engine, so every run needs one present.
+    if not list(tmp_path.glob("*.safetensors")):
+        (tmp_path / "model.safetensors").write_bytes(b"")
     out = tmp_path / "result.json"
     argv = ["benchmark_quality", "--model-dir", str(tmp_path),
             "--dataset", str(dataset), "--out", str(out), *extra]
@@ -111,6 +115,60 @@ def run(module, monkeypatch, tmp_path, dataset, extra=()):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Weight resolution
+#
+# load_weights() takes a .safetensors FILE: AntigravityEngineLoadModel opens the
+# path directly. The harness originally passed the model DIRECTORY, which would
+# have failed at the open() the first time anyone ran it against real weights —
+# and no test caught that, because the stand-in engine accepts any string.
+# ---------------------------------------------------------------------------
+
+def test_resolves_a_single_safetensors_file(harness, tmp_path):
+    module, _ = harness
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    assert module.resolve_weights(tmp_path).name == "model.safetensors"
+
+
+def test_resolves_an_oddly_named_lone_file(harness, tmp_path):
+    module, _ = harness
+    (tmp_path / "tinyllama-1.1b.safetensors").write_bytes(b"")
+    assert module.resolve_weights(tmp_path).name == "tinyllama-1.1b.safetensors"
+
+
+def test_prefers_the_conventional_name_over_others(harness, tmp_path):
+    module, _ = harness
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    (tmp_path / "adapter.safetensors").write_bytes(b"")
+    assert module.resolve_weights(tmp_path).name == "model.safetensors"
+
+
+def test_a_sharded_checkpoint_is_refused_not_half_loaded(harness, tmp_path):
+    # The engine's parser reads one file. Silently picking a shard would load part
+    # of the model and generate from it.
+    module, _ = harness
+    (tmp_path / "model-00001-of-00002.safetensors").write_bytes(b"")
+    (tmp_path / "model-00002-of-00002.safetensors").write_bytes(b"")
+    with pytest.raises(FileNotFoundError, match="2 safetensors files"):
+        module.resolve_weights(tmp_path)
+
+
+def test_no_weights_at_all_is_refused(harness, tmp_path):
+    module, _ = harness
+    with pytest.raises(FileNotFoundError, match="no .safetensors"):
+        module.resolve_weights(tmp_path)
+
+
+def test_the_artifact_records_which_weights_file_was_loaded(harness, monkeypatch, tmp_path):
+    module, engine = harness
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    dataset = write_dataset(tmp_path, [5, 5])
+    engine.script = [[5] * 8, [5] * 8]
+    code, result = run(module, monkeypatch, tmp_path, dataset, ["--limit", "2"])
+    assert code == 0
+    assert result["config"]["weights_file"].endswith("model.safetensors")
+
 
 def test_writes_a_complete_artifact(harness, monkeypatch, tmp_path):
     module, engine = harness
