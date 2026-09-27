@@ -285,24 +285,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
-      # but only the .zip is committed, so a clean checkout cannot resolve it.
-      - name: Unpack the prebuilt xcframework
-        working-directory: antigravity-engine/frameworks
-        run: |
-          unzip -q -o AntigravityEngine.xcframework.zip
-          # The committed zip carries AppleDouble resource forks (._*, __MACOSX).
-          # Clang sees ._AntigravityEngine.h etc. as headers missing from the module
-          # umbrella and warns on every build. Drop them.
-          rm -rf __MACOSX
-          find AntigravityEngine.xcframework -name '._*' -delete
-          test -d AntigravityEngine.xcframework
-
-      # Nothing has ever compiled these. A syntax error in a kernel would only
-      # surface at runtime on a device, as a pipeline that silently fails to build.
-      # swift build links the PREBUILT xcframework, so the Objective-C++ engine
-      # sources are never compiled by it. Any change to transformer_engine.mm was
-      # therefore unverified by CI. Compile them directly.
+      # Nothing else in this repository compiles these. swift build links the PREBUILT
+      # xcframework, so the Objective-C++ engine sources are never compiled by it, and
+      # any change to transformer_engine.mm was unverified by CI. Compile them directly.
+      #
+      # First in the job, because it is the step most likely to fail and it depends on
+      # nothing above it. It used to run after the xcframework unpack, so a plain
+      # redefinition in transformer_engine.mm cost a full macOS round trip to learn about.
       - name: Compile the Objective-C++ Metal engine
         working-directory: antigravity-engine
         run: |
@@ -318,6 +307,19 @@ jobs:
             -framework Metal -framework Foundation
           echo "antigravity_c_api.cpp compiles"
 
+
+      # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
+      # but only the .zip is committed, so a clean checkout cannot resolve it.
+      - name: Unpack the prebuilt xcframework
+        working-directory: antigravity-engine/frameworks
+        run: |
+          unzip -q -o AntigravityEngine.xcframework.zip
+          # The committed zip carries AppleDouble resource forks (._*, __MACOSX).
+          # Clang sees ._AntigravityEngine.h etc. as headers missing from the module
+          # umbrella and warns on every build. Drop them.
+          rm -rf __MACOSX
+          find AntigravityEngine.xcframework -name '._*' -delete
+          test -d AntigravityEngine.xcframework
       - name: Compile Metal shaders
         working-directory: antigravity-engine
         run: |
