@@ -73,6 +73,7 @@ kernel void rope_kernel(
     constant uint& n_kv_heads [[buffer(6)]],
     constant uint& head_dim [[buffer(7)]],
     constant uint& start_pos [[buffer(8)]],
+    constant uint& max_seq [[buffer(9)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     uint batch_seq_idx = gid.x;
@@ -84,7 +85,14 @@ kernel void rope_kernel(
     
     uint seq_pos = batch_seq_idx % seq_len;
     uint absolute_pos = start_pos + seq_pos;
-    
+
+    // The frequency tables hold max_seq entries. Without this the read runs off the
+    // end of them, which is the same defect kv_cache_append_kernel had: an
+    // out-of-bounds device read that does not fault, just returns whatever is next in
+    // the allocation and rotates Q and K by a garbage angle. checkSequence() now bounds
+    // the caller, but this kernel should not depend on that to stay in its own buffers.
+    if (absolute_pos >= max_seq) return;
+
     float f_cos = (float)freqs_cos[absolute_pos * half_dim + i];
     float f_sin = (float)freqs_sin[absolute_pos * half_dim + i];
     

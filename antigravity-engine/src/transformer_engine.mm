@@ -865,6 +865,10 @@ void MetalTransformerEngine::dispatchRoPE(
     [enc setBytes:&n_kv_heads length:sizeof(uint32_t) atIndex:6];
     [enc setBytes:&head_dim length:sizeof(uint32_t) atIndex:7];
     [enc setBytes:&spos length:sizeof(uint32_t) atIndex:8];
+    // max_seq, so rope_kernel can bound its read of the frequency tables itself
+    // rather than trusting the caller to have bounded absolute_pos.
+    uint32_t rope_max_seq = config_.max_seq_len;
+    [enc setBytes:&rope_max_seq length:sizeof(uint32_t) atIndex:9];
     
     // Grid: (batch * seq_len, max(n_heads, n_kv_heads), head_dim / 2)
     uint32_t max_heads = std::max(n_heads, n_kv_heads);
