@@ -1499,10 +1499,11 @@ GenerationResult MetalTransformerEngine::generate(
             if (embedPipeline_) {
                 [enc setComputePipelineState:embedPipeline_];
                 uint32_t tok = (uint32_t)prompt_tokens[t];
-                if (tok >= config_.vocab_size) tok = 0;
-                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+                if (tok >= (uint32_t)config_.vocab_size) tok = 0;
                 for (uint32_t c = 0; c < C; c++) {
-                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                    // per token per channel — thousands of object allocations inside the decode loop.
+                    [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                     [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                     [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
                     uint32_t hdim = H;
@@ -1545,9 +1546,10 @@ GenerationResult MetalTransformerEngine::generate(
                     }
                     int32_t cur_token = (step == 0) ? prompt_tokens[prompt_len - 1] : result.channel_tokens[c].back();
                     uint32_t tok = (uint32_t)cur_token;
-                    if (tok >= config_.vocab_size) tok = 0;
-                    id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                    // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                    // per token per channel — thousands of object allocations inside the decode loop.
+                    [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                     [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                     [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
                     uint32_t hdim = H;
@@ -1722,8 +1724,13 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                 if (embedPipeline_ && text_idx >= 0 && text_idx < text_len) {
                     [enc setComputePipelineState:embedPipeline_];
                     uint32_t tok = (uint32_t)text_tokens[text_idx];
-                    id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    // Unchecked here, unlike the text path: embedding_lookup_kernel
+                    // indexes embed_table[token_id * hidden_dim + ...], so an
+                    // out-of-range id is an out-of-bounds GPU read.
+                    if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                    // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                    // per token per channel — thousands of object allocations inside the decode loop.
+                    [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                     [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                     [enc setBuffer:hidden_bufs[c] offset:0 atIndex:2];
                     uint32_t hdim = H;
@@ -1768,8 +1775,10 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             if (embedPipeline_) {
                 [enc setComputePipelineState:embedPipeline_];
                 uint32_t tok = (uint32_t)cur_token;
-                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                [enc setBuffer:tokBuf offset:0 atIndex:0];
+                if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                // per token per channel — thousands of object allocations inside the decode loop.
+                [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                 [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                 [enc setBuffer:hidden_bufs[c] offset:0 atIndex:2];
                 uint32_t hdim = H;

@@ -18,7 +18,7 @@ struct EmbeddedShader {
     const char* source;    // the complete .metal source
 };
 
-// ---- batched_gemm.metal (10230 bytes) ----
+// ---- batched_gemm.metal (11421 bytes) ----
 inline const char* const kBatchedGemmSource = R"AGMETAL(#include <metal_stdlib>
 using namespace metal;
 
@@ -159,10 +159,16 @@ kernel void fused_batched_gemm_int4(
     constant uint&           N_batch       [[buffer(3)]],
     constant uint&           K_dim         [[buffer(4)]],
     constant uint&           M_dim         [[buffer(5)]],
-    uint2 group_id [[threadgroup_position_in_grid]],
-    uint simd_lane_id [[thread_index_in_simdgroup]]
+    uint2 group_id  [[threadgroup_position_in_grid]],
+    uint  tid_in_tg [[thread_index_in_threadgroup]],
+    uint3 tg_size   [[threads_per_threadgroup]]
 ) {
-    (void)simd_lane_id;
+    // Threads of this threadgroup share the dequantization of each weight tile, so
+    // the split is written against the actual threadgroup size rather than a
+    // hardcoded 32. Hardcoding it would mean a change to threadsPerThreadgroup in
+    // dispatchGEMM silently left tile cells unwritten, which reads as plausible
+    // numbers rather than as a failure.
+    uint helpers = tg_size.x * tg_size.y * tg_size.z;
     uint row_start = group_id.y * 8;
     uint col_start = group_id.x * 8;
 
@@ -176,25 +182,30 @@ kernel void fused_batched_gemm_int4(
 
         simdgroup_load(a_tile, activations + row_start * K_dim + k, K_dim);
 
+        // The 8x8 weight tile is dequantized cooperatively, each thread taking
+        // every `helpers`-th element. Every thread used to run this whole loop, so
+        // at the 32-thread threadgroup dispatchGEMM encodes, all 64 dequantizations
+        // were performed 32 times over and 31 of every 32 stores were a redundant
+        // write of an identical value.
         threadgroup half b_elements[8][8];
-        for (uint r = 0; r < 8; r++) {
+        for (uint e = tid_in_tg; e < 64; e += helpers) {
+            uint r = e >> 3;          // e / 8
+            uint c = e & 7;           // e % 8
             uint global_k = k + r;
-            for (uint c = 0; c < 8; c++) {
-                uint global_m = col_start + c;
-                if (global_k < K_dim && global_m < M_dim) {
-                    uint flat_weight_idx = global_k * M_dim + global_m;
-                    uint sb_idx = flat_weight_idx / 256;
-                    uint in_sb_elem = flat_weight_idx % 256;
+            uint global_m = col_start + c;
+            if (global_k < K_dim && global_m < M_dim) {
+                uint flat_weight_idx = global_k * M_dim + global_m;
+                uint sb_idx = flat_weight_idx / 256;
+                uint in_sb_elem = flat_weight_idx % 256;
 
-                    device const SuperBlock& sb = superblocks[sb_idx];
-                    uint byte_idx = in_sb_elem / 2;
-                    uchar packed = sb.packed_nibbles[byte_idx];
-                    int raw_nibble = (in_sb_elem % 2 == 0) ? (int(packed & 0x0F) - 8) : (int((packed >> 4) & 0x0F) - 8);
-                    half scale = sb.scales[in_sb_elem / 32];
-                    b_elements[r][c] = static_cast<half>(raw_nibble) * scale;
-                } else {
-                    b_elements[r][c] = 0.0h;
-                }
+                device const SuperBlock& sb = superblocks[sb_idx];
+                uint byte_idx = in_sb_elem / 2;
+                uchar packed = sb.packed_nibbles[byte_idx];
+                int raw_nibble = (in_sb_elem % 2 == 0) ? (int(packed & 0x0F) - 8) : (int((packed >> 4) & 0x0F) - 8);
+                half scale = sb.scales[in_sb_elem / 32];
+                b_elements[r][c] = static_cast<half>(raw_nibble) * scale;
+            } else {
+                b_elements[r][c] = 0.0h;
             }
         }
 
@@ -202,6 +213,12 @@ kernel void fused_batched_gemm_int4(
         simdgroup_load(b_tile, (const threadgroup half*)&b_elements[0][0], 8);
 
         simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix);
+
+        // Second barrier: without it the next iteration's stores to b_elements can
+        // land while another lane is still reading this iteration's tile. That race
+        // was present before the split too — identical values do not make it safe,
+        // because the values differ between iterations of k.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
@@ -253,7 +270,7 @@ kernel void gemv_int4_kernel(
 }
 )AGMETAL";
 
-// ---- batched_gemm_fused.metal (2763 bytes) ----
+// ---- batched_gemm_fused.metal (3453 bytes) ----
 inline const char* const kBatchedGemmFusedSource = R"AGMETAL(#include <metal_stdlib>
 using namespace metal;
 
@@ -269,10 +286,16 @@ kernel void fused_batched_gemm_int4(
     constant uint&           N_batch       [[buffer(3)]],
     constant uint&           K_dim         [[buffer(4)]],
     constant uint&           M_dim         [[buffer(5)]],
-    uint2 group_id [[threadgroup_position_in_grid]],
-    uint simd_lane_id [[thread_index_in_simdgroup]]
+    uint2 group_id  [[threadgroup_position_in_grid]],
+    uint  tid_in_tg [[thread_index_in_threadgroup]],
+    uint3 tg_size   [[threads_per_threadgroup]]
 ) {
-    (void)simd_lane_id;
+    // Threads of this threadgroup share the dequantization of each weight tile, so
+    // the split is written against the actual threadgroup size rather than a
+    // hardcoded 32. Hardcoding it would mean a change to threadsPerThreadgroup in
+    // dispatchGEMM silently left tile cells unwritten, which reads as plausible
+    // numbers rather than as a failure.
+    uint helpers = tg_size.x * tg_size.y * tg_size.z;
     uint row_start = group_id.y * 8;
     uint col_start = group_id.x * 8;
 
@@ -289,25 +312,27 @@ kernel void fused_batched_gemm_int4(
         // Must be threadgroup, not thread-local: simdgroup_load reads the tile
         // cooperatively across the simdgroup, so a per-thread copy is both the wrong
         // address space (this file has never compiled) and the wrong data.
+        // Threads split the 64 tile elements rather than each thread dequantizing
+        // all 64 — see the same loop in batched_gemm.metal.
         threadgroup half b_elements[8][8];
-        for (uint r = 0; r < 8; r++) {
+        for (uint e = tid_in_tg; e < 64; e += helpers) {
+            uint r = e >> 3;
+            uint c = e & 7;
             uint global_k = k + r;
-            for (uint c = 0; c < 8; c++) {
-                uint global_m = col_start + c;
-                if (global_k < K_dim && global_m < M_dim) {
-                    uint flat_weight_idx = global_k * M_dim + global_m;
-                    uint sb_idx = flat_weight_idx / 256;
-                    uint in_sb_elem = flat_weight_idx % 256;
+            uint global_m = col_start + c;
+            if (global_k < K_dim && global_m < M_dim) {
+                uint flat_weight_idx = global_k * M_dim + global_m;
+                uint sb_idx = flat_weight_idx / 256;
+                uint in_sb_elem = flat_weight_idx % 256;
 
-                    device const SuperBlock& sb = superblocks[sb_idx];
-                    uint byte_idx = in_sb_elem / 2;
-                    uchar packed = sb.packed_nibbles[byte_idx];
-                    int raw_nibble = (in_sb_elem % 2 == 0) ? (int(packed & 0x0F) - 8) : (int((packed >> 4) & 0x0F) - 8);
-                    half scale = sb.scales[in_sb_elem / 32];
-                    b_elements[r][c] = static_cast<half>(raw_nibble) * scale;
-                } else {
-                    b_elements[r][c] = 0.0h;
-                }
+                device const SuperBlock& sb = superblocks[sb_idx];
+                uint byte_idx = in_sb_elem / 2;
+                uchar packed = sb.packed_nibbles[byte_idx];
+                int raw_nibble = (in_sb_elem % 2 == 0) ? (int(packed & 0x0F) - 8) : (int((packed >> 4) & 0x0F) - 8);
+                half scale = sb.scales[in_sb_elem / 32];
+                b_elements[r][c] = static_cast<half>(raw_nibble) * scale;
+            } else {
+                b_elements[r][c] = 0.0h;
             }
         }
 
@@ -315,6 +340,9 @@ kernel void fused_batched_gemm_int4(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         simdgroup_load(b_tile, (const threadgroup half*)&b_elements[0][0], 8);
         simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix);
+
+        // And after: the next iteration's stores must not overtake this read.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
