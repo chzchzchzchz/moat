@@ -92,6 +92,40 @@ int main() {
     }
     check(consistent, "checkSequence and remainingCapacity agree on every small case");
 
+    // ---- The growing-prefix loop generateMCTS now relies on -----------------
+    {
+        // generateMCTS appends a chunk to its prefix each round, so the cache fills
+        // part-way through the search. It asks for min(chunk_tokens, room) and stops
+        // at room <= 0. Simulate that: it must terminate, never request more than
+        // fits, and never exceed the cache.
+        const int32_t cache = 128, chunk = 30, rounds = 100;
+        int32_t prefix = 10;
+        int32_t iterations = 0;
+        bool never_overran = true, never_over_asked = true;
+
+        for (int32_t r = 0; r < rounds; r++) {
+            const int32_t room = remainingCapacity(prefix, cache);
+            if (room <= 0) break;
+            const int32_t ask = (chunk < room) ? chunk : room;
+            if (ask > room) never_over_asked = false;
+            if (checkSequence(prefix, ask, cache) != LimitError::Ok) never_over_asked = false;
+            prefix += ask;
+            if (prefix > cache) never_overran = false;
+            iterations++;
+        }
+
+        check(iterations < rounds, "the search terminates before exhausting its rounds");
+        check(never_over_asked, "every request fits the remaining cache");
+        check(never_overran, "the prefix never grows past the cache");
+        check(prefix == cache, "the loop fills the cache exactly, then stops");
+    }
+    {
+        // A prompt already at or past the cache must stop the search immediately
+        // rather than issuing a single doomed request.
+        check(remainingCapacity(2048, 2048) == 0, "a prompt filling the cache leaves no round");
+        check(remainingCapacity(9999, 2048) == 0, "an over-long prompt leaves no round");
+    }
+
     // ---- Messages ----------------------------------------------------------
     check(std::strcmp(describe(LimitError::Ok), "ok") == 0, "describe(Ok) is \"ok\"");
     bool described = true;

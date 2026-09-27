@@ -730,8 +730,14 @@ int32_t AntigravityEngineNativeMCTSGenerate(
 
     MCTSResult res = ctx->nativeEngine->generateMCTS(prompt_tokens, prompt_len, cfg);
 
-    int max_capacity = cfg.chunk_tokens * cfg.num_chunks;
-    int n_toks = std::min((int)res.best_tokens.size(), max_capacity);
+    // out_tokens is documented as chunk_tokens * num_chunks entries. Multiplied in
+    // int32 that product overflows for large configs, and a wrapped-negative
+    // capacity would make the copy below silently write nothing; compute it wide
+    // and clamp.
+    const int64_t max_capacity = (int64_t)cfg.chunk_tokens * (int64_t)cfg.num_chunks;
+    const int64_t n_toks64 = std::min<int64_t>((int64_t)res.best_tokens.size(),
+                                               std::max<int64_t>(0, max_capacity));
+    const int n_toks = (int)n_toks64;
     for (int t = 0; t < n_toks; t++) {
         out_tokens[t] = res.best_tokens[t];
     }

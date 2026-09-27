@@ -1940,11 +1940,27 @@ MCTSResult MetalTransformerEngine::generateMCTS(
     const int EOS_TOKEN = (config_.vocab_size > 32000) ? 151645 : 2;
 
     for (int chunk_idx = 0; chunk_idx < mcts_config.num_chunks; chunk_idx++) {
+        // The prefix grows by a chunk each round, so the KV cache can fill part-way
+        // through the search. generate() refuses a request that would not fit, and
+        // its refusal still returns n_channels empty vectors — so without this the
+        // loop would run every remaining chunk scoring nothing. Stop instead, and
+        // ask only for what is left.
+        const int32_t room = antigravity::remainingCapacity(
+            (int32_t)current_prefix.size(), config_.max_seq_len);
+        if (room <= 0) {
+            std::cerr << "[generateMCTS] KV cache full after " << chunk_idx
+                      << " chunk(s) (" << current_prefix.size() << " of "
+                      << config_.max_seq_len << " positions); stopping search"
+                      << std::endl;
+            break;
+        }
+        const int32_t chunk_tokens = std::min(mcts_config.chunk_tokens, room);
+
         // Run parallel candidate generation across branches on Metal GPU
         GenerationResult gen = this->generate(
             current_prefix.data(),
             (int32_t)current_prefix.size(),
-            mcts_config.chunk_tokens,
+            chunk_tokens,
             mcts_config.temperature,
             mcts_config.top_p
         );
