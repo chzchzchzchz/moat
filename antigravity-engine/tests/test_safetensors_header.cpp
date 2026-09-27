@@ -6,7 +6,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <vector>
 
 using namespace antigravity;
 
@@ -304,6 +307,98 @@ int main() {
                 }
             }
             check(contiguous, "every tensor keeps the offset it was given in the header");
+        }
+    }
+
+    // ---- a REAL header, cross-checked against Python's json ------------------------
+    // Every header above is one I wrote, and a parser tested only against its author's
+    // synthetic input is not tested against reality. This is the actual 32,280-byte
+    // header of Qwen/Qwen2.5-0.5B-Instruct's model.safetensors: 290 tensors plus
+    // __metadata__, names 40 characters long, offsets tiling the file exactly. The
+    // expected values are what Python's json module reports for the same bytes, so this
+    // requires the C++ parser to agree with a real JSON parser, not with me.
+    // See tests/fixtures/README_header_fixture.md.
+    {
+        const uint64_t kDataStart = 8 + 32280;     // the file's real header_len
+        const uint64_t kFileSize  = 988097824;     // the file's real size
+
+        std::ifstream hf("tests/fixtures/qwen2.5-0.5b-instruct.header.json",
+                         std::ios::binary);
+        check(hf.is_open(), "the real header fixture can be opened");
+        if (hf.is_open()) {
+            std::stringstream hb;
+            hb << hf.rdbuf();
+            const std::string header = hb.str();
+            check(header.size() == 32280, "the fixture is the expected 32280 bytes");
+
+            auto r = parseSafetensorsHeader(header, kDataStart, kFileSize);
+            check(r.ok, "the real header parses");
+            if (!r.ok) std::printf("    (error was: %s)\n", r.error.c_str());
+
+            if (r.ok) {
+                check(r.tensors.size() == 290,
+                      "290 tensors are found (291 keys less __metadata__)");
+
+                // Compare every field against Python's json, line by line.
+                std::ifstream ef("tests/fixtures/qwen2.5-0.5b-instruct.expected.tsv");
+                check(ef.is_open(), "the expected-values fixture can be opened");
+                size_t compared = 0;
+                bool all_match = true;
+                std::string line;
+                while (std::getline(ef, line)) {
+                    if (line.empty()) continue;
+                    // name \t dtype \t shape \t start \t end
+                    std::vector<std::string> field;
+                    size_t at = 0;
+                    while (true) {
+                        const size_t tab = line.find('\t', at);
+                        field.push_back(line.substr(at, tab == std::string::npos
+                                                        ? std::string::npos : tab - at));
+                        if (tab == std::string::npos) break;
+                        at = tab + 1;
+                    }
+                    if (field.size() != 5) { all_match = false; break; }
+
+                    auto it = r.tensors.find(field[0]);
+                    if (it == r.tensors.end()) { all_match = false; break; }
+                    const TensorEntry& t = it->second;
+
+                    if (t.dtype != field[1]) all_match = false;
+
+                    std::string got_shape;
+                    for (size_t i = 0; i < t.shape.size(); i++) {
+                        if (i) got_shape += ",";
+                        got_shape += std::to_string(t.shape[i]);
+                    }
+                    if (got_shape != field[2]) all_match = false;
+
+                    uint64_t want_start = 0, want_end = 0;
+                    if (!parseUInt64(field[3], want_start)
+                        || !parseUInt64(field[4], want_end)) all_match = false;
+                    if (t.offset_start != want_start || t.offset_end != want_end) {
+                        all_match = false;
+                    }
+                    compared++;
+                }
+                check(compared == 290, "all 290 expected lines were read");
+                check(all_match,
+                      "every tensor's dtype, shape and both offsets match Python's json");
+
+                // The offsets tile the file with no gaps and no overlap, and the last one
+                // ends exactly at the end of the file — so the inclusive upper boundary of
+                // the bounds check is exercised against a real checkpoint's geometry.
+                uint64_t largest_end = 0;
+                for (const auto& kv : r.tensors) {
+                    if (kv.second.offset_end > largest_end) largest_end = kv.second.offset_end;
+                }
+                check(kDataStart + largest_end == kFileSize,
+                      "the last tensor ends exactly at the end of the real file");
+
+                // One byte short must be refused, on the real header.
+                auto short_r = parseSafetensorsHeader(header, kDataStart, kFileSize - 1);
+                check(!short_r.ok,
+                      "the real header is refused when the file is one byte short");
+            }
         }
     }
 
