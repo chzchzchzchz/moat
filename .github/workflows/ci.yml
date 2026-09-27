@@ -206,7 +206,15 @@ jobs:
 
       # Its own job, not a step inside swift-build, because the answer decides what
       # CI can verify about these kernels and behind a `swift build -v` log it was
-      # unreadable. Every other check on the INT4 path reproduces the kernels'
+      # unreadable.
+      #
+      # Settled by measurement, both ways: on macos-14 this reports "no Metal device
+      # on this machine", so the hosted runners are arm64 VMs without GPU passthrough
+      # and the engine cannot run on them. macos-14-xlarge was probed too and that
+      # label is not available on this account — the job fails in four seconds with no
+      # logs — so there is no GitHub-hosted path to a GPU here at all. The engine's own
+      # numbers therefore come from scripts/run_quality_benchmark.sh on a Mac, or from
+      # a self-hosted runner via the quality-benchmark workflow's `runner` input. Every other check on the INT4 path reproduces the kernels'
       # arithmetic on the CPU, which cannot catch a wrong barrier, a threadgroup
       # array in the wrong address space, or a lane split that leaves tile cells
       # unwritten. Only running the shader catches those.
@@ -238,60 +246,6 @@ jobs:
         with:
           name: metal-probe
           path: antigravity-engine/metal_probe.txt
-          if-no-files-found: warn
-
-  # GitHub's standard macos-14 runner is a VM with no GPU, which the job above
-  # measures. The *larger* macOS runners are dedicated M-series hardware rather than
-  # shared VMs, so they may expose a Metal device — which would make the engine, and
-  # therefore the end-to-end accuracy measurement, runnable in CI for the first time.
-  # Untested until now, so this probes it.
-  #
-  # continue-on-error and a short timeout because larger runners require a paid plan
-  # and may not exist on this account: an unavailable label must not turn CI red or
-  # queue indefinitely.
-  metal-gpu-xlarge:
-    name: Probe for a GPU on a larger macOS runner
-    runs-on: macos-14-xlarge
-    timeout-minutes: 10
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Describe the machine
-        run: |
-          sysctl -n machdep.cpu.brand_string
-          sysctl -n hw.memsize
-          sw_vers
-          system_profiler SPDisplaysDataType 2>/dev/null | head -20 || echo "no display data"
-
-      - name: Is there a Metal device?
-        working-directory: antigravity-engine
-        run: |
-          mkdir -p bin
-          clang++ -std=c++17 -fobjc-arc -x objective-c++ -Isrc \
-            tests/test_metal_int4_gpu.mm \
-            -framework Metal -framework Foundation \
-            -o bin/test_metal_int4_gpu
-          ./bin/test_metal_int4_gpu | tee metal_probe_xlarge.txt
-          {
-            echo "### Larger macOS runner: GPU probe"
-            echo
-            echo '```'
-            cat metal_probe_xlarge.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          if grep -q SKIPPED metal_probe_xlarge.txt; then
-            echo "::warning::macos-14-xlarge also has no Metal device."
-          else
-            echo "::notice::macos-14-xlarge HAS a Metal device — the engine can run in CI."
-          fi
-
-      - name: Upload the probe result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: metal-probe-xlarge
-          path: antigravity-engine/metal_probe_xlarge.txt
           if-no-files-found: warn
 
   swift-build:

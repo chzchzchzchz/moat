@@ -58,6 +58,61 @@ def test_model_answer_falls_back_to_the_last_number():
     assert extract_model_answer("First 3, then 4, so the total is 7.") == 7.0
 
 
+def test_a_truncated_generation_with_no_marker_yields_no_answer():
+    """The bug this was written for, in the shape it actually occurred.
+
+    Real output from Qwen2.5-0.5B on the Janet's-ducks problem, cut off at the token
+    limit mid-sentence. The last number is 9, an intermediate step; the model never
+    stated an answer.
+    """
+    cut_off = ("The remaining eggs sold are: 16 - 7 = 9. "
+               "Finally, we calculate the revenue from selling these remaining eggs at the farmers'")
+    assert extract_model_answer(cut_off, truncated=True) is None
+    # Without the truncation flag the old behaviour stands, which is what made two
+    # cut-off samples out-vote the one that finished and said 18.
+    assert extract_model_answer(cut_off, truncated=False) == 9.0
+
+
+def test_a_truncated_generation_that_did_state_its_answer_is_still_read():
+    # The marker means the answer was emitted before the budget ran out.
+    assert extract_model_answer("working... #### 18\nand then it was cut o",
+                                truncated=True) == 18.0
+
+
+def test_a_complete_generation_still_uses_the_last_number():
+    # Real completed output: no #### marker, answer stated in prose.
+    done = ("The number of eggs left for selling is 16 - 7 = 9. Since each egg is sold "
+            "for $2, she earns 9 x 2 = $18 every day. Final Answer: Janet makes $18.")
+    assert extract_model_answer(done, truncated=False) == 18.0
+
+
+def test_truncation_only_suppresses_the_fallback_not_a_real_answer():
+    # A truncated sample with no numbers at all was already None; stays None.
+    assert extract_model_answer("Let me think about this problem care", truncated=True) is None
+
+
+def test_truncated_samples_stop_corrupting_the_majority_vote():
+    """End to end on the real case: three samples, two cut off, one complete.
+
+    Before: the two cut-off samples contributed 9 and 10 from their working, so the
+    vote landed on an intermediate value. After: they abstain and the one sample that
+    actually answered decides it.
+    """
+    texts = [
+        "eggs sold are 16 - 7 = 9. Finally we calculate the revenue at the farmers'",
+        "the number of eggs sold is 16 - 6 = 10. Therefore the total revenue is 10",
+        "she earns 9 x 2 = $18 every day. Final Answer: Janet makes $18 every day.",
+    ]
+    truncated = [True, True, False]
+
+    fixed = majority_vote([extract_model_answer(t, truncated=c)
+                           for t, c in zip(texts, truncated)])
+    assert fixed == 18.0
+
+    unfixed = majority_vote([extract_model_answer(t, truncated=False) for t in texts])
+    assert unfixed != 18.0
+
+
 def test_model_answer_is_none_when_no_number_was_produced():
     # A channel that rambled without answering must score wrong, not be skipped.
     assert extract_model_answer("I am not sure how to solve this.") is None

@@ -180,7 +180,12 @@ def main() -> int:
             continue
 
         texts = [tokenizer.decode(tokens) for tokens in channel_tokens]
-        answers = [extract_model_answer(text) for text in texts]
+        # A channel that emitted max_new_tokens never hit EOS, so it was cut off and
+        # its last number is an intermediate step, not an answer. See
+        # extract_model_answer: taking it would let a cut-off channel vote.
+        truncated = [len(tokens) >= args.max_tokens for tokens in channel_tokens]
+        answers = [extract_model_answer(text, truncated=cut)
+                   for text, cut in zip(texts, truncated)]
         selected = majority_vote(answers, scores=logprobs)
 
         base_ok = answers_match(answers[0] if answers else None, problem["gold"])
@@ -194,6 +199,7 @@ def main() -> int:
             "channel_answers": answers,
             "channel_logprobs": list(logprobs),
             "channel_token_counts": [len(t) for t in channel_tokens],
+            "channel_truncated": truncated,
             "baseline_answer": answers[0] if answers else None,
             "selected_answer": selected,
             "baseline_correct": base_ok,

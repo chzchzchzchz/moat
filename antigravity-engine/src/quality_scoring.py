@@ -42,15 +42,34 @@ def extract_gold_answer(answer_field: str) -> Optional[float]:
     return parse_number(match.group(0)) if match else None
 
 
-def extract_model_answer(text: str) -> Optional[float]:
-    """The model's final answer: after '####' when it follows the format, else the
-    last number it wrote. Returns None when it produced no number at all, which is
-    scored as wrong rather than quietly skipped."""
+def extract_model_answer(text: str, truncated: bool = False) -> Optional[float]:
+    """The model's final answer, or None when it did not produce one.
+
+    Order: the number after '####' when the model followed the format; otherwise the
+    last number in the text, which is the standard GSM8K convention.
+
+    `truncated` says the generation hit its token limit rather than stopping on its
+    own, and it changes the answer. The last-number fallback assumes the text ran to
+    a conclusion; on a cut-off generation the last number is whatever intermediate
+    step it happened to reach, and returning that turns "no answer" into a confident
+    wrong one. Measured on real output rather than supposed: of eight samples for one
+    GSM8K problem, two were cut off mid-sentence and the fallback read 9 and 10 out
+    of their working, while the single sample that finished said 18, the correct
+    answer. The majority vote then chose 9. A no-answer does not vote; a fabricated
+    one does, so this silently corrupted the selection and understated accuracy.
+
+    A '####' marker is still honoured when truncated, because the model did emit its
+    answer before running out of room.
+    """
     marker = text.rfind("####")
     if marker >= 0:
         match = _NUMBER.search(text[marker + 4:])
         if match:
             return parse_number(match.group(0))
+
+    if truncated:
+        return None
+
     matches = _NUMBER.findall(text)
     return parse_number(matches[-1]) if matches else None
 
