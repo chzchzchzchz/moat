@@ -61,6 +61,23 @@ jobs:
             tests/test_engine_limits.cpp -o bin/test_engine_limits
           ./bin/test_engine_limits
 
+      # The header parser decides where every weight comes from, and it was hand-rolled
+      # inline with four defects. The worst: "__metadata__" was skipped by finding the
+      # first '}' after the key, so metadata holding a nested object anywhere but last
+      # made parsing resume mid-object. A reproduction of that code on such a header
+      # returns one tensor named "format" carrying the real tensor's offsets, with the
+      # real tensor absent — and an absent tensor means its weight buffer keeps whatever
+      # it held. Nothing compared any offset against the file size either, so a truncated
+      # checkpoint was mmapped and read past its end. Both produce confident constant
+      # output rather than an error.
+      - name: Check the safetensors header parser
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_safetensors_header.cpp -o bin/test_safetensors_header
+          ./bin/test_safetensors_header
+
       # The xcframework packages only the static library — no .metal and no
       # .metallib travel with it — and every shader path the engine tries is
       # relative to the process working directory, which on a device resolves to

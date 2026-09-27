@@ -31,6 +31,7 @@
 #include "shader_sources.h"
 #include "engine_limits.h"
 #include "sampling.h"
+#include "safetensors_header.h"
 
 // BFloat16 → Float16 conversion helper
 static inline uint16_t bf16_to_fp16(uint16_t bf16) {
@@ -385,121 +386,77 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         std::cerr << "[loadWeights] Cannot open: " << path << std::endl;
         return false;
     }
-    
-    // Read header length (8-byte LE uint64)
+
+    // How big the file actually is. Nothing used to ask, which meant a tensor whose
+    // offsets ran past the end of a truncated checkpoint was mmapped and read anyway.
+    file.seekg(0, std::ios::end);
+    const std::streamoff file_end = file.tellg();
+    if (file_end < 8) {
+        std::cerr << "[loadWeights] File is " << file_end
+                  << " bytes, too short to be a safetensors file: " << path << std::endl;
+        return false;
+    }
+    const uint64_t file_size = (uint64_t)file_end;
+    file.seekg(0, std::ios::beg);
+
+    // Read header length (8-byte LE uint64). Check the read: a short read used to leave
+    // header_len partly unwritten.
     uint64_t header_len = 0;
-    file.read(reinterpret_cast<char*>(&header_len), 8);
+    if (!file.read(reinterpret_cast<char*>(&header_len), 8)) {
+        std::cerr << "[loadWeights] Could not read the 8-byte header length: "
+                  << path << std::endl;
+        return false;
+    }
     if (header_len > 100 * 1024 * 1024) {  // sanity: max 100MB header
         std::cerr << "[loadWeights] Header too large: " << header_len << std::endl;
         return false;
     }
-    
-    // Read JSON header
-    std::string header_json(header_len, '\0');
-    file.read(&header_json[0], header_len);
-    
-    uint64_t data_start = 8 + header_len;
-    
-    // Simple JSON parser for safetensors format
-    // Format: {"tensor_name": {"dtype": "BF16", "shape": [dim0, dim1], "data_offsets": [start, end]}, ...}
-    
-    struct TensorInfo {
-        std::string dtype;
-        std::vector<int64_t> shape;
-        uint64_t offset_start;
-        uint64_t offset_end;
-    };
-    
-    // Minimal JSON parser — extract tensor name, dtype, shape, data_offsets
-    std::map<std::string, TensorInfo> tensors;
-    
-    // Find each key-value pair
-    size_t pos = 0;
-    while (pos < header_json.size()) {
-        // Find key string
-        size_t key_start = header_json.find('"', pos);
-        if (key_start == std::string::npos) break;
-        size_t key_end = header_json.find('"', key_start + 1);
-        if (key_end == std::string::npos) break;
-        std::string key = header_json.substr(key_start + 1, key_end - key_start - 1);
-        
-        // Skip "__metadata__"
-        if (key == "__metadata__") {
-            // Skip until next top-level key
-            pos = header_json.find('}', key_end);
-            if (pos != std::string::npos) pos++;
-            continue;
-        }
-        
-        // Find the value object
-        size_t val_start = header_json.find('{', key_end);
-        if (val_start == std::string::npos) break;
-        
-        // Find matching closing brace
-        int depth = 1;
-        size_t val_end = val_start + 1;
-        while (val_end < header_json.size() && depth > 0) {
-            if (header_json[val_end] == '{') depth++;
-            else if (header_json[val_end] == '}') depth--;
-            val_end++;
-        }
-        
-        std::string val_str = header_json.substr(val_start, val_end - val_start);
-        
-        TensorInfo info;
-        
-        // Extract dtype
-        size_t dtype_pos = val_str.find("\"dtype\"");
-        if (dtype_pos != std::string::npos) {
-            size_t ds = val_str.find('"', dtype_pos + 7);
-            if (ds != std::string::npos) {
-                size_t de = val_str.find('"', ds + 1);
-                if (de != std::string::npos) {
-                    info.dtype = val_str.substr(ds + 1, de - ds - 1);
-                }
-            }
-        }
-        
-        // Extract shape
-        size_t shape_pos = val_str.find("\"shape\"");
-        if (shape_pos != std::string::npos) {
-            size_t arr_s = val_str.find('[', shape_pos);
-            size_t arr_e = val_str.find(']', arr_s);
-            if (arr_s != std::string::npos && arr_e != std::string::npos) {
-                std::string shape_str = val_str.substr(arr_s + 1, arr_e - arr_s - 1);
-                // Parse comma-separated integers
-                std::istringstream ss(shape_str);
-                std::string token;
-                while (std::getline(ss, token, ',')) {
-                    token.erase(std::remove(token.begin(), token.end(), ' '), token.end());
-                    if (!token.empty()) info.shape.push_back(std::stoll(token));
-                }
-            }
-        }
-        
-        // Extract data_offsets
-        size_t off_pos = val_str.find("\"data_offsets\"");
-        if (off_pos != std::string::npos) {
-            size_t arr_s = val_str.find('[', off_pos);
-            size_t arr_e = val_str.find(']', arr_s);
-            if (arr_s != std::string::npos && arr_e != std::string::npos) {
-                std::string off_str = val_str.substr(arr_s + 1, arr_e - arr_s - 1);
-                size_t comma = off_str.find(',');
-                if (comma != std::string::npos) {
-                    std::string s1 = off_str.substr(0, comma);
-                    std::string s2 = off_str.substr(comma + 1);
-                    s1.erase(std::remove(s1.begin(), s1.end(), ' '), s1.end());
-                    s2.erase(std::remove(s2.begin(), s2.end(), ' '), s2.end());
-                    info.offset_start = std::stoull(s1);
-                    info.offset_end = std::stoull(s2);
-                }
-            }
-        }
-        
-        tensors[key] = info;
-        pos = val_end;
+    if (header_len == 0 || header_len > file_size - 8) {
+        std::cerr << "[loadWeights] Header claims " << header_len
+                  << " bytes but the file holds only " << (file_size - 8)
+                  << " after the length field; the file is truncated or not safetensors: "
+                  << path << std::endl;
+        return false;
     }
-    
+
+    // Read JSON header, checking the read for the same reason.
+    std::string header_json(header_len, '\0');
+    if (!file.read(&header_json[0], (std::streamsize)header_len)) {
+        std::cerr << "[loadWeights] Could not read the " << header_len
+                  << "-byte JSON header: " << path << std::endl;
+        return false;
+    }
+
+    const uint64_t data_start = 8 + header_len;
+
+    // Parse and validate the header. This lives in src/safetensors_header.h so it can be
+    // tested without a Metal device — see tests/test_safetensors_header.cpp. The parser
+    // that used to be inline here had four defects, none of which announced itself:
+    //
+    //   - It skipped "__metadata__" by finding the first '}' after the key. With a nested
+    //     object anywhere but last, or a '}' inside a metadata string, parsing resumed in
+    //     the middle of metadata: a reproduction of that code on a header whose metadata
+    //     holds {"extra":{...},"format":"pt"} returns a single tensor named "format",
+    //     carrying the real tensor's data_offsets, with the real tensor absent. An absent
+    //     tensor means loadTensor never runs for it and its buffer keeps whatever it held.
+    //   - TensorInfo::offset_start and offset_end had no initialiser and the struct was
+    //     default-constructed, so a tensor whose data_offsets failed to parse carried
+    //     indeterminate offsets.
+    //   - The tensor was inserted unconditionally, so that malformed entry was kept.
+    //   - std::stoll and std::stoull throw, and this is reached through the extern "C"
+    //     AntigravityEngineLoadModel, so a malformed header threw across a C boundary.
+    //
+    // And nothing compared any offset to the file size.
+    const antigravity::HeaderParseResult parsed =
+        antigravity::parseSafetensorsHeader(header_json, data_start, file_size);
+    if (!parsed.ok) {
+        std::cerr << "[loadWeights] Refusing to load " << path << ": " << parsed.error
+                  << std::endl;
+        return false;
+    }
+    using TensorInfo = antigravity::TensorEntry;
+    const std::map<std::string, TensorInfo>& tensors = parsed.tensors;
+
     std::cout << "[loadWeights] Parsed " << tensors.size() << " tensors from Safetensors" << std::endl;
     
     // Auto-detect architecture parameters from parsed tensor metadata
@@ -509,8 +466,14 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
             size_t p1 = kv.first.find("layers.");
             size_t p2 = kv.first.find('.', p1 + 7);
             if (p2 != std::string::npos) {
-                int l_idx = std::stoi(kv.first.substr(p1 + 7, p2 - p1 - 7));
-                if (l_idx + 1 > max_layer) max_layer = l_idx + 1;
+                // parseInt64 rather than std::stoi: a name like "model.layers.foo.x"
+                // makes std::stoi throw, and this is reached through the extern "C"
+                // AntigravityEngineLoadModel.
+                int64_t l_idx = 0;
+                if (antigravity::parseInt64(kv.first.substr(p1 + 7, p2 - p1 - 7), l_idx)
+                    && l_idx >= 0 && l_idx < 100000 && l_idx + 1 > max_layer) {
+                    max_layer = (int)(l_idx + 1);
+                }
             }
         }
     }
