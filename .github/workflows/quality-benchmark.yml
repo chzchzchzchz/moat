@@ -150,6 +150,20 @@ jobs:
           ls -la models/bench
           df -h / | tail -1
 
+      # gsm8k_full_checkpoint.json in this repository is 587 problems of engine output
+      # that does not depend on the prompt, graded to 0.3% and written out as a result.
+      # An accuracy run cannot detect that: every answer is simply wrong and the verdict
+      # reads as a weak model. Establish the engine reads its input before grading it.
+      - name: Does the engine's output depend on its input?
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 tools/check_engine_sanity.py \
+            --model-dir models/bench \
+            --dylib build/lib/libantigravity_engine.dylib \
+            ${{ github.event.inputs.int4 == 'true' && '--int4' || '' }}
+
       - name: Measure GSM8K accuracy
         working-directory: antigravity-engine
         env:

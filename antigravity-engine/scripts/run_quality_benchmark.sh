@@ -115,10 +115,25 @@ ls -lh "${MODEL_DIR}"
 "${PYTHON}" -c 'import tokenizers' 2>/dev/null || "${PYTHON}" -m pip install --quiet tokenizers
 
 # ---------------------------------------------------------------------------
-say "Measuring GSM8K accuracy"
+# Before spending an hour grading, establish that the engine reads its input at all.
+# gsm8k_full_checkpoint.json in this repository is 587 problems of output that does
+# not depend on the prompt, graded to 0.3% and written out as a result. An accuracy
+# run cannot detect that — every answer is simply wrong and it reads as a weak model.
 int4_flag=()
 [ "${INT4}" = "1" ] && int4_flag=(--int4)
 
+say "Does the engine's output depend on its input?"
+if ! PYTHONPATH=src "${PYTHON}" tools/check_engine_sanity.py \
+      --model-dir "${MODEL_DIR}" \
+      --dylib build/lib/libantigravity_engine.dylib \
+      "${int4_flag[@]}"; then
+  echo "Stopping: grading an engine in this state would produce a number that looks" >&2
+  echo "like a weak model rather than the fault it is." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+say "Measuring GSM8K accuracy"
 set +e
 PYTHONPATH=src "${PYTHON}" tools/benchmark_quality.py \
   --model-dir "${MODEL_DIR}" \
