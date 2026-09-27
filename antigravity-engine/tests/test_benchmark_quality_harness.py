@@ -265,6 +265,54 @@ def test_a_null_result_carries_the_sample_size_it_would_have_needed(harness, mon
     assert result["power_note"]["problems_needed_for_5_point_effect"] > 5
 
 
+def test_zero_discordance_reports_why_rather_than_a_number(harness, monkeypatch, tmp_path):
+    """A plausible outcome: best-of-N changes nothing, so the conditions never differ.
+
+    observed_discordance() is then 0, and min_detectable_problems_paired() cannot
+    answer — a net effect cannot exceed the disagreements producing it. The note must
+    say so instead of crashing or inventing a figure.
+    """
+    module, engine = harness
+    golds = [3, 4, 5, 6]
+    dataset = write_dataset(tmp_path, golds)
+    # Every channel agrees with channel 0 on every problem, so both conditions score
+    # identically and there are no discordant pairs at all.
+    engine.script = [[g] * 8 for g in golds]
+
+    code, result = run(module, monkeypatch, tmp_path, dataset, ["--limit", "4"])
+
+    assert code == 0
+    assert not result["comparison"]["significant"]
+    note = result["power_note"]
+    assert note["observed_discordance"] == 0.0
+    assert note["problems_run"] == 4
+    # Each requirement is a string explaining why, not a number.
+    for effect in (5, 10, 15):
+        value = note[f"problems_needed_for_{effect}_point_effect"]
+        assert isinstance(value, str), f"{effect}-point entry should explain, got {value!r}"
+        assert "discordance" in value
+    # The conservative two-sample bound does not depend on discordance, so it stands.
+    assert isinstance(note["conservative_two_sample_bound_5_point"], int)
+
+
+def test_the_power_note_uses_the_discordance_the_run_observed(harness, monkeypatch, tmp_path):
+    module, engine = harness
+    golds = list(range(1, 21))
+    dataset = write_dataset(tmp_path, golds)
+    # Channel 0 wrong on the first 4 problems only, so 4 of 20 disagree -> 0.20.
+    engine.script = [[0] + [g] * 7 if i < 4 else [g] * 8 for i, g in enumerate(golds)]
+
+    code, result = run(module, monkeypatch, tmp_path, dataset, ["--limit", "20"])
+
+    assert code == 0
+    note = result["power_note"]
+    assert note["observed_discordance"] == pytest.approx(4 / 20)
+    assert note["test"] == "exact McNemar (paired)"
+    # At 20% discordance the paired figure must beat the two-sample bound it is
+    # printed alongside; that difference is the whole reason for the change.
+    assert note["problems_needed_for_5_point_effect"] < note["conservative_two_sample_bound_5_point"]
+
+
 def test_one_channel_is_refused_because_the_comparison_would_be_vacuous(harness, monkeypatch, tmp_path):
     module, engine = harness
     dataset = write_dataset(tmp_path, [1, 2])
