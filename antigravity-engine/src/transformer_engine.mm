@@ -236,7 +236,17 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     rmsnormPipeline_   = makePipeline(opsLib_, @"rmsnorm_kernel");
     ropePipeline_      = makePipeline(opsLib_, @"rope_kernel");
     
-    // Load Qwen 3.5 4B Hybrid Shaders
+    // Load the hybrid-architecture shaders.
+    //
+    // Both pipelines are created and NEITHER is dispatched: grep for deltanetPipeline_
+    // and moeRouterPipeline_ and they appear only here and in the header. forwardLayer()
+    // runs a dense Llama block for every layer with no branching on layer type, so
+    // mixture-of-experts and linear-attention layers are not implemented.
+    //
+    // Kept rather than deleted, because they are the start of real work and the kernels
+    // compile and have been debugged. loadWeights() now warns when a checkpoint carries
+    // weights for either, since running those dense produces wrong output rather than
+    // an error.
     
     id<MTLLibrary> deltaLib = loadShaderLibrary(@"src/shaders/deltanet.metallib",
                                                 @"src/shaders/deltanet_forward.metal",
@@ -528,6 +538,40 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
             config_.head_dim = 128;
             config_.n_kv_heads = k_out / config_.head_dim;
             config_.norm_eps = 1e-6f;
+        }
+    }
+
+    // forwardLayer() is a dense Llama-style block for every layer: RMSNorm, grouped
+    // query attention, SwiGLU, residual. There is no branching on layer type. The
+    // engine creates deltanetPipeline_ and moeRouterPipeline_ in its constructor, which
+    // makes it look as though mixture-of-experts and linear-attention layers are
+    // supported, but neither pipeline is dispatched anywhere — verified by grep: they
+    // are assigned once and referenced nowhere else.
+    //
+    // So a checkpoint whose layers are not all dense would be run as if they were, and
+    // would produce plausible-looking garbage rather than failing. Say so at load time
+    // rather than at benchmark time.
+    {
+        bool has_experts = false, has_linear_attn = false, has_router = false;
+        for (const auto& kv : tensors) {
+            const std::string& name = kv.first;
+            if (name.find("mlp.experts.") != std::string::npos
+                || name.find("shared_expert") != std::string::npos) has_experts = true;
+            if (name.find("linear_attn") != std::string::npos
+                || name.find("conv1d") != std::string::npos
+                || name.find("A_log") != std::string::npos
+                || name.find("dt_bias") != std::string::npos) has_linear_attn = true;
+            if (name.find("mlp.gate.weight") != std::string::npos) has_router = true;
+        }
+        if (has_experts || has_linear_attn || has_router) {
+            std::cerr << "[loadWeights] WARNING: this checkpoint contains tensors for an "
+                         "architecture this engine does not implement —";
+            if (has_experts || has_router) std::cerr << " mixture-of-experts";
+            if (has_linear_attn) std::cerr << " linear-attention/state-space layers";
+            std::cerr << ". forwardLayer() runs a dense block for every layer, so those "
+                         "weights will be ignored or misinterpreted and the output will "
+                         "be wrong without failing. deltanet_forward and moe_router are "
+                         "compiled but never dispatched." << std::endl;
         }
     }
 

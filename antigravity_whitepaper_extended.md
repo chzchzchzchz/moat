@@ -78,7 +78,17 @@ To maximize throughput, the Antigravity Engine bypasses high-level frameworks (l
 We target the **Qwen3.5** parameter family (0.8B, 2.0B, and 4.0B). Qwen3.5 represents a unique challenge and opportunity for edge inference because it is not a standard LLaMA-style dense transformer.
 
 ### 4.1 Hybrid Mamba/DeltaNet & Dense Attention
-Qwen3.5 interweaves standard Dense Attention layers with state-space model (SSM) variants, specifically DeltaNet / Linear Attention layers. 
+Qwen3.5 interweaves standard Dense Attention layers with state-space model (SSM) variants, specifically DeltaNet / Linear Attention layers.
+
+> **Not implemented in the engine.** `MetalTransformerEngine::forwardLayer()` runs a
+> dense Llama block for every layer — RMSNorm, grouped query attention, SwiGLU,
+> residual — with no branching on layer type. `deltanet_forward` and `moe_router` are
+> compiled and their pipelines created, which makes it look supported, but neither is
+> ever dispatched: both are assigned in the constructor and referenced nowhere else.
+> A checkpoint with linear-attention or mixture-of-experts layers would therefore be
+> run as if dense, producing wrong output rather than an error. `loadWeights()` now
+> warns when it sees weights for either.
+ 
 * **Dense Layers:** Standard `q_proj`, `k_proj`, `v_proj`, `o_proj`. These require full $O(N^2)$ attention and large KV caches.
 * **Linear Layers:** `in_proj_qkv`, `conv1d`, `A_log`. These operate similarly to Mamba, possessing a constant-size hidden state that can be updated in $O(1)$ time per token, drastically reducing the KV cache footprint.
 
