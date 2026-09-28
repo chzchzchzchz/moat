@@ -32,6 +32,90 @@ static std::string oneTensor(const char* name, const char* dtype,
          + std::to_string(end) + "]}}";
 }
 
+// Parse a real checkpoint's header and require every field of every tensor to match what
+// Python's json module reported for the same bytes. Defined out here rather than inline
+// because there are two of these fixtures and the second one answers a question the first
+// cannot. See tests/fixtures/README_header_fixture.md.
+static void checkRealHeader(const char* label,
+                            const char* header_path,
+                            const char* expected_path,
+                            size_t expected_header_bytes,
+                            uint64_t data_start,
+                            uint64_t file_size,
+                            size_t expected_tensors) {
+    std::printf("  [%s]\n", label);
+
+    std::ifstream hf(header_path, std::ios::binary);
+    check(hf.is_open(), "the header fixture can be opened");
+    if (!hf.is_open()) return;
+    std::stringstream hb;
+    hb << hf.rdbuf();
+    const std::string header = hb.str();
+    check(header.size() == expected_header_bytes, "the fixture is the expected size");
+
+    auto r = parseSafetensorsHeader(header, data_start, file_size);
+    check(r.ok, "the real header parses");
+    if (!r.ok) {
+        std::printf("    (error was: %s)\n", r.error.c_str());
+        return;
+    }
+    check(r.tensors.size() == expected_tensors,
+          "the expected number of tensors is found, __metadata__ excluded");
+
+    std::ifstream ef(expected_path);
+    check(ef.is_open(), "the expected-values fixture can be opened");
+    size_t compared = 0;
+    bool all_match = true;
+    std::string line;
+    while (std::getline(ef, line)) {
+        if (line.empty()) continue;
+        std::vector<std::string> field;
+        size_t at = 0;
+        while (true) {
+            const size_t tab = line.find('\t', at);
+            field.push_back(line.substr(at, tab == std::string::npos
+                                            ? std::string::npos : tab - at));
+            if (tab == std::string::npos) break;
+            at = tab + 1;
+        }
+        if (field.size() != 5) { all_match = false; break; }
+
+        auto it = r.tensors.find(field[0]);
+        if (it == r.tensors.end()) { all_match = false; break; }
+        const TensorEntry& t = it->second;
+
+        if (t.dtype != field[1]) all_match = false;
+
+        std::string got_shape;
+        for (size_t i = 0; i < t.shape.size(); i++) {
+            if (i) got_shape += ",";
+            got_shape += std::to_string(t.shape[i]);
+        }
+        if (got_shape != field[2]) all_match = false;
+
+        uint64_t want_start = 0, want_end = 0;
+        if (!parseUInt64(field[3], want_start) || !parseUInt64(field[4], want_end)) {
+            all_match = false;
+        }
+        if (t.offset_start != want_start || t.offset_end != want_end) all_match = false;
+        compared++;
+    }
+    check(compared == expected_tensors, "every expected line was read");
+    check(all_match, "every tensor's dtype, shape and both offsets match Python's json");
+
+    // The offsets tile the file and the last one ends exactly at its end, so the inclusive
+    // upper boundary of the bounds check is exercised on a real checkpoint's geometry.
+    uint64_t largest_end = 0;
+    for (const auto& kv : r.tensors) {
+        if (kv.second.offset_end > largest_end) largest_end = kv.second.offset_end;
+    }
+    check(data_start + largest_end == file_size,
+          "the last tensor ends exactly at the end of the real file");
+
+    auto short_r = parseSafetensorsHeader(header, data_start, file_size - 1);
+    check(!short_r.ok, "the real header is refused when the file is one byte short");
+}
+
 int main() {
     // ---- the ordinary case -------------------------------------------------------
     {
@@ -382,94 +466,81 @@ int main() {
                         "a zero dimension gives zero elements");
     }
 
-    // ---- a REAL header, cross-checked against Python's json ------------------------
+    // ---- two REAL headers, cross-checked against Python's json ----------------------
     // Every header above is one I wrote, and a parser tested only against its author's
-    // synthetic input is not tested against reality. This is the actual 32,280-byte
-    // header of Qwen/Qwen2.5-0.5B-Instruct's model.safetensors: 290 tensors plus
-    // __metadata__, names 40 characters long, offsets tiling the file exactly. The
-    // expected values are what Python's json module reports for the same bytes, so this
-    // requires the C++ parser to agree with a real JSON parser, not with me.
-    // See tests/fixtures/README_header_fixture.md.
+    // synthetic input is not tested against reality.
     {
-        const uint64_t kDataStart = 8 + 32280;     // the file's real header_len
-        const uint64_t kFileSize  = 988097824;     // the file's real size
+        // Qwen2.5-0.5B-Instruct: 290 tensors, names 40 characters long, offsets tiling the
+        // file exactly. Properties I would not have thought to synthesise.
+        checkRealHeader("Qwen2.5-0.5B-Instruct, 290 tensors",
+                        "tests/fixtures/qwen2.5-0.5b-instruct.header.json",
+                        "tests/fixtures/qwen2.5-0.5b-instruct.expected.tsv",
+                        32280, 8 + 32280, 988097824, 290);
+    }
+    {
+        // TinyLlama-1.1B-Chat-v1.0: the checkpoint run_full_gsm8k.py names, and therefore
+        // the one behind gsm8k_full_checkpoint.json — the 587-problem artifact in which 413
+        // problems are a single repeated character. Its header is why none of the defects
+        // fixed on this branch explains that run: see the assertions below it.
+        checkRealHeader("TinyLlama-1.1B-Chat-v1.0, 201 tensors",
+                        "tests/fixtures/tinyllama-1.1b-chat-v1.0.header.json",
+                        "tests/fixtures/tinyllama-1.1b-chat-v1.0.expected.tsv",
+                        23088, 8 + 23088, 2200119864, 201);
+    }
 
-        std::ifstream hf("tests/fixtures/qwen2.5-0.5b-instruct.header.json",
+    // ---- what the TinyLlama header rules out ---------------------------------------
+    // Each defect fixed in the weight-loading path on this branch fails by producing a
+    // model that loads and runs, so "could this have caused the degenerate run?" is a
+    // question about this specific header. Asserting the answers keeps the ruling-out
+    // honest: if a future edit makes one of these false, the claim in the fixture README
+    // and in NEXT_ON_HARDWARE.md stops being true, and this test says so.
+    {
+        std::ifstream hf("tests/fixtures/tinyllama-1.1b-chat-v1.0.header.json",
                          std::ios::binary);
-        check(hf.is_open(), "the real header fixture can be opened");
+        check(hf.is_open(), "the TinyLlama fixture can be opened");
         if (hf.is_open()) {
             std::stringstream hb;
             hb << hf.rdbuf();
             const std::string header = hb.str();
-            check(header.size() == 32280, "the fixture is the expected 32280 bytes");
-
-            auto r = parseSafetensorsHeader(header, kDataStart, kFileSize);
-            check(r.ok, "the real header parses");
-            if (!r.ok) std::printf("    (error was: %s)\n", r.error.c_str());
-
+            auto r = parseSafetensorsHeader(header, 8 + 23088, 2200119864);
+            check(r.ok, "the TinyLlama header parses");
             if (r.ok) {
-                check(r.tensors.size() == 290,
-                      "290 tensors are found (291 keys less __metadata__)");
-
-                // Compare every field against Python's json, line by line.
-                std::ifstream ef("tests/fixtures/qwen2.5-0.5b-instruct.expected.tsv");
-                check(ef.is_open(), "the expected-values fixture can be opened");
-                size_t compared = 0;
-                bool all_match = true;
-                std::string line;
-                while (std::getline(ef, line)) {
-                    if (line.empty()) continue;
-                    // name \t dtype \t shape \t start \t end
-                    std::vector<std::string> field;
-                    size_t at = 0;
-                    while (true) {
-                        const size_t tab = line.find('\t', at);
-                        field.push_back(line.substr(at, tab == std::string::npos
-                                                        ? std::string::npos : tab - at));
-                        if (tab == std::string::npos) break;
-                        at = tab + 1;
-                    }
-                    if (field.size() != 5) { all_match = false; break; }
-
-                    auto it = r.tensors.find(field[0]);
-                    if (it == r.tensors.end()) { all_match = false; break; }
-                    const TensorEntry& t = it->second;
-
-                    if (t.dtype != field[1]) all_match = false;
-
-                    std::string got_shape;
-                    for (size_t i = 0; i < t.shape.size(); i++) {
-                        if (i) got_shape += ",";
-                        got_shape += std::to_string(t.shape[i]);
-                    }
-                    if (got_shape != field[2]) all_match = false;
-
-                    uint64_t want_start = 0, want_end = 0;
-                    if (!parseUInt64(field[3], want_start)
-                        || !parseUInt64(field[4], want_end)) all_match = false;
-                    if (t.offset_start != want_start || t.offset_end != want_end) {
-                        all_match = false;
-                    }
-                    compared++;
-                }
-                check(compared == 290, "all 290 expected lines were read");
-                check(all_match,
-                      "every tensor's dtype, shape and both offsets match Python's json");
-
-                // The offsets tile the file with no gaps and no overlap, and the last one
-                // ends exactly at the end of the file — so the inclusive upper boundary of
-                // the bounds check is exercised against a real checkpoint's geometry.
-                uint64_t largest_end = 0;
+                // All BF16: the F32 misread cannot have applied.
+                size_t bf16 = 0, other = 0;
                 for (const auto& kv : r.tensors) {
-                    if (kv.second.offset_end > largest_end) largest_end = kv.second.offset_end;
+                    if (kv.second.dtype == "BF16") bf16++; else other++;
                 }
-                check(kDataStart + largest_end == kFileSize,
-                      "the last tensor ends exactly at the end of the real file");
+                check(bf16 == 201 && other == 0,
+                      "all 201 tensors are BF16, so the F32 misread cannot have applied");
 
-                // One byte short must be refused, on the real header.
-                auto short_r = parseSafetensorsHeader(header, kDataStart, kFileSize - 1);
-                check(!short_r.ok,
-                      "the real header is refused when the file is one byte short");
+                // __metadata__ flat and first: the metadata misparse cannot have applied.
+                check(header.compare(0, 16, "{\"__metadata__\":") == 0,
+                      "__metadata__ is the first key, as the old skip assumed");
+                const size_t md_open = header.find('{', 15);
+                const size_t md_close = matchBrace(header, md_open);
+                const std::string md = header.substr(md_open, md_close - md_open);
+                // The raw bytes have no space after the colon; Python's json.dumps adds
+                // one when it re-renders, which is what I first wrote here.
+                check(md == "{\"format\":\"pt\"}",
+                      "__metadata__ is exactly {\"format\":\"pt\"} in the file's bytes");
+                check(md.find('{', 1) == std::string::npos,
+                      "there is no nested object in __metadata__");
+                check(md_close == header.find('}') + 1,
+                      "the first '}' in the header IS the end of __metadata__, which is "
+                      "why the old first-brace skip survived this checkpoint");
+
+                // Shape and span agree everywhere: nothing read past a tensor.
+                size_t inconsistent = 0;
+                for (const auto& kv : r.tensors) {
+                    const uint64_t implied =
+                        (uint64_t)kv.second.elementCount() * elementSizeForDtype(kv.second.dtype);
+                    if (implied != kv.second.byteLength()) inconsistent++;
+                }
+                check(inconsistent == 0,
+                      "every shape matches its span, so nothing read past a tensor");
+
+                std::printf("  (TinyLlama header rules out every weight-loading defect "
+                            "fixed on this branch as the cause of the degenerate run)\n");
             }
         }
     }

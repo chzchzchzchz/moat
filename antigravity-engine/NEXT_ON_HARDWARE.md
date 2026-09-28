@@ -41,11 +41,42 @@ addressed, and nothing else here should be attempted first.
 | candidate | why it is out |
 | :--- | :--- |
 | weights failing to load | a failed load returns −1 and `native_bridge` raises, so the script would have stopped rather than writing 587 rows |
-| BF16 → FP16 conversion | `bf16_to_fp16` tested against ground truth (BF16 is the top 16 bits of a float32) over every bit pattern in the weight range: 6,822 patterns, all exact |
+| BF16 → FP16 conversion | out, but the earlier claim here was overstated: "6,822 patterns, all exact" described a *Python reimplementation* in `tools/analyze_existing_artifacts.py`, not the shipping C++, which no test had ever run. `bf16_to_fp16` now lives in `src/weight_convert.h` and is checked against an independent reference over all 65,536 patterns; that found two real defects in it (NaN → `+Inf`, and truncation instead of rounding in the subnormal range), both now fixed and both incapable of producing constant output |
 | decode buffer ping-pong | 22 layers lands the final hidden state in `batch_hidden_1`, which is what `final_hidden` selects |
 | attention indexing | dispatched per channel, so `batch_idx` in `gqa_attention_scores_kernel` is always 0 — consistent with `kvCaches_[l][c].k_cache` having no batch dimension |
 | the causal mask | `q_pos = seq_len - q_len + q_idx` is correct for decode |
 | the sampler | it *was* broken and is fixed; it masked the failure rather than causing it |
+| the safetensors header parser | four defects fixed, all ruled out **for this checkpoint** by its own header — see below |
+| F32 read as FP16 | real, and not latent, but this checkpoint is 201/201 BF16, so it never took that path |
+| shape read past its `data_offsets` span | every one of the 201 tensors' shapes matches its span exactly |
+
+#### The weight-loading path is now ruled out by measurement, not by argument
+
+`run_full_gsm8k.py` names `TinyLlama/TinyLlama-1.1B-Chat-v1.0`'s `model.safetensors`, so
+that is the checkpoint behind `gsm8k_full_checkpoint.json`. Its 23,088-byte header is
+committed at `tests/fixtures/tinyllama-1.1b-chat-v1.0.header.json` — header bytes only, no
+weights — and `tests/test_safetensors_header.cpp` asserts the properties that decide
+whether each defect could have applied:
+
+| property | value | the defect it rules out |
+| :--- | :--- | :--- |
+| dtypes | 201 of 201 **BF16** | F32 read as FP16, which copies half the tensor and misreads every value |
+| `__metadata__` | `{"format":"pt"}`, the first key | the `find('}')` skip: flat metadata is the one shape it survives |
+| nested object in metadata | none | the same skip's misparse, which loses the real tensor |
+| `}` inside a metadata value | none | the string-literal variant of it |
+| shape vs `data_offsets` span | consistent for all 201 | reading past a tensor in the conversion or transposing loop |
+| `data_start` + largest `offset_end` | 2,200,119,864 = the file size | the missing bounds check against a truncated file |
+
+The two `bf16_to_fp16` defects found by testing it for the first time — a NaN with a
+mantissa below `0x10` becoming `+Inf`, and the subnormal path truncating instead of
+rounding — are also out. Neither produces constant output: the first needs a NaN already in
+the checkpoint, and the second is ±1 ulp on magnitudes below 6.1e-05.
+
+**So nothing in the weight-loading path explains the degenerate run.** Every defect there
+is real and each fails by producing a model that loads and runs, which is why they were
+worth finding; none of them is this. Item 1 below is still the first thing to do, and a
+reader who assumed the weight-loading audit had closed the question would skip it.
+
 
 ## 2. If it still fails, localise it
 
