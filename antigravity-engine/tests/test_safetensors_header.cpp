@@ -272,8 +272,10 @@ int main() {
         auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size() + 4);
         check(r.ok, "a zero-dimensional tensor parses");
         if (r.ok) {
-            check(r.tensors.at("a.scale").elementCount() == 0,
-                  "an empty shape reports zero elements rather than one");
+            check(r.tensors.at("a.scale").elementCount() == 1,
+                  "an empty shape is a scalar: one element, as numpy and loadTensor agree");
+            check(r.tensors.at("a.scale").byteLength() == 4,
+                  "the scalar's four bytes are its F32 element");
         }
     }
 
@@ -308,6 +310,76 @@ int main() {
             }
             check(contiguous, "every tensor keeps the offset it was given in the header");
         }
+    }
+
+    // ---- dtype element sizes ------------------------------------------------------
+    {
+        check(elementSizeForDtype("F32") == 4, "F32 is four bytes");
+        check(elementSizeForDtype("F16") == 2, "F16 is two bytes");
+        check(elementSizeForDtype("BF16") == 2, "BF16 is two bytes");
+        check(elementSizeForDtype("F64") == 8, "F64 is eight bytes");
+        check(elementSizeForDtype("I64") == 8, "I64 is eight bytes");
+        check(elementSizeForDtype("I8") == 1, "I8 is one byte");
+        check(elementSizeForDtype("BOOL") == 1, "BOOL is one byte");
+        check(elementSizeForDtype("F8_E4M3") == 1, "F8_E4M3 is one byte");
+        check(elementSizeForDtype("") == 0, "an empty dtype is unknown");
+        check(elementSizeForDtype("COMPLEX128") == 0, "an unrecognised dtype is unknown");
+        // The lowercase spellings loadTensor's dtype dispatch accepts are sized here too,
+        // so a header using one is still cross-checked rather than skipped.
+        check(elementSizeForDtype("f32") == 4, "the lowercase f32 spelling is sized");
+        check(elementSizeForDtype("bf16") == 2, "the lowercase bf16 spelling is sized");
+        check(elementSizeForDtype("bfloat16") == 2, "bfloat16 is sized");
+        check(elementSizeForDtype("float16") == 2, "float16 is sized");
+    }
+
+    // ---- shape cross-checked against the byte span --------------------------------
+    // Nothing compared these. loadTensor's BF16 conversion loop and its transposing loop
+    // both iterate shape[0]*shape[1] elements with no reference to data_offsets, so a
+    // shape claiming more elements than the span holds read past the tensor.
+    {
+        // 4 F32 elements need 16 bytes, not 8.
+        const std::string h = oneTensor("a.weight", "F32", "[4]", 0, 8);
+        auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size() + 8);
+        check(!r.ok, "a shape implying more bytes than the span holds is refused");
+        check(r.error.find("a.weight") != std::string::npos,
+              "the shape/span refusal names the tensor");
+        check(r.error.find("16") != std::string::npos
+              && r.error.find("8") != std::string::npos,
+              "the refusal gives both the implied and the actual byte count");
+    }
+    {
+        const std::string h = oneTensor("a.weight", "F32", "[4]", 0, 16);
+        auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size() + 16);
+        check(r.ok, "an F32 shape matching its span is accepted");
+    }
+    {
+        // The span larger than the shape needs is also a mismatch: loadTensor would
+        // silently load a prefix.
+        const std::string h = oneTensor("a.weight", "F16", "[4]", 0, 32);
+        auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size() + 32);
+        check(!r.ok, "a span larger than the shape requires is refused too");
+    }
+    {
+        const std::string h = oneTensor("a.weight", "BF16", "[32000,2048]", 0, 131072000);
+        auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size() + 131072000);
+        check(r.ok, "a real-sized BF16 embedding matrix checks out");
+    }
+    {
+        // An unknown dtype is not cross-checked and not refused: a checkpoint may carry
+        // tensors this engine never loads.
+        const std::string h = oneTensor("a.weight", "COMPLEX128", "[4]", 0, 7);
+        auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size() + 7);
+        check(r.ok, "an unknown dtype is parsed rather than refused");
+        check(r.tensors.at("a.weight").dtype == "COMPLEX128",
+              "the unknown dtype is reported as-is so the caller can refuse it");
+    }
+    {
+        // A zero dimension: 0 elements, 0 bytes. Legal and consistent.
+        const std::string h = oneTensor("a.weight", "F32", "[0,2048]", 0, 0);
+        auto r = parseSafetensorsHeader(h, 8 + h.size(), 8 + h.size());
+        check(r.ok, "a tensor with a zero dimension and no bytes is consistent");
+        if (r.ok) check(r.tensors.at("a.weight").elementCount() == 0,
+                        "a zero dimension gives zero elements");
     }
 
     // ---- a REAL header, cross-checked against Python's json ------------------------

@@ -31,43 +31,19 @@
 #include "shader_sources.h"
 #include "engine_limits.h"
 #include "sampling.h"
+#include "weight_convert.h"
 #include "safetensors_header.h"
 
-// BFloat16 → Float16 conversion helper
-static inline uint16_t bf16_to_fp16(uint16_t bf16) {
-    // BFloat16: 1 sign + 8 exp + 7 mantissa
-    // Float16:  1 sign + 5 exp + 10 mantissa
-    uint32_t sign = (bf16 >> 15) & 1;
-    int32_t  exp  = ((bf16 >> 7) & 0xFF) - 127;  // unbias BF16 exponent
-    uint32_t mant = bf16 & 0x7F;                  // 7-bit mantissa
-    
-    // Handle special cases
-    if (exp == 128) {
-        // Inf or NaN → FP16 Inf/NaN
-        return (uint16_t)((sign << 15) | (0x1F << 10) | (mant >> 4));
-    }
-    if (exp < -24) {
-        // Underflow to zero
-        return (uint16_t)(sign << 15);
-    }
-    
-    // Rebias for FP16 (bias=15)
-    int32_t fp16_exp = exp + 15;
-    // Extend mantissa from 7-bit to 10-bit
-    uint32_t fp16_mant = mant << 3;
-    
-    if (fp16_exp <= 0) {
-        // Subnormal in FP16
-        fp16_mant = (0x400 | fp16_mant) >> (1 - fp16_exp);
-        fp16_exp = 0;
-    } else if (fp16_exp >= 0x1F) {
-        // Overflow to Inf
-        fp16_exp = 0x1F;
-        fp16_mant = 0;
-    }
-    
-    return (uint16_t)((sign << 15) | (fp16_exp << 10) | (fp16_mant & 0x3FF));
-}
+// BFloat16 -> Float16 conversion now lives in src/weight_convert.h, where a test can
+// reach it. It was here, untestable, and what "verified" meant was a Python
+// reimplementation in tools/analyze_existing_artifacts.py agreeing with itself.
+// Testing the real function turned up two defects in it: a BF16 NaN whose mantissa was
+// below 0x10 became +Inf, and the subnormal path truncated where it should round, which
+// disagreed with a correct reference on 1278 of the 65,536 bit patterns.
+//
+// loadTensor reaches it through antigravity::elementAsFp16, which also handles F16 and
+// F32, so there is no longer a caller here that names it directly.
+
 
 
 // ============================================================================
@@ -612,38 +588,75 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
                   << " offset=" << info.offset_start << std::endl;
         size_t num_elements = 1;
         for (auto d : info.shape) num_elements *= d;
-        
+
+        // Which dtypes this engine can actually load into an FP16 buffer.
+        //
+        // This used to be a single `is_bf16` flag, and everything that was not BF16 took a
+        // branch commented "Already FP16 or compatible, direct copy":
+        //
+        //     memcpy(dest, src, min(fp16_bytes, offset_end - offset_start));
+        //
+        // F32 is not compatible. For N elements the source holds 4N bytes and fp16_bytes is
+        // 2N, so the min() picked 2N and copied the first half of the F32 data into the FP16
+        // buffer — reinterpreting each pair of F32 bytes as one FP16 value, and leaving the
+        // second half of the tensor unread. Every weight in it wrong, no error reported, and
+        // a forward pass whose output does not vary with its input. Unlike most of what this
+        // branch has fixed, that is not latent: it fires on any F32 checkpoint, and plenty
+        // of converted checkpoints are F32.
+        //
+        // So the dtype is now named explicitly, F32 is converted properly, and anything this
+        // engine cannot represent is refused by name instead of being copied as if it were
+        // FP16.
+        const antigravity::SourceDtype src_dtype =
+            antigravity::sourceDtypeFromName(info.dtype);
+        if (src_dtype == antigravity::SourceDtype::Unsupported) {
+            std::cerr << "[loadTensor] " << name << " has dtype " << info.dtype
+                      << ", which this engine cannot load into an FP16 buffer. Convert the "
+                         "checkpoint to F16, BF16 or F32 first. (It used to be copied as if "
+                         "it were FP16, which produced wrong weights and no error.)"
+                      << std::endl;
+            return nil;
+        }
+
+        // parseSafetensorsHeader has already required elementCount * elementSize to equal
+        // the data_offsets span, so the source really does hold num_elements values of this
+        // dtype. Assert the relationship the loops below depend on rather than trusting it
+        // silently: the two conversion loops index by element and have no min() to save them.
+        const size_t src_element_size = antigravity::sourceElementSize(src_dtype);
+        const uint64_t src_bytes = info.offset_end - info.offset_start;
+        if (src_bytes != (uint64_t)num_elements * src_element_size) {
+            std::cerr << "[loadTensor] " << name << " spans " << src_bytes
+                      << " bytes but its shape and dtype " << info.dtype << " require "
+                      << (uint64_t)num_elements * src_element_size << std::endl;
+            return nil;
+        }
+
         size_t fp16_bytes = num_elements * sizeof(uint16_t);
         id<MTLBuffer> buf = [device_ newBufferWithLength:fp16_bytes options:MTLResourceStorageModeShared];
         if (!buf) return nil;
-        
+
         uint16_t* dest = (uint16_t*)[buf contents];
-        const uint16_t* src = (const uint16_t*)(raw_data + info.offset_start);
-        
-        bool is_bf16 = (info.dtype == "BF16" || info.dtype == "bf16" || info.dtype == "bfloat16");
-        
+        const char* src_bytes_ptr = raw_data + info.offset_start;
+
         if (transpose_2d && info.shape.size() == 2) {
             size_t rows = info.shape[0]; // out_features
             size_t cols = info.shape[1]; // in_features
             for (size_t r = 0; r < rows; r++) {
                 for (size_t c = 0; c < cols; c++) {
-                    uint16_t val = src[r * cols + c];
-                    if (is_bf16) val = bf16_to_fp16(val);
-                    dest[c * rows + r] = val;
+                    dest[c * rows + r] =
+                        antigravity::elementAsFp16(src_bytes_ptr, src_dtype, r * cols + c);
                 }
             }
+        } else if (src_dtype == antigravity::SourceDtype::FP16) {
+            // The only case where the bytes are already what the buffer wants. The length
+            // is now exact rather than a min() against the span.
+            std::memcpy(dest, src_bytes_ptr, fp16_bytes);
         } else {
-            if (is_bf16) {
-                // Convert BFloat16 → Float16
-                for (size_t i = 0; i < num_elements; i++) {
-                    dest[i] = bf16_to_fp16(src[i]);
-                }
-            } else {
-                // Already FP16 or compatible, direct copy
-                std::memcpy(dest, src, std::min(fp16_bytes, (size_t)(info.offset_end - info.offset_start)));
+            for (size_t i = 0; i < num_elements; i++) {
+                dest[i] = antigravity::elementAsFp16(src_bytes_ptr, src_dtype, i);
             }
         }
-        
+
         allocatedBytes_ += fp16_bytes;
 
         if (quantizable && quantizeOnLoad_ && info.shape.size() == 2) {

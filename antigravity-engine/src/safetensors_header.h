@@ -39,12 +39,36 @@ struct TensorEntry {
     uint64_t byteLength() const {
         return offset_end >= offset_start ? offset_end - offset_start : 0;
     }
+    // An empty shape is a scalar: one element. This matches numpy's prod([]) == 1 and,
+    // more to the point, loadTensor's own `num_elements = 1; for (d : shape) *= d;`.
+    // An earlier version of this returned 0 for an empty shape, which disagreed with the
+    // code it is meant to model and made the shape/offset cross-check reject a scalar.
     int64_t elementCount() const {
         int64_t n = 1;
         for (int64_t d : shape) n *= d;
-        return shape.empty() ? 0 : n;
+        return n;
     }
 };
+
+// Bytes per element for a safetensors dtype, or 0 if this is a dtype we do not know.
+//
+// This exists because loadTensor decided BF16-or-not and treated everything else as
+// "already FP16 or compatible, direct copy". F32 is not compatible: for N elements the
+// source is 4N bytes and the destination 2N, so the copy took the first 2N bytes — which
+// reinterprets pairs of F32 bytes as FP16 values and covers only the first half of the
+// tensor. Every weight wrong, no error, and output that does not vary with its input.
+inline uint32_t elementSizeForDtype(const std::string& dtype) {
+    if (dtype == "F64" || dtype == "I64" || dtype == "U64"
+        || dtype == "f64" || dtype == "float64") return 8;
+    if (dtype == "F32" || dtype == "I32" || dtype == "U32"
+        || dtype == "f32" || dtype == "float32") return 4;
+    if (dtype == "F16" || dtype == "BF16" || dtype == "I16" || dtype == "U16"
+        || dtype == "f16" || dtype == "float16"
+        || dtype == "bf16" || dtype == "bfloat16") return 2;
+    if (dtype == "I8" || dtype == "U8" || dtype == "BOOL"
+        || dtype == "F8_E4M3" || dtype == "F8_E5M2") return 1;
+    return 0;
+}
 
 struct HeaderParseResult {
     bool ok = false;
@@ -219,6 +243,25 @@ inline HeaderParseResult parseSafetensorsHeader(const std::string& header_json,
                          + " bytes; the checkpoint is truncated or its header is wrong";
             return result;
         }
+
+        // Cross-check the shape against the byte span. Nothing compared these, and two
+        // of loadTensor's three copy paths — the BF16 conversion loop and the transposing
+        // loop — iterate shape[0]*shape[1] elements with no reference to data_offsets at
+        // all. A shape claiming more elements than the span holds therefore read past the
+        // tensor, into the next one or past the end of the mapping.
+        const uint32_t element_size = elementSizeForDtype(entry.dtype);
+        if (element_size != 0) {
+            const uint64_t expected = (uint64_t)entry.elementCount() * element_size;
+            if (expected != entry.byteLength()) {
+                result.error = "tensor '" + key + "' has shape and dtype "
+                             + entry.dtype + " implying " + std::to_string(expected)
+                             + " bytes but data_offsets spans "
+                             + std::to_string(entry.byteLength());
+                return result;
+            }
+        }
+        // An unknown dtype is not refused here: a checkpoint may carry tensors this engine
+        // never loads. loadTensor refuses one it actually needs.
 
         result.tensors[key] = entry;
         pos = after;

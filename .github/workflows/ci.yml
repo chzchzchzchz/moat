@@ -78,6 +78,22 @@ jobs:
             tests/test_safetensors_header.cpp -o bin/test_safetensors_header
           ./bin/test_safetensors_header
 
+      # Every weight in a BF16 checkpoint passes through bf16_to_fp16, which lived inside
+      # transformer_engine.mm where no test could reach it — what "verified" meant was a
+      # Python reimplementation agreeing with itself. Running the real function against an
+      # independent reference over all 65,536 bit patterns found two defects: a BF16 NaN
+      # with a mantissa below 0x10 became +Inf, and the subnormal path truncated where it
+      # should round. And F32 tensors had no path at all: they took a branch commented
+      # "already FP16 or compatible, direct copy", which copies the first half of the data
+      # and reads each pair of F32 bytes as one FP16 value. That one is not latent.
+      - name: Check weight dtype conversion
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_weight_convert.cpp -o bin/test_weight_convert
+          ./bin/test_weight_convert
+
       # The xcframework packages only the static library — no .metal and no
       # .metallib travel with it — and every shader path the engine tries is
       # relative to the process working directory, which on a device resolves to
