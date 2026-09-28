@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 import time
@@ -81,6 +82,8 @@ def main() -> int:
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="quality_gsm8k_reference.json")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="ignore any checkpoint and start from the first problem")
     args = ap.parse_args()
 
     if args.samples < 2:
@@ -100,17 +103,91 @@ def main() -> int:
     import torch                                    # noqa: PLC0415
     from transformers import AutoModelForCausalLM, AutoTokenizer   # noqa: PLC0415
 
-    torch.manual_seed(args.seed)
     print(f"loading {args.model} on CPU (this is the REFERENCE model, not the engine)")
     tok = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32)
     model.eval()
 
+    # Checkpointing.
+    #
+    # This tool wrote its output once, at the very end. A 50-problem run at 8 samples and
+    # 768 tokens takes about two hours on CPU, and when the container holding one was
+    # reclaimed at problem 14 every one of those problems was lost — two hours for nothing,
+    # with a complete-looking artifact from an earlier, shorter run still sitting at the
+    # output path to be mistaken for it. So the run now saves after every problem and picks
+    # up where it left off.
+    #
+    # The fingerprint is the point. Resuming into records generated with a different token
+    # budget, sample count or seed would silently mix two different measurements into one
+    # artifact, which is precisely the class of failure this repository keeps finding. Any
+    # difference refuses the checkpoint rather than merging it.
+    fingerprint = {
+        "model": args.model,
+        "dataset": str(dataset),
+        "limit": args.limit,
+        "samples": args.samples,
+        "max_new_tokens": args.max_tokens,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "seed": args.seed,
+    }
+    checkpoint_path = Path(str(args.out) + ".partial")
+
     records, errors = [], []
     baseline_correct, candidate_correct = [], []
+    saved = None
+
+    if checkpoint_path.exists() and not args.no_resume:
+        try:
+            saved = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"checkpoint at {checkpoint_path} is unreadable ({exc}); starting over",
+                  file=sys.stderr)
+            saved = None
+        if saved is not None:
+            if saved.get("fingerprint") != fingerprint:
+                print(f"checkpoint at {checkpoint_path} was made with different settings; "
+                      f"refusing to mix two measurements. Delete it, or pass --no-resume.",
+                      file=sys.stderr)
+                for key, value in fingerprint.items():
+                    was = saved.get("fingerprint", {}).get(key)
+                    if was != value:
+                        print(f"  {key}: checkpoint has {was!r}, this run wants {value!r}",
+                              file=sys.stderr)
+                return 1
+            records = saved.get("records", [])
+            errors = saved.get("errors", [])
+            baseline_correct = [bool(r["baseline_correct"]) for r in records]
+            candidate_correct = [bool(r["candidate_correct"]) for r in records]
+            print(f"resuming from {checkpoint_path}: {len(records)} problem(s) already done")
+
+    done_indices = {r["problem_index"] for r in records}
+    # Elapsed time has to carry across a resume or it describes only the last leg.
+    elapsed_before = float(saved.get("elapsed_seconds", 0.0)) if saved and records else 0.0
     started = time.time()
 
+    def save_checkpoint() -> None:
+        """Write the checkpoint atomically, so a kill mid-write cannot corrupt it."""
+        payload = {
+            "fingerprint": fingerprint,
+            "elapsed_seconds": elapsed_before + (time.time() - started),
+            "records": records,
+            "errors": errors,
+        }
+        tmp = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, checkpoint_path)
+
     for position, problem in enumerate(problems):
+        if problem["index"] in done_indices:
+            continue
+        # Seed per problem rather than once for the whole run. Seeding once makes every
+        # problem's samples depend on all the generation before it, so a run resumed at
+        # problem 14 would produce different samples from one that never stopped — the
+        # artifact would not be reproducible from its own config. Deriving the seed from the
+        # problem index makes each problem independent and the whole run resumable exactly.
+        torch.manual_seed(args.seed * 1000003 + problem["index"])
+
         messages = [{"role": "user", "content": PROMPT.format(question=problem["question"])}]
         text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tok(text, return_tensors="pt")
@@ -171,6 +248,8 @@ def main() -> int:
             "sample_texts": texts,
         })
 
+        save_checkpoint()
+
         done = len(baseline_correct)
         print(f"  {position + 1}/{len(problems)}  "
               f"baseline {sum(baseline_correct)}/{done}  "
@@ -207,7 +286,7 @@ def main() -> int:
             "baseline": "sample 0 alone",
             "candidate": f"majority vote over {args.samples} samples",
         },
-        "elapsed_seconds": time.time() - started,
+        "elapsed_seconds": elapsed_before + (time.time() - started),
         "comparison": comparison,
         "extraction": {
             "samples_with_no_extractable_answer": no_answer,
@@ -248,6 +327,8 @@ def main() -> int:
     result["sanity_warnings"] = warnings
 
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    # The full artifact is on disk, so the checkpoint is no longer the only copy.
+    checkpoint_path.unlink(missing_ok=True)
 
     base, cand = comparison["baseline"], comparison["candidate"]
     print()
