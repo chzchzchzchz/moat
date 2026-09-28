@@ -1820,11 +1820,27 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
     int total_prefill_len = n_patches + text_len;
 
     // ---- Prefill: Vision Patches first, then Text Tokens ----
+    // One command buffer per prefill token, holding all n_channels — not one per channel.
+    //
+    // This was `for t { for c { commit; waitUntilCompleted } }`, so prefill cost
+    // total_prefill_len * n_channels CPU-GPU round trips: eight times more than the text
+    // path for the same prompt. The channels can share a command buffer because they share
+    // nothing else: channel c reads and writes only hidden_bufs[c] and hidden_bufs2[c], and
+    // forwardLayer's channel argument selects kvCaches_[l][c]. The CPU-side write of an
+    // image patch below also targets hidden_bufs[c] alone, and every such write happens
+    // before this command buffer is committed, so the GPU sees all of them.
+    //
+    // The token loop is NOT merged, and that asymmetry is the point: hidden_bufs[c] is
+    // REUSED for the next token. Encoding tokens t and t+1 into one command buffer would let
+    // the CPU overwrite hidden_bufs[c] with token t+1's embedding while the GPU was still
+    // reading it for token t. The text path in generate() can merge across tokens because
+    // nothing there writes the hidden buffer from the CPU between tokens; here something
+    // does. Merging both loops would be a race that produced plausible output.
     for (int t = 0; t < total_prefill_len; t++) {
-        for (int c = 0; c < config_.n_channels; c++) {
-            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
 
+        for (int c = 0; c < config_.n_channels; c++) {
             if (t < n_patches && image_embeddings != nullptr) {
                 // Image patch embedding: convert FP32 to FP16 and copy directly to hidden_bufs[c]
                 _Float16* dst = (_Float16*)[hidden_bufs[c] contents];
@@ -1860,17 +1876,31 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                 id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
                 forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, t, c);
             }
-
-            [enc endEncoding];
-            [cmdBuf commit];
-            [cmdBuf waitUntilCompleted];
         }
+
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
     }
 
     // ---- Decode: Autoregressive generation ----
     for (int step = 0; step < max_new_tokens; step++) {
         auto t_step_start = std::chrono::high_resolution_clock::now();
 
+        // The channel loop below still commits and waits per channel, unlike the prefill
+        // loop above, and for a reason that is not a missed optimisation: every channel's
+        // lm_head writes the SAME scratchLogits_ buffer, and the CPU reads it and samples
+        // from it before the next channel runs. Merging the channels into one command buffer
+        // would have channel c+1 overwrite the logits channel c has not been sampled from
+        // yet — the same class of race as merging prefill across tokens.
+        //
+        // The fix is a logits buffer per channel, which is cheap (vocab_size * 2 bytes *
+        // n_channels: about 512 KB at a 32k vocabulary, 2.4 MB at Qwen's 151,936) and would
+        // let all n_channels share one command buffer per step, as generate() already does.
+        // It is left undone deliberately: this path is exposed through the C API and
+        // native_bridge but no test or benchmark calls it, so the change could not be
+        // validated by anything, and this engine's history is of plausible-looking output
+        // from untested paths. Recorded in NEXT_ON_HARDWARE.md instead.
         for (int c = 0; c < config_.n_channels; c++) {
             if (!channel_active[c]) continue;
 

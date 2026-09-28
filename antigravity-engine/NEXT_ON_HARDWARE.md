@@ -144,9 +144,26 @@ follow from its input.
 **This is not measured.** It removes 95% of the prefill round trips by construction; whether
 prefill was a material share of end-to-end time is a question for a device.
 
-`generateMultimodal()` is worse: its loop is `for t { for c { … commit;
-waitUntilCompleted; } }`, and it forwards one channel at a time rather than batching
-them, which gives up the bandwidth sharing the project's whole premise rests on.
+`generateMultimodal()` was worse: `for t { for c { … commit; waitUntilCompleted } }`, so
+prefill cost `prefill_len * n_channels` round trips — eight times the text path for the same
+prompt. **Its prefill loop is fixed:** the channels now share one command buffer per token,
+because they share nothing else (channel *c* touches only `hidden_bufs[c]`, `hidden_bufs2[c]`
+and `kvCaches_[l][c]`). The token loop is deliberately *not* merged there, unlike in
+`generate()`: `hidden_bufs[c]` is reused for the next token and written from the CPU for image
+patches, so merging tokens would let the CPU overwrite a buffer the GPU was still reading.
+
+**Its decode loop is still per-channel, and this is the one throughput item left specified but
+not done.** Every channel's `lm_head` writes the same `scratchLogits_`, and the CPU samples
+from it before the next channel runs, so merging the channels would have channel *c+1*
+overwrite logits that channel *c* has not been sampled from yet. The fix is a logits buffer
+per channel — `vocab_size * 2 * n_channels`, about 512 KB at a 32k vocabulary and 2.4 MB at
+Qwen's 151,936 — after which all channels share one command buffer per step, as `generate()`
+already does.
+
+It is left undone on purpose. This path is exposed through the C API and `native_bridge`, but
+no test or benchmark calls it, so the change could be validated by nothing at all. Given what
+this repository's history is made of, an unverifiable restructure of an unexercised path is
+the wrong trade; it wants a caller and a test first.
 
 `metal_hardware_proof.md` §2.1 works out that the GEMM microbenchmark implies a ceiling
 near 123 tok/s per channel while the committed artifacts report about 5.14 — a ~24×
