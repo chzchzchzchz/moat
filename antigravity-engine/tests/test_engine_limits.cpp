@@ -126,6 +126,77 @@ int main() {
         check(remainingCapacity(9999, 2048) == 0, "an over-long prompt leaves no round");
     }
 
+    // ---- Prefill chunking --------------------------------------------------
+    // The prefill loop encodes several prompt tokens into one command buffer rather than
+    // one buffer per token. If these bounds are wrong, prefill skips prompt tokens: the
+    // prompt is partially ignored and the model produces confident output that does not
+    // follow from its input, with nothing failing. Same class as the bounds above, so both
+    // the chunk size and the coverage of the ranges are checked here.
+    {
+        check(prefillChunkTokens(22) >= 1, "22 layers gives at least one token per buffer");
+        check(prefillChunkTokens(22) <= 64,
+              "the chunk is capped, so a long prompt cannot encode an unbounded buffer");
+        // The cap only binds for a shallow model: at 22 layers the dispatch budget already
+        // gives 31, so asserting "<= 64" there passes whether or not the cap exists.
+        // Mutation testing caught that — removing the cap left the whole suite green. A
+        // 1-layer model's budget is 8192/12 = 682, so the cap is what holds it to 64.
+        check(prefillChunkTokens(1) == 64,
+              "a shallow model is held to the 64-token cap, not its larger dispatch budget");
+        check(prefillChunkTokens(2) == 64, "a 2-layer model is capped too");
+        check(prefillChunkTokens(80) <= prefillChunkTokens(22),
+              "a deeper model gets no more tokens per command buffer than a shallow one");
+        check(prefillChunkTokens(0) >= 1, "zero layers still gives a positive chunk");
+        check(prefillChunkTokens(-5) >= 1, "a negative layer count still gives a positive chunk");
+        check(prefillChunkTokens(1000000) >= 1, "an absurd layer count still gives at least 1");
+        check(prefillChunkTokens(100000) == 1,
+              "a model deep enough to exhaust the dispatch budget falls back to one token");
+    }
+    {
+        // For every total and chunk size, the ranges must visit every index in [0, total)
+        // exactly once, in order, with no gap and no overlap.
+        bool all_good = true;
+        int cases = 0;
+        for (int total = 0; total <= 200; total++) {
+            for (int chunk : {1, 2, 3, 7, 16, 31, 64, 200, 1000}) {
+                cases++;
+                const auto ranges = prefillChunks(total, chunk);
+                int expected_next = 0;
+                bool ok = true;
+                for (const auto& r : ranges) {
+                    if (r.first != expected_next) ok = false;    // gap or overlap
+                    if (r.second <= r.first) ok = false;         // empty range
+                    if (r.second > total) ok = false;            // past the end
+                    if (r.second - r.first > chunk) ok = false;  // over the chunk size
+                    expected_next = r.second;
+                }
+                if (expected_next != total) ok = false;          // did not reach the end
+                if (total == 0 && !ranges.empty()) ok = false;   // nothing to do
+                if (!ok) all_good = false;
+            }
+        }
+        check(cases == 201 * 9, "every total/chunk combination was checked");
+        check(all_good, "the chunk ranges cover every prompt token exactly once, for every "
+                        "total and chunk size");
+    }
+    {
+        // A chunk of 0 or negative must not loop forever or drop work.
+        int seen = 0;
+        for (const auto& r : prefillChunks(5, 0)) seen += r.second - r.first;
+        check(seen == 5, "a zero chunk size still covers every token");
+        seen = 0;
+        for (const auto& r : prefillChunks(5, -3)) seen += r.second - r.first;
+        check(seen == 5, "a negative chunk size still covers every token");
+        check(prefillChunks(-1, 4).empty(), "a negative total yields no ranges");
+
+        // The realistic case: a 100-token prompt (99 prefill steps) on 22 layers.
+        const auto realistic = prefillChunks(99, prefillChunkTokens(22));
+        check(!realistic.empty(), "a 99-token prefill produces ranges");
+        check(realistic.size() < 99,
+              "a 99-token prefill takes fewer than 99 command buffers, which is the point");
+        printf("        (99-token prefill on 22 layers: %zu command buffer(s), was 99)\n",
+               realistic.size());
+    }
+
     // ---- Messages ----------------------------------------------------------
     check(std::strcmp(describe(LimitError::Ok), "ok") == 0, "describe(Ok) is \"ok\"");
     bool described = true;

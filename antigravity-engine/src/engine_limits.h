@@ -22,6 +22,8 @@
 //                generation longer than the cache walks off the end of it.
 //
 #include <cstdint>
+#include <vector>
+#include <utility>
 
 namespace antigravity {
 
@@ -82,6 +84,44 @@ inline int32_t remainingCapacity(int32_t prompt_len, int32_t max_seq_len) {
     if (prompt_len < 0 || max_seq_len <= 0) return 0;
     if (prompt_len >= max_seq_len) return 0;
     return max_seq_len - prompt_len;
+}
+
+// How many prompt tokens to encode into one command buffer during prefill.
+//
+// The prefill loop used to create a command buffer per prompt token and block on
+// waitUntilCompleted each time, so a 100-token prompt cost 100 CPU-GPU round trips before a
+// single output token appeared. Several tokens can share one command buffer: nothing in that
+// loop reads a GPU result back, and a serial MTLComputeCommandEncoder keeps the dispatches
+// in encoding order. See the comment at the loop in transformer_engine.mm.
+//
+// It is chunked rather than made one buffer for the whole prompt because a command buffer
+// holds every dispatch encoded into it until committed. At roughly a dozen dispatches per
+// layer per token, a 2048-token prompt over 22 layers would encode half a million dispatches
+// before anything started executing.
+//
+// Lives here, with the other bounds, because getting it wrong means prefill silently skips
+// prompt tokens — a partially ignored prompt, which produces confident output that does not
+// follow from its input. That is the failure this engine's history is made of, so the value
+// and the iteration over it are both tested. Returns at least 1 for any n_layers, including
+// zero or negative.
+inline int prefillChunkTokens(int n_layers) {
+    const int dispatches_per_token = n_layers > 0 ? n_layers * 12 : 1;
+    const int budget = 8192 / (dispatches_per_token > 0 ? dispatches_per_token : 1);
+    if (budget < 1) return 1;
+    return budget > 64 ? 64 : budget;
+}
+
+// The [start, end) ranges a chunked prefill loop should visit to cover [0, total) exactly.
+// Returned rather than open-coded so the coverage property is testable.
+inline std::vector<std::pair<int, int>> prefillChunks(int total, int chunk) {
+    std::vector<std::pair<int, int>> ranges;
+    if (total <= 0) return ranges;
+    if (chunk < 1) chunk = 1;
+    for (int start = 0; start < total; start += chunk) {
+        const int end = (start + chunk < total) ? start + chunk : total;
+        ranges.emplace_back(start, end);
+    }
+    return ranges;
 }
 
 }  // namespace antigravity

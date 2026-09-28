@@ -1533,36 +1533,75 @@ GenerationResult MetalTransformerEngine::generate(
     int decode_steps = 0;
     
     // ---- Prefill: Process prompt tokens 0..prompt_len-2 into KV cache ----
-    for (int t = 0; t < prompt_len - 1; t++) {
+    //
+    // Several prompt tokens go into ONE command buffer. This loop used to create a command
+    // buffer per prompt token and block on waitUntilCompleted each time, so a 100-token
+    // prompt cost 100 CPU-GPU round trips before a single output token was produced.
+    //
+    // Merging them is safe, and for reasons worth writing down rather than rediscovering:
+    //
+    //   - Nothing in the loop reads a GPU result back. The only CPU-side input is
+    //     prompt_tokens[t], which is known before the loop starts, and setBytes: copies the
+    //     value into the encoder at encode time, so each dispatch carries its own copy of
+    //     the token id rather than aliasing a variable that the next iteration overwrites.
+    //   - The dispatches still execute in encoding order. MTLComputeCommandEncoder is
+    //     serial unless it is created with MTLDispatchTypeConcurrent, which this is not, so
+    //     each dispatch sees the previous one's writes. Token t's attention therefore still
+    //     reads the KV cache entries token t-1 wrote.
+    //   - forwardLayer() takes cmdBuf but never uses it — only the encoder. It does not end
+    //     the encoding, create a blit encoder, commit, or read buffer contents, so it has no
+    //     need of a per-token command buffer boundary. (That unused parameter is a hint that
+    //     the split was never deliberate.)
+    //
+    // Nothing about the computation changes: the same dispatches in the same order, with
+    // only the commit granularity different. That is why this is safe to change without a
+    // device to test it on.
+    //
+    // It is chunked rather than made one command buffer for the whole prompt, because a
+    // command buffer holds every dispatch encoded into it until it is committed. At roughly
+    // a dozen dispatches per layer per token, a 2048-token prompt over 22 layers would
+    // encode on the order of half a million dispatches into a single buffer before anything
+    // began executing, which trades one bottleneck for a worse one and delays any error
+    // until the end. The chunk keeps the outstanding work bounded while removing all but
+    // 1/kPrefillChunk of the round trips.
+    // The chunk size and the ranges both come from antigravity::, where they are tested:
+    // getting the bounds wrong means prefill silently skips prompt tokens, and a partially
+    // ignored prompt produces confident output that does not follow from its input.
+    const int prefill_chunk = antigravity::prefillChunkTokens(config_.n_layers);
+    for (const auto& range : antigravity::prefillChunks(prompt_len - 1, prefill_chunk)) {
         @autoreleasepool {
+            const int chunk_start = range.first;
+            const int chunk_end = range.second;
             id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
             id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-            
-            // Embedding lookup for prompt token t for all C channels
-            if (embedPipeline_) {
-                [enc setComputePipelineState:embedPipeline_];
-                uint32_t tok = (uint32_t)prompt_tokens[t];
-                if (tok >= (uint32_t)config_.vocab_size) tok = 0;
-                for (uint32_t c = 0; c < C; c++) {
-                    // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
-                    // per token per channel — thousands of object allocations inside the decode loop.
-                    [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
-                    [enc setBuffer:embedWeights_ offset:0 atIndex:1];
-                    [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
-                    uint32_t hdim = H;
-                    [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
-                    MTLSize grid = MTLSizeMake(1, H, 1);
-                    dispatchGrid(enc, embedPipeline_, grid);
+
+            for (int t = chunk_start; t < chunk_end; t++) {
+                // Embedding lookup for prompt token t for all C channels
+                if (embedPipeline_) {
+                    [enc setComputePipelineState:embedPipeline_];
+                    uint32_t tok = (uint32_t)prompt_tokens[t];
+                    if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                    for (uint32_t c = 0; c < C; c++) {
+                        // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                        // per token per channel — thousands of object allocations inside the decode loop.
+                        [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
+                        [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+                        [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
+                        uint32_t hdim = H;
+                        [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+                        MTLSize grid = MTLSizeMake(1, H, 1);
+                        dispatchGrid(enc, embedPipeline_, grid);
+                    }
+                }
+
+                // Forward through all layers with batch_size = C
+                for (int l = 0; l < config_.n_layers; l++) {
+                    id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+                    id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+                    forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
                 }
             }
-            
-            // Forward through all layers with batch_size = C
-            for (int l = 0; l < config_.n_layers; l++) {
-                id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
-                id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
-                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
-            }
-            
+
             [enc endEncoding];
             [cmdBuf commit];
             [cmdBuf waitUntilCompleted];

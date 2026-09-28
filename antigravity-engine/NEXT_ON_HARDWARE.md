@@ -120,11 +120,29 @@ an oracle, so it bounds what best-of-N could reach rather than what ships.
 
 ## 4. Throughput, and only after the above
 
-`MetalTransformerEngine::generate()`'s prefill loop creates a command buffer per prompt
-token and blocks on `waitUntilCompleted` each time, so a 100-token prompt costs 100
-CPU–GPU round trips. `[cmdBuf computeCommandEncoder]` gives a serial-dispatch encoder,
-so those dispatches can be encoded into one command buffer and committed once — verify
-first that nothing in that loop reads GPU results back between tokens.
+~~`MetalTransformerEngine::generate()`'s prefill loop creates a command buffer per prompt
+token~~ — **done.** It now encodes up to `antigravity::prefillChunkTokens(n_layers)` prompt
+tokens into one command buffer: 31 tokens for a 22-layer model, so a 100-token prompt costs 4
+round trips instead of 99.
+
+The verification that condition asked for came out clean, and is worth keeping: nothing in
+the loop reads a GPU result back (the only CPU-side input is `prompt_tokens[t]`, known before
+the loop, and `setBytes:` copies it into the encoder at encode time rather than aliasing a
+variable the next iteration overwrites); `MTLComputeCommandEncoder` is serial unless created
+with `MTLDispatchTypeConcurrent`, so token *t*'s attention still reads the KV entries token
+*t−1* wrote; and `forwardLayer()` takes `cmdBuf` but never uses it — only the encoder — so it
+never needed a per-token boundary. The same dispatches in the same order, with only the commit
+granularity changed, which is why it was safe to do without a device.
+
+It is chunked rather than one buffer for the whole prompt because a command buffer holds every
+dispatch until committed: a 2048-token prompt over 22 layers would otherwise encode around
+half a million dispatches before anything started executing. The chunk size and the ranges
+live in `engine_limits.h` and are tested, because a wrong bound here means prefill silently
+skips prompt tokens — a partially ignored prompt producing confident output that does not
+follow from its input.
+
+**This is not measured.** It removes 95% of the prefill round trips by construction; whether
+prefill was a material share of end-to-end time is a question for a device.
 
 `generateMultimodal()` is worse: its loop is `for t { for c { … commit;
 waitUntilCompleted; } }`, and it forwards one channel at a time rather than batching
