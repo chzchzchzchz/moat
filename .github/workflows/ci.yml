@@ -76,6 +76,18 @@ jobs:
             tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence_tsan
           TSAN_OPTIONS=halt_on_error=1 ./bin/test_sampling_equivalence_tsan
 
+      # Why the degenerate run says "给": it is TinyLlama's token 31999, the last id in the
+      # vocabulary, and the sampler as it was then maps any non-finite logit to the last index
+      # under libc++ (index 0 under libstdc++). This pins that explanation to the library
+      # behaviour it rests on, here and again on macOS below.
+      - name: Check why the degenerate run emitted 给 (libstdc++)
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tests/test_gei_is_a_nan_signature.cpp -o bin/test_gei_is_a_nan_signature
+          ./bin/test_gei_is_a_nan_signature
+
       # Both of these bounds stand between a caller-supplied integer and a write
       # past the end of a Metal buffer, which does not fault — it corrupts the next
       # allocation and yields plausible output. Neither was enforced anywhere:
@@ -367,6 +379,11 @@ jobs:
           clang++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Isrc -Itests \
             tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence_libcxx
           ./bin/test_sampling_equivalence_libcxx
+          # The machine the degenerate run was made on used Apple's libc++. This is where the
+          # "non-finite logit -> token 31999 -> 给" explanation has to hold.
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tests/test_gei_is_a_nan_signature.cpp -o bin/test_gei_is_a_nan_signature_libcxx
+          ./bin/test_gei_is_a_nan_signature_libcxx
 
       # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
       # but only the .zip is committed, so a clean checkout cannot resolve it.

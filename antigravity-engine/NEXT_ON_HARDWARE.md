@@ -20,8 +20,10 @@ scripts/run_quality_benchmark.sh
 
 Before grading anything, that script runs `tools/check_engine_sanity.py`: three prompts
 sharing almost no tokens, which must not produce the identical token sequence, must not
-be one token or one character repeated, and must generate something. It exits 1 and
-stops if any of those fail.
+be one token or one character repeated, and must generate something — and then four
+prompts with a known continuation ("The capital of France is" → Paris), decoded almost
+greedily, at least three of which must come back right. It exits 1 and stops if any of
+those fail. The known-answer half exists because variety alone is not enough: see below.
 
 **Why this is first.** `gsm8k_full_checkpoint.json` holds 587 GSM8K problems produced
 by this engine — `run_full_gsm8k.py` constructs
@@ -32,9 +34,32 @@ that does not vary with its input is a broken forward pass, not a weak model.
 
 Run `python3 tools/analyze_existing_artifacts.py` for the full breakdown. No GPU needed.
 
-If the check passes, the shader fix was the cause and the benchmark below is worth
-having. If it fails, the forward pass has a defect that none of the work on this branch
-addressed, and nothing else here should be attempted first.
+### Why it is 给 — established, without a GPU
+
+给 is TinyLlama's token **31999**, the *last* id in its 32,000-token vocabulary. The sampler
+as it was when that run was made (before `4e5eee0`) turned a single non-finite logit into
+NaN weights everywhere and handed them to `std::discrete_distribution`, whose answer depends
+on the C++ library: **LLVM libc++ — Apple's, so the one that run used — returns the last
+index**; GNU libstdc++ returns 0. Run verbatim the way `run_full_gsm8k.py` called it (8
+channels, 100 tokens, T = 0.7, top_p = 0.9) with one NaN among 31,999 healthy logits, it
+returns 31999 on **800 of 800** draws under libc++; healthy logits give 383 distinct tokens.
+`tests/test_gei_is_a_nan_signature.cpp` pins this, on Linux and on macOS.
+
+So the 382 problems that are 给 throughout were forward passes producing **non-finite
+logits**, not a model fixated on a character. And the artifact says more:
+
+- **The other 205 are word salad, not answers** — `"keseflectoractressampleveytheistory"`,
+  `", l pelo\nusername, Iah Speh of the same"`. The forward pass was wrong even when finite.
+  That output varies with its input and is not one repeated character, so a check of
+  variety alone passes it; hence the known-answer prompts above.
+- **The non-finite values have an onset.** 56 of the word-salad outputs turn into 给
+  partway, and the problems that are 给 from the start have longer prompts (median 66
+  tokens against 53). A non-finite value that appears at some position and then never
+  leaves is what a NaN written into the KV cache looks like: every later step attends to it.
+
+**If the check passes on current code**, something on this branch fixed the forward pass,
+and it is worth knowing what: run the same check at `c7d5196` (where the artifact was made)
+and bisect. **If it fails**, the defect is still there; section 2 is where to start.
 
 ### Already ruled out, so do not re-investigate
 
@@ -49,6 +74,11 @@ addressed, and nothing else here should be attempted first.
 | the safetensors header parser | four defects fixed, all ruled out **for this checkpoint** by its own header — see below |
 | F32 read as FP16 | real, and not latent, but this checkpoint is 201/201 BF16, so it never took that path |
 | shape read past its `data_offsets` span | every one of the 201 tensors' shapes matches its span exactly |
+| the tokenizer | on all 1,319 GSM8K questions, `src/tokenizer.py`'s ids equal Hugging Face's exactly, apart from the BOS token it never adds; and it gives 200 distinct sequences for 200 questions, so the model did not receive identical input |
+| the missing BOS and chat template | TinyLlama fed the bare question with no BOS, exactly as the engine was, answers sensibly on the CPU ("Jane's ducks lay 16 eggs per day…") |
+| FP16 storage between operations | rounding every linear output and hidden state to FP16, with fp32 accumulation: identical text to fp32 |
+| FP16 accumulation in the GEMMs | `batched_gemm_simdgroup` accumulates in `half` (the GEMVs use `float`), and at `c7d5196` the 8-channel run used it for every projection — but emulating that on the CPU, rounding once per 8-term block, gave **identical** greedy text to fp32 over 64 tokens on two problems, with no non-finite logits. `tools/experiments/fp16_accumulation.py`. Per-product rounding inside each block is not modelled, but nothing flipped, so the margin is wide. Still worth changing to a `float` accumulator; not the cause |
+| prompt ids across the ctypes boundary | `int32` on both sides of `AntigravityEngineNativeGenerate` |
 
 #### The weight-loading path is now ruled out by measurement, not by argument
 
@@ -85,9 +115,11 @@ Two cheap checks before anything invasive:
 - **Read the non-finite logit counters.** `MetalTransformerEngine::nonFiniteLogitCount()`
   and `emptyDistributionCount()` are exposed and `generate()` prints both at the end.
   Non-zero means the forward pass is producing NaN or Inf, and that is where to look.
-  This used to be invisible: `std::discrete_distribution` given NaN weights returns
-  index 0, so one NaN anywhere pinned every sampled token to id 0 — measured at token 0
-  on 400 of 400 draws with a single NaN among 1,999 healthy logits.
+  This used to be invisible: one NaN anywhere made every sampling weight NaN, and
+  `std::discrete_distribution` then pinned every token — to id 0 under libstdc++, and
+  under Apple's libc++ to the last id, which for TinyLlama is 给. The earlier version of
+  this paragraph said "id 0" because that was measured on Linux; on the platform the
+  engine ships for it is the other end of the vocabulary, and that is the artifact.
 - **Compare `ANTIGRAVITY_INT4=1` against FP16.** If one path is clean and the other is
   not, that halves the search space.
 
