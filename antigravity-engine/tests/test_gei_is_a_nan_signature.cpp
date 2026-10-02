@@ -13,7 +13,7 @@
 //   GNU libstdc++ (Linux):                                  index 0
 //
 // So 给 is not something the model chose. It is what the original sampler produced on a Mac
-// whenever the forward pass emitted a non-finite logit — which identifies those 382 problems
+// whenever the forward pass emitted a non-finite logit — which identifies those 413 problems
 // as non-finite forward passes rather than as a model fixated on a character. Commit 4e5eee0
 // said the failure "pinned every sampled token to id 0"; that was measured on Linux, and on
 // the platform the engine ships for it is id vocab_size - 1.

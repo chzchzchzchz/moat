@@ -179,7 +179,7 @@ def test_dominant_char_share(checker, text, expected_high):
 # ---------------------------------------------------------------------------
 # Meaning, not just variety
 #
-# The artifact's 205 problems that were NOT one repeated character are word salad. It varies
+# The artifact's 174 problems that were NOT mostly one repeated character are word salad. It varies
 # with its input and is not a repeated character, so the variety checks above pass it. These
 # are real outputs from gsm8k_full_checkpoint.json.
 # ---------------------------------------------------------------------------

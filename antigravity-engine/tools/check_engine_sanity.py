@@ -13,8 +13,8 @@ Three prompts that share almost no tokens must not produce the same output. That
 weaker claim than "the engine is correct" and a much stronger one than any accuracy
 figure: a model can be bad, but it cannot be indifferent to its input.
 
-Varying output is necessary but not sufficient, and the same artifact shows why: its 205
-problems that were NOT one repeated character are word salad — "keseflectoractressample…",
+Varying output is necessary but not sufficient, and the same artifact shows why: its 174
+problems that were NOT mostly one repeated character are word salad — "keseflectoractressample…",
 ", l pelo\nusername, Iah Speh of the same" — which varies with its input and is not a
 repeated character, so a check of variety alone passes it. The second half of this check
 asks for meaning: four prompts whose continuation any working model knows, decoded almost

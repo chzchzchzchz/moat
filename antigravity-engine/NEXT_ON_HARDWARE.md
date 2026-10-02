@@ -45,16 +45,19 @@ channels, 100 tokens, T = 0.7, top_p = 0.9) with one NaN among 31,999 healthy lo
 returns 31999 on **800 of 800** draws under libc++; healthy logits give 383 distinct tokens.
 `tests/test_gei_is_a_nan_signature.cpp` pins this, on Linux and on macOS.
 
-So the 382 problems that are 给 throughout were forward passes producing **non-finite
+So the 413 problems that are mostly 给 were forward passes producing **non-finite
 logits**, not a model fixated on a character. And the artifact says more:
 
-- **The other 205 are word salad, not answers** — `"keseflectoractressampleveytheistory"`,
+- **The other 174 are word salad, not answers** (a random sample of 12: all salad; 17 of
+  the 174 are empty or under 20 characters) — `"keseflectoractressampleveytheistory"`,
   `", l pelo\nusername, Iah Speh of the same"`. The forward pass was wrong even when finite.
   That output varies with its input and is not one repeated character, so a check of
   variety alone passes it; hence the known-answer prompts above.
-- **The non-finite values have an onset.** 56 of the word-salad outputs turn into 给
-  partway, and the problems that are 给 from the start have longer prompts (median 66
-  tokens against 53). A non-finite value that appears at some position and then never
+- **The non-finite values have an onset.** 23 of the word-salad outputs turn into 给
+  partway, and the mostly-给 problems have longer prompts (median 64 tokens against 56).
+  Counts use `analyze_existing_artifacts.py`'s own definition — more than half one
+  character — so they agree with the 413 above; an earlier version of this paragraph used
+  a stricter one and said 382, 205 and 56. A non-finite value that appears at some position and then never
   leaves is what a NaN written into the KV cache looks like: every later step attends to it.
 
 **If the check passes on current code**, something on this branch fixed the forward pass,
