@@ -48,6 +48,22 @@ jobs:
             tests/test_sampling.cpp -o bin/test_sampling
           ./bin/test_sampling
 
+      # Top-p used to std::sort the whole vocabulary to find a nucleus of a few dozen tokens:
+      # 18 ms per channel per token at Qwen's 151,936, about 180 ms of CPU per decode step at 8
+      # channels. It now partial-sorts, widening only as far as the nucleus needs, and the raw
+      # log-prob the engine used to compute in two further passes comes out of the sampler's
+      # own. Every token passes through this, so it is held to bit-for-bit agreement with what
+      # it replaced: the same token as a frozen copy of the old sampler on 2,304 draws, the same
+      # nucleus as a full sort on 432 draws with exact ties, and log-probs bit-identical to the
+      # engine's old loop. Timing is printed, not asserted; CI machines vary too much.
+      - name: Check the sampler against the one it replaced
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isrc -Itests \
+            tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence
+          ./bin/test_sampling_equivalence
+
       # Both of these bounds stand between a caller-supplied integer and a write
       # past the end of a Metal buffer, which does not fault — it corrupts the next
       # allocation and yields plausible output. Neither was enforced anywhere:

@@ -1221,14 +1221,14 @@ void MetalTransformerEngine::forwardBatched(
 
 int32_t MetalTransformerEngine::sampleToken(
     const _Float16* logits, int vocab_size,
-    float temperature, float top_p, std::mt19937& rng
+    float temperature, float top_p, std::mt19937& rng, float* raw_logprob
 ) {
     // The arithmetic lives in src/sampling.h, which has no Metal dependency, so the
     // NaN handling that used to pin every draw to token 0 is covered by a test that
     // runs on any machine rather than only on a Mac.
     antigravity::SamplingStats stats;
     const int32_t token = antigravity::sampleTokenFromLogits(
-        logits, vocab_size, temperature, top_p, rng, stats);
+        logits, vocab_size, temperature, top_p, rng, stats, raw_logprob);
 
     nonFiniteLogitCount_ += stats.non_finite_logits;
     if (stats.empty_distributions && emptyDistributionCount_ == 0) {
@@ -1665,19 +1665,14 @@ GenerationResult MetalTransformerEngine::generate(
             if (!channel_active[c]) continue;
             
             const _Float16* logits = logits_base + c * config_.vocab_size;
-            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p, channel_rngs[c]);
-            
-            // Accumulate log-probability
-            float max_logit = -1e9f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                float v = (float)logits[i];
-                if (v > max_logit) max_logit = v;
-            }
-            float sum_exp = 0.0f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                sum_exp += expf((float)logits[i] - max_logit);
-            }
-            float token_logprob = (float)logits[next_token] - max_logit - logf(sum_exp);
+            // The token's raw log-probability comes out of the sampler's own passes. It used
+            // to take two more full passes over the vocabulary here, with an expf per element
+            // and no handling of non-finite logits, so one NaN or +Inf made it NaN and the +=
+            // below kept the channel's total NaN for the rest of the sequence. Bit-identical to
+            // that loop on finite logits: tests/test_sampling_equivalence.cpp.
+            float token_logprob = -INFINITY;
+            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p,
+                                             channel_rngs[c], &token_logprob);
             result.channel_logprobs[c] += token_logprob;
             
             result.channel_tokens[c].push_back(next_token);
@@ -1946,18 +1941,14 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             [cmdBuf waitUntilCompleted];
 
             const _Float16* logits = (const _Float16*)[scratchLogits_ contents];
-            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p, channel_rngs[c]);
-
-            float max_logit = -1e9f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                float v = (float)logits[i];
-                if (v > max_logit) max_logit = v;
-            }
-            float sum_exp = 0.0f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                sum_exp += expf((float)logits[i] - max_logit);
-            }
-            float token_logprob = (float)logits[next_token] - max_logit - logf(sum_exp);
+            // The token's raw log-probability comes out of the sampler's own passes. It used
+            // to take two more full passes over the vocabulary here, with an expf per element
+            // and no handling of non-finite logits, so one NaN or +Inf made it NaN and the +=
+            // below kept the channel's total NaN for the rest of the sequence. Bit-identical to
+            // that loop on finite logits: tests/test_sampling_equivalence.cpp.
+            float token_logprob = -INFINITY;
+            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p,
+                                             channel_rngs[c], &token_logprob);
             result.channel_logprobs[c] += token_logprob;
 
             result.channel_tokens[c].push_back(next_token);

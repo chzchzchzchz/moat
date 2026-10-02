@@ -165,6 +165,19 @@ no test or benchmark calls it, so the change could be validated by nothing at al
 this repository's history is made of, an unverifiable restructure of an unexercised path is
 the wrong trade; it wants a caller and a test first.
 
+**Sampling on the CPU was the largest cost found without a device, and it is fixed.**
+Measured rather than assumed — the expectation going in was that the redundant log-prob pass
+was the problem, and it was not. At `top_p = 0.9`, which every benchmark here uses, the
+sampler itself dominated: it `std::sort`ed all of the vocabulary's indices to find a nucleus
+that is usually a few dozen tokens. On the machine that measured it, at Qwen's 151,936 tokens,
+that was 18.3 ms per channel per decode step against 3.2 ms at `top_p = 1.0`, and with the
+log-prob pass 19.1 ms — about 150 ms of CPU per step for 8 channels before the GPU's work is
+counted at all. It now partial-sorts and widens only as far as the nucleus needs, and the
+log-prob comes out of the same passes: **3.7 ms, 5.2× faster**, drawing exactly the token the
+old code drew (`tests/test_sampling_equivalence.cpp`). An Apple core will be faster than the
+container that measured this, so the absolute numbers will differ on a device; the ratio is
+the claim.
+
 `metal_hardware_proof.md` §2.1 works out that the GEMM microbenchmark implies a ceiling
 near 123 tok/s per channel while the committed artifacts report about 5.14 — a ~24×
 gap, which says arithmetic is not the bottleneck and the surrounding execution is.

@@ -242,7 +242,10 @@ private:
         uint32_t q_len,
         uint32_t seq_pos
     );
-    int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p, std::mt19937& rng);
+    // raw_logprob, if given, receives the token's un-tempered log-probability, computed in
+    // the sampler's own passes. See antigravity::sampleTokenFromLogits.
+    int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p,
+                        std::mt19937& rng, float* raw_logprob = nullptr);
     
     // Safetensors parser
     // Load a shader library, preferring a prebuilt .metallib but only when it

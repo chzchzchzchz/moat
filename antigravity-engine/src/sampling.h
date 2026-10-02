@@ -35,10 +35,28 @@ struct SamplingStats {
 // every logit is non-finite there is nothing to sample: the call records it in
 // `stats` and returns 0, and the caller is expected to surface that rather than treat
 // the 0 as a decision.
+//
+// If `raw_logprob` is non-null it receives the chosen token's log-probability under the
+// UN-tempered distribution, log softmax(logits)[token] — the quantity the engine
+// accumulates into channel_logprobs and the C API ranks candidates by. It used to be
+// computed by the engine in two further full passes over the vocabulary after this call
+// returned, with a fresh expf per element, and without the non-finite handling this
+// function has: one NaN or +Inf logit made the sum NaN, and because the value is
+// accumulated with +=, that channel's total stayed NaN for the rest of the sequence. A
+// NaN never wins `chan_logprob > max_logprob`, and if every channel is NaN the C API keeps
+// whatever index it started from — the same silent default to 0 this function was
+// hardened against.
+//
+// Computed here in the passes that already read every logit. Non-finite logits are
+// excluded exactly as they are from sampling. When nothing is sampleable the value is
+// -INFINITY: the channel produced no real token, so it should rank last, not first and
+// not unpredictably.
 template <typename Logit>
 inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
                                      float temperature, float top_p,
-                                     std::mt19937& rng, SamplingStats& stats) {
+                                     std::mt19937& rng, SamplingStats& stats,
+                                     float* raw_logprob = nullptr) {
+    if (raw_logprob) *raw_logprob = -INFINITY;
     if (vocab_size <= 0) {
         stats.empty_distributions++;
         return 0;
@@ -48,13 +66,16 @@ inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
     const float inv_temp = 1.0f / std::max(temperature, 1e-6f);
 
     float max_logit = -INFINITY;
+    float raw_max = -INFINITY;          // over the un-tempered logits, for raw_logprob
     int n_finite = 0;
     for (int i = 0; i < vocab_size; i++) {
-        const float scaled = (float)logits[i] * inv_temp;
+        const float raw = (float)logits[i];
+        const float scaled = raw * inv_temp;
         if (std::isfinite(scaled)) {
             probs[(size_t)i] = scaled;
             n_finite++;
             if (scaled > max_logit) max_logit = scaled;
+            if (raw > raw_max) raw_max = raw;
         } else {
             probs[(size_t)i] = -INFINITY;
             stats.non_finite_logits++;
@@ -66,11 +87,21 @@ inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
         return 0;
     }
 
+    // At temperature exactly 1 the tempered and raw distributions are the same numbers, so
+    // the raw exp-sum is the tempered one and costs nothing. Otherwise it needs its own exp
+    // per element — there is no way to recover sum(exp(l)) from sum(exp(l/T)) — but it
+    // shares this pass rather than taking two more of its own.
+    const bool want_raw = raw_logprob != nullptr;
+    const bool raw_is_tempered = (inv_temp == 1.0f);
     float sum_exp = 0.0f;
+    float raw_sum = 0.0f;
     for (int i = 0; i < vocab_size; i++) {
-        probs[(size_t)i] = (probs[(size_t)i] == -INFINITY)
-                         ? 0.0f : std::exp(probs[(size_t)i] - max_logit);
+        const bool finite = probs[(size_t)i] != -INFINITY;
+        probs[(size_t)i] = finite ? std::exp(probs[(size_t)i] - max_logit) : 0.0f;
         sum_exp += probs[(size_t)i];
+        if (want_raw && !raw_is_tempered && finite) {
+            raw_sum += std::exp((float)logits[i] - raw_max);
+        }
     }
     if (!(sum_exp > 0.0f) || !std::isfinite(sum_exp)) {
         stats.empty_distributions++;
@@ -79,17 +110,49 @@ inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
     for (int i = 0; i < vocab_size; i++) probs[(size_t)i] /= sum_exp;
 
     if (top_p < 1.0f && top_p > 0.0f) {
+        // The nucleus is the shortest prefix of the tokens, most probable first, whose
+        // probabilities sum to at least top_p. This used to std::sort all vocab_size indices
+        // to find it. Measured on 151,936 logits at temperature 0.7, that sort made a call
+        // 5.6x slower than the same call at top_p = 1.0 — 18 ms against 3.2 ms per channel
+        // per token on the machine that measured it — when the nucleus it was looking for is
+        // typically a few dozen tokens.
+        //
+        // partial_sort orders only the first k. Start small and widen until the prefix is
+        // long enough to reach top_p: each attempt is O(V log k), k grows geometrically, and
+        // a flat distribution that needs everything ends at k = V, which is the full sort the
+        // old code always paid for.
+        //
+        // The comparator is a TOTAL order — probability descending, then index ascending —
+        // where the old one compared probability alone. That matters more than it looks:
+        // logits come out of the GPU as FP16, which has few enough distinct values that
+        // exactly tied probabilities are common, and std::sort orders ties however its
+        // implementation likes. A tie straddling the cutoff therefore decided which token was
+        // kept differently under libc++ and libstdc++. With the tie broken by index, the
+        // nucleus is the same set whatever sorts it, which is also what lets the fast path be
+        // tested bit-for-bit against a full sort.
         std::vector<int> order((size_t)vocab_size);
         std::iota(order.begin(), order.end(), 0);
-        std::sort(order.begin(), order.end(),
-                  [&](int a, int b) { return probs[(size_t)a] > probs[(size_t)b]; });
+        auto ranks_before = [&](int a, int b) {
+            const float pa = probs[(size_t)a], pb = probs[(size_t)b];
+            if (pa != pb) return pa > pb;
+            return a < b;
+        };
 
-        float cumulative = 0.0f;
         int cutoff = vocab_size;
-        for (int i = 0; i < vocab_size; i++) {
-            cumulative += probs[(size_t)order[(size_t)i]];
-            if (cumulative >= top_p) { cutoff = i + 1; break; }
+        int k = std::min(vocab_size, 64);
+        while (true) {
+            std::partial_sort(order.begin(), order.begin() + k, order.end(), ranks_before);
+            float cumulative = 0.0f;
+            bool reached = false;
+            for (int i = 0; i < k; i++) {
+                cumulative += probs[(size_t)order[(size_t)i]];
+                if (cumulative >= top_p) { cutoff = i + 1; reached = true; break; }
+            }
+            if (reached || k == vocab_size) break;   // k == V and not reached: keep all
+            k = (k > vocab_size / 4) ? vocab_size : k * 4;
         }
+        // Everything outside the nucleus. Beyond k, partial_sort leaves the order
+        // unspecified, which does not matter: this is a set operation.
         for (int i = cutoff; i < vocab_size; i++) probs[(size_t)order[(size_t)i]] = 0.0f;
 
         // Guarded for the same reason as above: a zero or non-finite total would put
@@ -102,7 +165,18 @@ inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
     }
 
     std::discrete_distribution<int> dist(probs.begin(), probs.end());
-    return (int32_t)dist(rng);
+    const int32_t token = (int32_t)dist(rng);
+
+    if (want_raw) {
+        const float total = raw_is_tempered ? sum_exp : raw_sum;
+        const float chosen = (float)logits[token];
+        // The drawn token always has a finite logit (non-finite ones were given zero
+        // probability), and total is at least exp(0) = 1 from the maximum itself.
+        *raw_logprob = (std::isfinite(chosen) && total > 0.0f && std::isfinite(total))
+                     ? chosen - raw_max - std::log(total)
+                     : -INFINITY;
+    }
+    return token;
 }
 
 }  // namespace antigravity
