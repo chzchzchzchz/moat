@@ -40,6 +40,9 @@ antigravity-engine/bin/test_sampling
 antigravity-engine/bin/test_safetensors_header
 antigravity-engine/bin/test_weight_convert
 antigravity-engine/bin/test_sampling_equivalence
+antigravity-engine/bin/test_sampling_equivalence_tsan
+antigravity-engine/bin/test_sampling_libcxx
+antigravity-engine/bin/test_sampling_equivalence_libcxx
 
 # In-progress benchmark checkpoints. tools/benchmark_quality_reference.py writes one after
 # every problem so a killed run can resume, and deletes it once the real artifact exists. It

@@ -179,4 +179,44 @@ inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
     return token;
 }
 
+// Sample every active channel's next token, letting the caller decide how to run the
+// channels — one after another, or concurrently.
+//
+// After each decode step the engine samples its channels one at a time on one core. With the
+// sampler at about 1.2 ms per channel at a 32k vocabulary and 4.8 ms at 151,936, that is 10 to
+// 39 ms per step for 8 channels, serial, while every other core waits. The channels are
+// independent by construction: channel c reads only its own slice of the logits, draws only
+// from its own RNG, and writes only its own slot of the outputs here. So running them
+// concurrently changes only when each is computed, never what it computes, and each channel's
+// token is the one the serial loop would have drawn.
+//
+// What is NOT independent stays out of this function, deliberately:
+//   - The engine's running counters (non-finite logits, empty distributions) would race if
+//     every channel incremented them. Each channel gets its own SamplingStats here, and the
+//     caller sums them afterwards.
+//   - `channel_active` is a std::vector<bool> in the engine, whose elements are packed bits:
+//     two threads writing different channels' flags write the same byte. This only READS
+//     activity, through `is_active`; deactivating a channel on EOS is the caller's job, after.
+//   - Pushing tokens into per-channel histories and the total-token count happen after, in
+//     channel order, exactly as before.
+//
+// An inactive channel is skipped entirely, so its RNG does not advance — as in the loop this
+// replaces, where `continue` came before the draw. Its outputs are left as they were.
+//
+// `parallel_for(n, fn)` must call fn(i) exactly once for each i in [0, n), in any order and on
+// any threads, and return only when all calls have finished.
+template <typename Logit, typename IsActive, typename ParallelFor>
+inline void sampleChannels(const Logit* logits_base, int vocab_size, int n_channels,
+                           IsActive&& is_active, float temperature, float top_p,
+                           std::mt19937* rngs, int32_t* tokens_out, float* logprobs_out,
+                           SamplingStats* stats_out, ParallelFor&& parallel_for) {
+    auto one = [&](int c) {
+        if (!is_active(c)) return;
+        tokens_out[c] = sampleTokenFromLogits(
+            logits_base + (size_t)c * (size_t)vocab_size, vocab_size, temperature, top_p,
+            rngs[c], stats_out[c], &logprobs_out[c]);
+    };
+    parallel_for(n_channels, one);
+}
+
 }  // namespace antigravity

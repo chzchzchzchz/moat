@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <thread>
 #include <vector>
 
 using namespace antigravity;
@@ -279,6 +280,147 @@ int main() {
         }
         check(all_finite, "at T = 0.7 too, a NaN or +Inf logit leaves the log-prob finite");
         check(all_correct, "and it equals the log-prob over the finite logits alone");
+    }
+
+    // ---- sampling the channels concurrently -------------------------------------------
+    // The engine samples its channels one after another on one core. sampleChannels lets it
+    // run them concurrently instead, and the claim is that this changes WHEN each channel is
+    // computed and never WHAT. So run a whole multi-step decode three ways — serially, on real
+    // threads, and serially in reverse order — and require the trajectories to be identical:
+    // every token, every log-prob bit for bit, every channel's final RNG state, and the same
+    // channels finishing at the same steps.
+    {
+        const int C = 8, V = 2000, steps = 40;
+        // A fixed bank of logits per step and channel, the same for all three runs.
+        std::vector<float> bank((size_t)steps * C * V);
+        {
+            std::mt19937 g(42);
+            std::normal_distribution<float> n(0.f, 2.5f);
+            for (auto& v : bank) v = n(g);
+            // Make some channels emit the "EOS" token (id 7) eventually, so activity changes
+            // mid-run and inactive channels are exercised.
+            for (int t = 10; t < steps; t++)
+                for (int c = 0; c < C; c += 3) bank[((size_t)t * C + c) * V + 7] = 40.0f;
+        }
+
+        struct Run {
+            std::vector<std::vector<int32_t>> tokens;
+            std::vector<std::vector<float>> logprobs;
+            std::vector<std::mt19937> rngs;
+            std::vector<uint64_t> non_finite;
+        };
+        auto run = [&](auto parallel_for) {
+            Run r;
+            r.tokens.assign(C, {});
+            r.logprobs.assign(C, {});
+            r.non_finite.assign(C, 0);
+            for (int c = 0; c < C; c++) r.rngs.emplace_back(1000u + (uint32_t)c);
+            std::vector<bool> active(C, true);       // the engine's type, on purpose
+            for (int t = 0; t < steps; t++) {
+                std::vector<int32_t> tok(C, -1);
+                std::vector<float> lp(C, 0.0f);
+                std::vector<SamplingStats> st(C);
+                sampleChannels(bank.data() + (size_t)t * C * V, V, C,
+                               [&](int c) { return (bool)active[(size_t)c]; },
+                               0.7f, 0.9f, r.rngs.data(), tok.data(), lp.data(), st.data(),
+                               parallel_for);
+                // Phase two, serial, in channel order — as the engine does it.
+                for (int c = 0; c < C; c++) {
+                    r.non_finite[(size_t)c] += st[(size_t)c].non_finite_logits;
+                    if (!active[(size_t)c]) continue;
+                    r.tokens[(size_t)c].push_back(tok[(size_t)c]);
+                    r.logprobs[(size_t)c].push_back(lp[(size_t)c]);
+                    if (tok[(size_t)c] == 7) active[(size_t)c] = false;
+                }
+            }
+            return r;
+        };
+
+        auto serial = [](int n, auto&& fn) { for (int i = 0; i < n; i++) fn(i); };
+        auto reversed = [](int n, auto&& fn) { for (int i = n - 1; i >= 0; i--) fn(i); };
+        auto threaded = [](int n, auto&& fn) {
+            std::vector<std::thread> pool;
+            for (int i = 0; i < n; i++) pool.emplace_back([&fn, i] { fn(i); });
+            for (auto& th : pool) th.join();
+        };
+
+        const Run a = run(serial);
+        const Run b = run(threaded);
+        const Run c = run(reversed);
+
+        // The three runs above all go through sampleChannels, so if sampleChannels itself were
+        // wrong they would be wrong identically and agree with each other — comparing them
+        // only proves the result does not depend on scheduling. Mutation testing showed it: a
+        // sampleChannels that drew channel 0 twice passed. So also anchor to the loop the
+        // engine had, written out directly: for each active channel in order, one call to the
+        // sampler, with `continue` before the draw for an inactive one.
+        Run ref;
+        {
+            ref.tokens.assign(C, {});
+            ref.logprobs.assign(C, {});
+            ref.non_finite.assign(C, 0);
+            for (int ch = 0; ch < C; ch++) ref.rngs.emplace_back(1000u + (uint32_t)ch);
+            std::vector<bool> active(C, true);
+            for (int t = 0; t < steps; t++) {
+                for (int ch = 0; ch < C; ch++) {
+                    if (!active[(size_t)ch]) continue;
+                    SamplingStats st;
+                    float lp = -INFINITY;
+                    const int32_t tok = sampleTokenFromLogits(
+                        bank.data() + ((size_t)t * C + ch) * V, V, 0.7f, 0.9f,
+                        ref.rngs[(size_t)ch], st, &lp);
+                    ref.non_finite[(size_t)ch] += st.non_finite_logits;
+                    ref.tokens[(size_t)ch].push_back(tok);
+                    ref.logprobs[(size_t)ch].push_back(lp);
+                    if (tok == 7) active[(size_t)ch] = false;
+                }
+            }
+        }
+
+        auto same = [&](const Run& x, const Run& y) {
+            if (x.tokens != y.tokens) return false;
+            for (int ch = 0; ch < C; ch++) {
+                const auto& lx = x.logprobs[(size_t)ch];
+                const auto& ly = y.logprobs[(size_t)ch];
+                if (lx.size() != ly.size()) return false;
+                if (!lx.empty() && std::memcmp(lx.data(), ly.data(), lx.size() * sizeof(float)) != 0)
+                    return false;
+                if (x.rngs[(size_t)ch] != y.rngs[(size_t)ch]) return false;
+            }
+            return x.non_finite == y.non_finite;
+        };
+
+        size_t total = 0, finished = 0;
+        for (int ch = 0; ch < C; ch++) {
+            total += a.tokens[(size_t)ch].size();
+            if (!a.tokens[(size_t)ch].empty() && a.tokens[(size_t)ch].back() == 7) finished++;
+        }
+        std::printf("        (%zu tokens over %d steps and %d channels; %zu channels hit EOS "
+                    "part-way)\n", total, steps, C, finished);
+        check(finished > 0 && finished < (size_t)C,
+              "some channels finish early, so inactive channels are actually exercised");
+        check(same(ref, a), "sampleChannels, run serially, reproduces the engine's original "
+                            "per-channel loop exactly");
+        check(same(a, b), "sampled on real threads, every channel's trajectory is identical "
+                          "to the serial one: tokens, log-probs bit for bit, RNG state");
+        check(same(a, c), "and sampling the channels in reverse order changes nothing either");
+    }
+    {
+        // An inactive channel must not draw: its RNG stays where it was and its output slot is
+        // untouched, as when the old loop hit `continue` before sampling.
+        const int C = 3, V = 50;
+        std::vector<float> logits((size_t)C * V, 0.5f);
+        std::vector<std::mt19937> rngs = {std::mt19937(1), std::mt19937(2), std::mt19937(3)};
+        const std::mt19937 before = rngs[1];
+        std::vector<int32_t> tok = {-1, -1, -1};
+        std::vector<float> lp = {9.f, 9.f, 9.f};
+        std::vector<SamplingStats> st(C);
+        sampleChannels(logits.data(), V, C, [](int c) { return c != 1; }, 0.7f, 0.9f,
+                       rngs.data(), tok.data(), lp.data(), st.data(),
+                       [](int n, auto&& fn) { for (int i = 0; i < n; i++) fn(i); });
+        check(rngs[1] == before, "an inactive channel's RNG does not advance");
+        check(tok[1] == -1 && lp[1] == 9.f, "an inactive channel's outputs are left untouched");
+        check(tok[0] >= 0 && tok[2] >= 0, "the active channels are sampled");
     }
 
     // ---- timing, reported rather than asserted (CI machines vary too much) -------------

@@ -1229,7 +1229,13 @@ int32_t MetalTransformerEngine::sampleToken(
     antigravity::SamplingStats stats;
     const int32_t token = antigravity::sampleTokenFromLogits(
         logits, vocab_size, temperature, top_p, rng, stats, raw_logprob);
+    recordSamplingStats(stats, vocab_size);
+    return token;
+}
 
+void MetalTransformerEngine::recordSamplingStats(
+    const antigravity::SamplingStats& stats, int vocab_size
+) {
     nonFiniteLogitCount_ += stats.non_finite_logits;
     if (stats.empty_distributions && emptyDistributionCount_ == 0) {
         // Once, not once per token: a failed forward pass would otherwise print this
@@ -1239,7 +1245,6 @@ int32_t MetalTransformerEngine::sampleToken(
                   << std::endl;
     }
     emptyDistributionCount_ += stats.empty_distributions;
-    return token;
 }
 
 
@@ -1659,22 +1664,52 @@ GenerationResult MetalTransformerEngine::generate(
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
         
-        // CPU-side sampling from logits for each active channel
+        // CPU-side sampling from logits for each active channel, in two phases.
+        //
+        // Phase one samples every active channel CONCURRENTLY. It used to be one channel after
+        // another on one core: with the sampler at about 1.2 ms per channel at a 32k vocabulary
+        // and 4.8 ms at 151,936, that was 10 to 39 ms of serial CPU per decode step at 8
+        // channels. The channels are independent by construction — channel c reads only its
+        // own slice of the logits, draws only from channel_rngs[c], and writes only slot c of
+        // these three arrays — so running them concurrently changes when each is computed and
+        // never what. tests/test_sampling_equivalence.cpp runs a 40-step, 8-channel decode
+        // serially, on real threads and in reverse order, and requires every trajectory to
+        // match the per-channel loop this replaces: tokens, log-probs bit for bit, RNG state.
+        //
+        // Phase two, below, is serial and in channel order, because it touches what is shared:
+        // the engine's counters, result.total_tokens, and channel_active — a std::vector<bool>,
+        // whose packed bits make concurrent writes to different channels a data race. Phase one
+        // only reads channel_active.
         const _Float16* logits_base = (const _Float16*)[scratchLogits_ contents];
+        std::vector<int32_t> step_tokens(C, 0);
+        std::vector<float> step_logprobs(C, -INFINITY);
+        std::vector<antigravity::SamplingStats> step_stats(C);
+        antigravity::sampleChannels(
+            logits_base, config_.vocab_size, (int)C,
+            [&](int c) { return (bool)channel_active[(size_t)c]; },
+            temperature, top_p, channel_rngs.data(),
+            step_tokens.data(), step_logprobs.data(), step_stats.data(),
+            [](int n, auto&& fn) {
+                // dispatch_apply runs fn(i) for every i on GCD's worker threads and returns
+                // when all have finished, which is the contract sampleChannels needs. The
+                // block captures a pointer to the callable rather than the callable itself.
+                auto* fnp = &fn;
+                dispatch_apply((size_t)n,
+                               dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                               ^(size_t i) { (*fnp)((int)i); });
+            });
+
         for (uint32_t c = 0; c < C; c++) {
+            recordSamplingStats(step_stats[c], config_.vocab_size);
             if (!channel_active[c]) continue;
-            
-            const _Float16* logits = logits_base + c * config_.vocab_size;
-            // The token's raw log-probability comes out of the sampler's own passes. It used
-            // to take two more full passes over the vocabulary here, with an expf per element
-            // and no handling of non-finite logits, so one NaN or +Inf made it NaN and the +=
-            // below kept the channel's total NaN for the rest of the sequence. Bit-identical to
-            // that loop on finite logits: tests/test_sampling_equivalence.cpp.
-            float token_logprob = -INFINITY;
-            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p,
-                                             channel_rngs[c], &token_logprob);
-            result.channel_logprobs[c] += token_logprob;
-            
+
+            // The token's raw log-probability came out of the sampler's own passes. It used to
+            // take two more full passes over the vocabulary here, with an expf per element and
+            // no handling of non-finite logits, so one NaN or +Inf made it NaN and the += below
+            // kept the channel's total NaN for the rest of the sequence.
+            const int32_t next_token = step_tokens[c];
+            result.channel_logprobs[c] += step_logprobs[c];
+
             result.channel_tokens[c].push_back(next_token);
             result.total_tokens++;
             

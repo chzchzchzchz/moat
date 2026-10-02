@@ -1,6 +1,7 @@
 #pragma once
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
+#include "sampling.h"
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -246,6 +247,10 @@ private:
     // the sampler's own passes. See antigravity::sampleTokenFromLogits.
     int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p,
                         std::mt19937& rng, float* raw_logprob = nullptr);
+    // Fold one sampling call's statistics into the running counters, warning once on the
+    // first empty distribution. Separate from sampleToken so generate() can sample its
+    // channels concurrently and then apply these in channel order, on one thread.
+    void recordSamplingStats(const antigravity::SamplingStats& stats, int vocab_size);
     
     // Safetensors parser
     // Load a shader library, preferring a prebuilt .metallib but only when it

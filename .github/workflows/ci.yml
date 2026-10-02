@@ -60,9 +60,21 @@ jobs:
         working-directory: antigravity-engine
         run: |
           mkdir -p bin
-          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isrc -Itests \
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Isrc -Itests \
             tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence
           ./bin/test_sampling_equivalence
+
+      # generate() now samples its channels concurrently. The equivalence suite proves the
+      # threaded trajectory matches the serial one, but matching outputs do not prove the
+      # absence of a race — so it also runs under ThreadSanitizer, which flags a deliberately
+      # shared RNG with five data-race reports and this code with none.
+      - name: Check concurrent channel sampling under ThreadSanitizer
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O1 -g -fsanitize=thread -pthread -Isrc -Itests \
+            tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence_tsan
+          TSAN_OPTIONS=halt_on_error=1 ./bin/test_sampling_equivalence_tsan
 
       # Both of these bounds stand between a caller-supplied integer and a write
       # past the end of a Metal buffer, which does not fault — it corrupts the next
@@ -340,6 +352,21 @@ jobs:
             -framework Metal -framework Foundation
           echo "antigravity_c_api.cpp compiles"
 
+
+      # The sampler is tested on every commit, but on Linux, under libstdc++ — and the engine
+      # ships with Apple's libc++, whose std::sort, std::partial_sort and
+      # std::discrete_distribution are different implementations. Run the same suites here,
+      # with the toolchain the engine is actually built with. They need no GPU.
+      - name: Check the sampler under libc++ (the library the engine ships with)
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror -Isrc \
+            tests/test_sampling.cpp -o bin/test_sampling_libcxx
+          ./bin/test_sampling_libcxx
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Isrc -Itests \
+            tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence_libcxx
+          ./bin/test_sampling_equivalence_libcxx
 
       # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
       # but only the .zip is committed, so a clean checkout cannot resolve it.
