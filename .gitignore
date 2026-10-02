@@ -37,6 +37,16 @@ antigravity-engine/bin/test_int4_gemv_math
 antigravity-engine/bin/test_engine_limits
 antigravity-engine/bin/test_metal_int4_gpu
 antigravity-engine/bin/test_sampling
+antigravity-engine/bin/test_safetensors_header
+antigravity-engine/bin/test_weight_convert
+antigravity-engine/bin/test_sampling_equivalence
+
+# In-progress benchmark checkpoints. tools/benchmark_quality_reference.py writes one after
+# every problem so a killed run can resume, and deletes it once the real artifact exists. It
+# is working state, not a result: committing one mid-run records a measurement that is
+# neither finished nor labelled as unfinished.
+*.json.partial
+*.json.partial.tmp
 
 # Xcode / SwiftPM
 *.xcuserdata
