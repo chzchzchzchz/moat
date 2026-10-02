@@ -152,6 +152,66 @@ int main() {
         check(same, "the same seed yields the same tokens");
     }
 
+    // ---- reproducible seeding (ANTIGRAVITY_SEED) ----------------------------------------
+    {
+        // The same (base, call, channel) always gives the same stream.
+        std::mt19937 a, b;
+        antigravity::seedChannelRng(a, 42, 3, 5);
+        antigravity::seedChannelRng(b, 42, 3, 5);
+        check(a == b, "the same base, call and channel give the same RNG state");
+
+        // The reason random_device was introduced: fixed seeds made every call produce
+        // identical rollouts. Successive calls under one base seed must differ.
+        std::mt19937 call0, call1;
+        antigravity::seedChannelRng(call0, 42, 0, 0);
+        antigravity::seedChannelRng(call1, 42, 1, 0);
+        check(call0 != call1, "successive calls under one seed get different streams, so a "
+                              "fixed seed does not bring back identical rollouts");
+
+        std::mt19937 ch0, ch1;
+        antigravity::seedChannelRng(ch0, 42, 0, 0);
+        antigravity::seedChannelRng(ch1, 42, 0, 1);
+        check(ch0 != ch1, "channels within one call get different streams");
+
+        std::mt19937 base1, base2;
+        antigravity::seedChannelRng(base1, 1, 0, 0);
+        antigravity::seedChannelRng(base2, 2, 0, 0);
+        check(base1 != base2, "different base seeds give different streams");
+
+        // No collisions over a benchmark-sized grid. Checked on the 64-bit value the seed_seq
+        // is built from; truncated to the 32 bits mt19937::seed takes, this many pairs would
+        // be expected to collide (birthday bound near 65,000).
+        std::set<uint64_t> seen;
+        for (uint64_t call = 0; call < 20000; call++)
+            for (uint32_t ch = 0; ch < 8; ch++)
+                seen.insert(antigravity::channelSeedValue(7, call, ch));
+        check(seen.size() == 20000u * 8u,
+              "160,000 (call, channel) pairs get 160,000 distinct seeds");
+
+        // Adjacent inputs must not give related streams: compare the first draws.
+        std::set<uint32_t> firsts;
+        for (uint32_t ch = 0; ch < 64; ch++) {
+            std::mt19937 r;
+            antigravity::seedChannelRng(r, 0, 0, ch);
+            firsts.insert(r());
+        }
+        check(firsts.size() == 64, "64 adjacent channels' first draws are all distinct");
+    }
+    {
+        uint64_t v = 99;
+        check(antigravity::parseSeed("0", v) && v == 0, "seed 0 parses");
+        check(antigravity::parseSeed("12345", v) && v == 12345, "a decimal seed parses");
+        check(antigravity::parseSeed("18446744073709551615", v) && v == UINT64_MAX,
+              "the largest 64-bit seed parses");
+        check(!antigravity::parseSeed("18446744073709551616", v),
+              "an overflowing seed is refused, not wrapped into a different seed");
+        check(!antigravity::parseSeed("", v), "an empty seed is refused");
+        check(!antigravity::parseSeed(nullptr, v), "an unset seed is refused");
+        check(!antigravity::parseSeed("-1", v), "a negative seed is refused");
+        check(!antigravity::parseSeed("42abc", v), "trailing characters are refused");
+        check(!antigravity::parseSeed(" 42", v), "a leading space is refused");
+    }
+
     printf("\n%s\n", failures == 0 ? "ALL CHECKS PASSED" : "THERE WERE FAILURES");
     return failures == 0 ? 0 : 1;
 }

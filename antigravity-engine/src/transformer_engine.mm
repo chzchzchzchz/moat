@@ -250,6 +250,21 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     if (const char* q = getenv("ANTIGRAVITY_INT4")) {
         quantizeOnLoad_ = (q[0] == '1' || q[0] == 't' || q[0] == 'T' || q[0] == 'y' || q[0] == 'Y');
     }
+    // Reproducible runs, opt-in. See antigravity::seedChannelRng for why the seed is combined
+    // with a per-call counter rather than used directly.
+    if (const char* seed = getenv("ANTIGRAVITY_SEED")) {
+        if (antigravity::parseSeed(seed, fixedSeed_)) {
+            hasFixedSeed_ = true;
+            std::cout << "[MetalTransformerEngine] ANTIGRAVITY_SEED=" << fixedSeed_
+                      << ": generation is reproducible for this process" << std::endl;
+        } else {
+            // A seed that silently became some other value, or no seed, would make a run look
+            // reproducible while reproducing nothing. Say so instead.
+            std::cerr << "[MetalTransformerEngine] ignoring ANTIGRAVITY_SEED=\"" << seed
+                      << "\": not a non-negative 64-bit decimal integer; seeding from "
+                         "std::random_device" << std::endl;
+        }
+    }
     // Both are needed: decode (M == 1) takes the GEMV, prefill and the multi-channel
     // step take the fused GEMM. Quantizing with only one available would leave the
     // other path refusing to compute rather than producing a wrong answer, but that
@@ -1233,6 +1248,21 @@ int32_t MetalTransformerEngine::sampleToken(
     return token;
 }
 
+void MetalTransformerEngine::seedChannelRngs(std::vector<std::mt19937>& rngs) {
+    if (hasFixedSeed_) {
+        for (size_t c = 0; c < rngs.size(); c++) {
+            antigravity::seedChannelRng(rngs[c], fixedSeed_, generationCalls_, (uint32_t)c);
+        }
+    } else {
+        // Unchanged from before ANTIGRAVITY_SEED existed.
+        std::random_device rd;
+        for (size_t c = 0; c < rngs.size(); c++) {
+            rngs[c].seed(rd() + (uint32_t)c * 10007);
+        }
+    }
+    generationCalls_++;
+}
+
 void MetalTransformerEngine::recordSamplingStats(
     const antigravity::SamplingStats& stats, int vocab_size
 ) {
@@ -1301,8 +1331,9 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
     }
     
     auto start_time = std::chrono::high_resolution_clock::now();
-    std::random_device rd;
-    std::mt19937 rng(rd());
+    std::vector<std::mt19937> spec_rngs(1);
+    seedChannelRngs(spec_rngs);
+    std::mt19937& rng = spec_rngs[0];
 
     GenerationResult res;
     res.channel_tokens.resize(1); // Speculative decoding prototype is 1-channel for now
@@ -1518,11 +1549,8 @@ GenerationResult MetalTransformerEngine::generate(
     const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
     const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
     
-    std::random_device rd;
     std::vector<std::mt19937> channel_rngs(C);
-    for (uint32_t c = 0; c < C; c++) {
-        channel_rngs[c].seed(rd() + c * 10007);
-    }
+    seedChannelRngs(channel_rngs);
     
     // Track active channels (not yet hit EOS)
     std::vector<bool> channel_active(C, true);
@@ -1824,13 +1852,11 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
     const int EOS_TOKEN = EOS_TOKEN_1;
 
     // Seeds were fixed constants, so every call produced identical rollouts and the
-    // channels differed only by a constant offset. generate() already seeds from
-    // std::random_device; do the same here.
-    std::random_device rd;
+    // channels differed only by a constant offset. generate() seeds from std::random_device;
+    // so does this, through seedChannelRngs — which, with ANTIGRAVITY_SEED set, derives each
+    // call's seeds from a per-call counter precisely so that identical rollouts stay fixed.
     std::vector<std::mt19937> channel_rngs(config_.n_channels);
-    for (int c = 0; c < config_.n_channels; c++) {
-        channel_rngs[c].seed(rd() + c * 10007);
-    }
+    seedChannelRngs(channel_rngs);
 
     std::vector<bool> channel_active(config_.n_channels, true);
 

@@ -356,3 +356,74 @@ def test_limit_caps_the_number_of_problems(harness, monkeypatch, tmp_path):
 
     assert code == 0
     assert result["comparison"]["n_problems"] == 6
+
+
+# ---------------------------------------------------------------------------
+# Reproducible seeding
+#
+# The engine seeded every channel from std::random_device, so no two benchmark runs were
+# the same and a re-run after a fix could not be compared with the one before it problem
+# by problem. ANTIGRAVITY_SEED makes it reproducible; the harness has to put it in the
+# environment BEFORE the engine is constructed, because the constructor reads it.
+# ---------------------------------------------------------------------------
+
+def _record_seed_at_construction(monkeypatch, engine):
+    """Replace the engine factory with one that notes ANTIGRAVITY_SEED as it was when the
+    engine was built — the only moment the real engine reads it."""
+    seen = {}
+    native = sys.modules["native_bridge"]
+
+    def factory(n_channels=8, **_):
+        import os
+        seen["seed"] = os.environ.get("ANTIGRAVITY_SEED")
+        engine.n_channels = n_channels
+        return engine
+
+    monkeypatch.setattr(native, "NativeMetalEngine", factory)
+    return seen
+
+
+def test_the_seed_reaches_the_engine_before_it_is_built(harness, monkeypatch, tmp_path):
+    module, engine = harness
+    monkeypatch.delenv("ANTIGRAVITY_SEED", raising=False)
+    seen = _record_seed_at_construction(monkeypatch, engine)
+    dataset = write_dataset(tmp_path, [1, 2])
+    engine.script = [[1] * 8, [2] * 8]
+
+    code, result = run(module, monkeypatch, tmp_path, dataset,
+                       ["--limit", "2", "--seed", "1234"])
+
+    assert code == 0
+    assert seen["seed"] == "1234", "the engine must see the seed when it is constructed"
+    assert result["config"]["seed"] == 1234, "and the artifact must record it"
+
+
+def test_runs_are_seeded_by_default(harness, monkeypatch, tmp_path):
+    # Reproducible unless asked otherwise, like the reference harness: an unseeded engine
+    # run cannot be compared with the next one problem by problem.
+    module, engine = harness
+    monkeypatch.delenv("ANTIGRAVITY_SEED", raising=False)
+    seen = _record_seed_at_construction(monkeypatch, engine)
+    dataset = write_dataset(tmp_path, [1])
+    engine.script = [[1] * 8]
+
+    code, result = run(module, monkeypatch, tmp_path, dataset, ["--limit", "1"])
+
+    assert code == 0
+    assert seen["seed"] == "0"
+    assert result["config"]["seed"] == 0
+
+
+def test_a_negative_seed_is_refused_before_the_engine_is_built(harness, monkeypatch, tmp_path):
+    # The engine would reject it and fall back to std::random_device, leaving the artifact
+    # recording a seed the run never used.
+    module, engine = harness
+    monkeypatch.delenv("ANTIGRAVITY_SEED", raising=False)
+    seen = _record_seed_at_construction(monkeypatch, engine)
+    dataset = write_dataset(tmp_path, [1])
+
+    code, result = run(module, monkeypatch, tmp_path, dataset, ["--limit", "1", "--seed", "-3"])
+
+    assert code == 2
+    assert result is None, "no artifact may claim a seed that was not used"
+    assert "seed" not in seen, "the engine must not have been constructed"

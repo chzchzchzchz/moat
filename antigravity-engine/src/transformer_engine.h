@@ -158,6 +158,13 @@ private:
     struct QuantizedWeight { uint32_t K; uint32_t N; };
     std::unordered_map<void*, QuantizedWeight> quantizedWeights_;
     bool quantizeOnLoad_ = false;
+    // ANTIGRAVITY_SEED. When set, every generation call's channel RNGs are derived from it and
+    // from generationCalls_, so a whole run reproduces while successive calls still differ.
+    // Unset, channels are seeded from std::random_device exactly as before.
+    bool hasFixedSeed_ = false;
+    uint64_t fixedSeed_ = 0;
+    uint64_t generationCalls_ = 0;
+    void seedChannelRngs(std::vector<std::mt19937>& rngs);
 
     // How many non-finite logits sampleToken() has had to discard. Non-zero means the
     // forward pass produced NaN or Inf, which used to collapse sampling to token 0

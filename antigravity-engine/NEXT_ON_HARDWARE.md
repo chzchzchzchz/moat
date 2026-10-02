@@ -174,9 +174,18 @@ that was 18.3 ms per channel per decode step against 3.2 ms at `top_p = 1.0`, an
 log-prob pass 19.1 ms — about 150 ms of CPU per step for 8 channels before the GPU's work is
 counted at all. It now partial-sorts and widens only as far as the nucleus needs, and the
 log-prob comes out of the same passes: **3.7 ms, 5.2× faster**, drawing exactly the token the
-old code drew (`tests/test_sampling_equivalence.cpp`). An Apple core will be faster than the
-container that measured this, so the absolute numbers will differ on a device; the ratio is
-the claim.
+old code drew (`tests/test_sampling_equivalence.cpp`). **Since measured on Apple Silicon**: the
+macOS CI job now runs the sampler suites under libc++ on GitHub's M1 runners, and there it is
+**13.34 ms → 1.71 ms, 7.8×** per channel per decode step at 151,936 tokens — with the same
+bit-for-bit agreement (2,304 draws, 0 differ). That is a real Apple core, though in a VM, not a
+phone.
+
+The channels are now also sampled concurrently (`generate()` hands
+`antigravity::sampleChannels` to GCD's `dispatch_apply`), so the per-step CPU cost is roughly
+one channel's rather than eight in series. Proven not to change any channel's output — a
+40-step, 8-channel decode run serially, on real threads and in reverse order must match the
+original loop token for token and bit for bit — and clean under ThreadSanitizer; not yet timed
+on a device.
 
 `metal_hardware_proof.md` §2.1 works out that the GEMM microbenchmark implies a ceiling
 near 123 tok/s per channel while the committed artifacts report about 5.14 — a ~24×

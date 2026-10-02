@@ -219,4 +219,56 @@ inline void sampleChannels(const Logit* logits_base, int vocab_size, int n_chann
     parallel_for(n_channels, one);
 }
 
+// Reproducible seeding, opt-in.
+//
+// The engine seeds every channel's RNG from std::random_device, so no two runs of a benchmark
+// are the same and a re-run after a fix cannot be compared with the run before it sample for
+// sample — the paired comparison that makes small effects measurable at all. But
+// random_device is there for a reason, recorded in generateMultimodal: seeds used to be fixed
+// constants, so EVERY CALL produced identical rollouts. A fixed seed must not bring that back.
+//
+// So the seed for channel c of the k-th generation call is derived from (base, k, c). The
+// whole sequence of calls in a run is reproducible from `base`, and successive calls still
+// differ, because k changes. Used only when ANTIGRAVITY_SEED is set; otherwise the engine
+// seeds exactly as it did.
+//
+// The three values are mixed to 64 bits with splitmix64 and fed to std::seed_seq as two
+// words, rather than truncated to the 32-bit integer mt19937::seed takes: distinct
+// (call, channel) pairs would collide on 32 bits after about 65,000 of them by the birthday
+// bound, and a benchmark run makes that many.
+inline uint64_t splitmix64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
+inline uint64_t channelSeedValue(uint64_t base, uint64_t call_index, uint32_t channel) {
+    return splitmix64(splitmix64(splitmix64(base) ^ call_index) ^ (uint64_t)channel);
+}
+
+inline void seedChannelRng(std::mt19937& rng, uint64_t base, uint64_t call_index,
+                           uint32_t channel) {
+    const uint64_t v = channelSeedValue(base, call_index, channel);
+    std::seed_seq seq{(uint32_t)(v & 0xFFFFFFFFu), (uint32_t)(v >> 32)};
+    rng.seed(seq);
+}
+
+// Parse ANTIGRAVITY_SEED: a non-empty run of decimal digits that fits in 64 bits. Anything
+// else — empty, signed, trailing characters, overflow — is rejected rather than read as a
+// different number, because a seed that silently became some other seed would make a run
+// look reproducible while reproducing nothing.
+inline bool parseSeed(const char* text, uint64_t& out) {
+    if (text == nullptr || *text == '\0') return false;
+    uint64_t value = 0;
+    for (const char* p = text; *p; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        const uint64_t digit = (uint64_t)(*p - '0');
+        if (value > (UINT64_MAX - digit) / 10) return false;
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
+
 }  // namespace antigravity

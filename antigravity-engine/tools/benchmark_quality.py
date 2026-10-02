@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -124,7 +125,17 @@ def main() -> int:
                         help="path to libantigravity_engine.dylib; "
                              "searched in the usual package locations if omitted")
     parser.add_argument("--out", default="quality_gsm8k.json")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="passed to the engine as ANTIGRAVITY_SEED, so the run is "
+                             "reproducible and a re-run after a fix can be compared with "
+                             "this one problem by problem")
     args = parser.parse_args()
+
+    # The engine refuses a seed it cannot parse and falls back to std::random_device, which
+    # would leave this artifact recording a seed the run never used. Refuse it here instead.
+    if args.seed < 0:
+        print("--seed must be a non-negative integer", file=sys.stderr)
+        return 2
 
     if args.channels < 2:
         print("--channels must be at least 2: with one channel the candidate and the "
@@ -132,8 +143,10 @@ def main() -> int:
         return 2
 
     if args.int4:
-        import os
         os.environ["ANTIGRAVITY_INT4"] = "1"
+    # Read by the engine's constructor, so it has to be in the environment before
+    # NativeMetalEngine is built below.
+    os.environ["ANTIGRAVITY_SEED"] = str(args.seed)
 
     model_dir = Path(args.model_dir).expanduser().resolve()
     dataset = Path(args.dataset).expanduser().resolve()
@@ -242,6 +255,7 @@ def main() -> int:
             "temperature": args.temperature,
             "top_p": args.top_p,
             "int4_weights": bool(args.int4),
+            "seed": args.seed,
             "baseline": "channel 0 alone",
             "candidate": f"majority vote over {args.channels} channels, "
                          f"ties broken by cumulative logprob",
