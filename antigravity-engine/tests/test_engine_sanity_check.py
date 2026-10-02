@@ -21,34 +21,62 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools"))
 
 
+TEXT = 1000   # ids at or above this carry a character: chr(id - TEXT)
+
+
 class FakeTokenizer:
+    """Reversible, so the stand-in engine can tell which prompt it was given.
+
+    Ids below TEXT decode to letters, so a scripted run of one small id decodes to one
+    repeated character, as the scripted tests below rely on."""
+
     def __init__(self, path):
         pass
 
     def encode(self, text):
-        # Distinct ids per prompt, so a real engine would see different inputs.
-        return [len(text), ord(text[0])]
+        return [TEXT + ord(c) for c in text]
 
     def decode(self, token_ids):
-        # Map ids to letters so repeated ids decode to a repeated character.
-        return "".join(chr(97 + (t % 26)) for t in token_ids)
+        return "".join(chr(t - TEXT) if t >= TEXT else chr(97 + (t % 26)) for t in token_ids)
+
+
+def as_ids(text):
+    return [TEXT + ord(c) for c in text]
+
+
+# Continuations a working model gives for the check's known-answer prompts, as measured on
+# TinyLlama and Qwen (see check_engine_sanity's docstring).
+RIGHT = {
+    "The capital of France is": " Paris, which is also the largest city",
+    "1, 2, 3, 4, 5,": " 6, 7, 8, 9,",
+    "Monday, Tuesday, Wednesday,": " Thursday, Friday, Saturday",
+    "Water freezes at 0 degrees": " Celsius, and boils at 100",
+}
 
 
 class FakeEngine:
-    """Returns whatever token sequences the test scripted, one per prompt."""
+    """Answers the known-answer prompts from `known` (right, unless a test changes it) and
+    the free prompts from `script`, in order."""
 
     def __init__(self, n_channels=2, **_):
         self.n_channels = n_channels
         self.script = []
-        self.calls = 0
+        self.known = dict(RIGHT)
+        self.free_calls = 0
+        self.known_calls = []          # (prompt, temperature, top_p)
         self.destroyed = False
 
     def load_weights(self, path):
         return True
 
     def generate(self, ids, max_new_tokens=40, temperature=0.7, top_p=0.9):
-        tokens = self.script[self.calls % len(self.script)]
-        self.calls += 1
+        prompt = "".join(chr(t - TEXT) for t in ids)
+        if prompt in self.known:
+            self.known_calls.append((prompt, temperature, top_p))
+            tokens = as_ids(self.known[prompt])
+        else:
+            tokens = self.script[self.free_calls % len(self.script)]
+            self.free_calls += 1
         return [list(tokens)] * self.n_channels, [-1.0] * self.n_channels, 5.0, 50.0
 
     def destroy(self):
@@ -146,3 +174,83 @@ def test_dominant_char_share(checker, text, expected_high):
     module, _engine, _tmp = checker
     share = module.dominant_char_share(text)
     assert (share > 0.5) is expected_high, f"{text!r} -> {share}"
+
+
+# ---------------------------------------------------------------------------
+# Meaning, not just variety
+#
+# The artifact's 205 problems that were NOT one repeated character are word salad. It varies
+# with its input and is not a repeated character, so the variety checks above pass it. These
+# are real outputs from gsm8k_full_checkpoint.json.
+# ---------------------------------------------------------------------------
+
+SALAD = [
+    ", l pelo\nusername, Iah Speh of the same -  but\ncomcome of thenvisedly",
+    "keseflectoractressampleveytheistory <\n2 end6lain comen J Postorm betme",
+    "\n\nthe < bimes forimage still mathematical m andimm and millions Again\n",
+    "ing and have a long term contract for for \n $ oh nos Long",
+]
+
+
+def test_word_salad_from_the_artifact_fails(checker, monkeypatch, capsys):
+    module, engine, tmp_path = checker
+    engine.script = [as_ids(SALAD[0]), as_ids(SALAD[1]), as_ids(SALAD[2])]
+    engine.known = {p: SALAD[i] for i, p in enumerate(RIGHT)}
+
+    assert run(module, monkeypatch, tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "known continuation" in out
+    # And it is the known-answer check that catches it: the variety checks alone pass this,
+    # which is the whole reason it was added.
+    assert "IDENTICAL" not in out and "repeated" not in out
+
+
+def test_three_of_four_known_answers_is_enough(checker, monkeypatch):
+    # One argmax flipped by FP16 arithmetic must not fail a healthy engine.
+    module, engine, tmp_path = checker
+    engine.script = [as_ids("two plus two is four"), as_ids("a warm orange glow"),
+                     as_ids("53, 59 and 61")]
+    engine.known["Water freezes at 0 degrees"] = " Fahrenheit, they said"
+    assert run(module, monkeypatch, tmp_path) == 0
+
+
+def test_two_of_four_known_answers_fails(checker, monkeypatch):
+    module, engine, tmp_path = checker
+    engine.script = [as_ids("two plus two is four"), as_ids("a warm orange glow"),
+                     as_ids("53, 59 and 61")]
+    engine.known["Water freezes at 0 degrees"] = " Fahrenheit"
+    engine.known["The capital of France is"] = " Lyon"
+    assert run(module, monkeypatch, tmp_path) == 1
+
+
+def test_known_answers_are_decoded_near_greedily(checker, monkeypatch):
+    # The answers were measured greedily; sampling at 0.7 could miss them on a healthy engine.
+    module, engine, tmp_path = checker
+    engine.script = [as_ids("four"), as_ids("orange"), as_ids("53")]
+    run(module, monkeypatch, tmp_path)
+    assert len(engine.known_calls) == 4, "every known-answer prompt must be asked"
+    for prompt, temperature, top_p in engine.known_calls:
+        assert temperature <= 0.01, f"{prompt!r} sampled at temperature {temperature}"
+        assert top_p == 1.0, f"{prompt!r} truncated with top_p {top_p}"
+
+
+def test_answers_match_case_insensitively(checker, monkeypatch):
+    module, engine, tmp_path = checker
+    engine.script = [as_ids("four"), as_ids("orange"), as_ids("53")]
+    engine.known["The capital of France is"] = " PARIS!"
+    engine.known["Monday, Tuesday, Wednesday,"] = " THURSDAY"
+    assert run(module, monkeypatch, tmp_path) == 0
+
+
+@pytest.mark.parametrize("continuation,right", [
+    (" 6, 7, 8, 9,", True),
+    ("6", True),
+    (" and then 6", True),
+    (" 16 eggs", False),          # 16 is not 6, though it contains a 6
+    (" 3 apples and 6 pears", False),   # the FIRST number has to be 6
+    (" no numbers at all", False),
+])
+def test_the_counting_prompt_checks_the_first_number(checker, continuation, right):
+    module, _engine, _tmp = checker
+    check = [c for p, _e, c in module.KNOWN_ANSWERS if p.startswith("1, 2")][0]
+    assert check(continuation) is right
