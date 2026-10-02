@@ -48,6 +48,22 @@ public:
     virtual int32_t maxDraftChunkTokens() const { return 64; }   // q_len_max
     virtual int32_t maxSequenceLength() const { return 2048; }   // max_seq_len
     
+    // Diagnostics, for localising a broken forward pass layer by layer against a reference
+    // implementation (tools/compare_forward.py). Non-pure for the same reason as the limits
+    // above: an engine that does not implement them still compiles, and reports a zero shape
+    // and a failed forward, which the C API turns into "not supported".
+    struct DebugShape {
+        int32_t n_channels = 0;
+        int32_t n_layers = 0;
+        int32_t hidden_dim = 0;
+        int32_t vocab_size = 0;
+    };
+    virtual DebugShape debugShape() const { return DebugShape{}; }
+    virtual bool debugForward(const int32_t* /*prompt_tokens*/, int32_t /*prompt_len*/,
+                              std::vector<float>& /*hidden*/, std::vector<float>& /*logits*/) {
+        return false;
+    }
+
     // For pure compute benchmarking
     virtual void allocateUnifiedMemoryMap() = 0;
     

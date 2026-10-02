@@ -157,6 +157,52 @@ int32_t AntigravityEngineNativeGenerate(
 );
 
 /**
+ * Shapes needed to size the buffers for AntigravityEngineDebugForward().
+ *
+ * Valid after AntigravityEngineLoadModel(); the engine reads n_layers, hidden_dim and
+ * vocab_size from the checkpoint.
+ *
+ * @return 0 on success, -1 if no model is loaded, -2 on a null argument, -3 if this engine
+ *         does not implement the diagnostics.
+ */
+int32_t AntigravityEngineDebugShape(
+    AntigravityEngineContext* ctx,
+    int32_t* out_n_channels,
+    int32_t* out_n_layers,
+    int32_t* out_hidden_dim,
+    int32_t* out_vocab_size
+);
+
+/**
+ * Diagnostic forward pass: every layer's output, and the logits, for the LAST prompt position.
+ *
+ * Exists to localise a broken forward pass against a reference implementation
+ * (tools/compare_forward.py) — this repository's gsm8k_full_checkpoint.json was produced by an
+ * engine emitting non-finite logits, and nothing in the API could show where they started.
+ * The prompt is fed to all n_channels through the same prefill and batched kernels as
+ * AntigravityEngineNativeGenerate(), so the numbers are the ones generation would see. Every
+ * channel gets the same input, so every channel must produce the same numbers.
+ *
+ * @param out_hidden       [(n_layers + 1) * n_channels * hidden_dim] floats: block 0 is the
+ *                         embedding lookup, block l + 1 the output of layer l, each block
+ *                         [n_channels, hidden_dim].
+ * @param hidden_capacity  Number of floats out_hidden can hold.
+ * @param out_logits       [n_channels * vocab_size] floats.
+ * @param logits_capacity  Number of floats out_logits can hold.
+ * @return 0 on success, -1 if no model is loaded, -2 on a bad argument, -3 if the forward pass
+ *         could not run, -4 if a capacity is smaller than the result (nothing is written).
+ */
+int32_t AntigravityEngineDebugForward(
+    AntigravityEngineContext* ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    float* out_hidden,
+    int64_t hidden_capacity,
+    float* out_logits,
+    int64_t logits_capacity
+);
+
+/**
  * Execute native Speculative Decoding decode using a Draft Engine.
  *
  * NOTE: `temperature` and `top_p` are accepted but currently IGNORED. Decoding is

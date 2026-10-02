@@ -53,6 +53,29 @@ public:
         float top_p
     ) override;
 
+    // Diagnostic forward pass for localising a broken forward pass against a reference
+    // implementation (tools/compare_forward.py). Feeds the prompt to all n_channels exactly as
+    // generate() does — same prefill code, same batched GEMMs — and for the LAST prompt
+    // position reads back every layer's output for every channel, then the logits.
+    //
+    //   hidden  (n_layers + 1) * n_channels * hidden_dim floats. Block 0 is the embedding
+    //           lookup; block l + 1 is layer l's output. Each block is [n_channels, hidden_dim].
+    //   logits  n_channels * vocab_size floats.
+    //
+    // Every channel is given the same input, so every channel must produce the same numbers;
+    // a difference between channels is itself a finding (a batch-stride or indexing defect).
+    // Returns false, with a message on stderr, if it cannot run.
+    bool debugForward(const int32_t* prompt_tokens, int32_t prompt_len,
+                      std::vector<float>& hidden, std::vector<float>& logits) override;
+    DebugShape debugShape() const override {
+        DebugShape shape;
+        shape.n_channels = config_.n_channels;
+        shape.n_layers = config_.n_layers;
+        shape.hidden_dim = config_.hidden_dim;
+        shape.vocab_size = config_.vocab_size;
+        return shape;
+    }
+
     // Run Speculative Decoding decode using a Draft Engine
     GenerationResult generateSpeculative(
         ITransformerEngine* draft_engine,
@@ -230,6 +253,8 @@ private:
     void dispatchGEMM(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C, uint32_t M, uint32_t K, uint32_t N);
     void dispatchRMSNorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> input, id<MTLBuffer> weight, id<MTLBuffer> output, uint32_t batch, uint32_t dim);
     void dispatchRoPE(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> q, id<MTLBuffer> k, uint32_t start_pos, uint32_t batch, uint32_t seq_len = 1);
+    void encodePrefill(const int32_t* prompt_tokens, int32_t prompt_len, uint32_t C,
+                       id<MTLBuffer> batch_hidden_1, id<MTLBuffer> batch_hidden_2);
     void forwardLayer(
         id<MTLCommandBuffer> cmdBuf,
         id<MTLComputeCommandEncoder> enc,

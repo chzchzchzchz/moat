@@ -1505,67 +1505,13 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
     return res;
 }
 
-GenerationResult MetalTransformerEngine::generate(
-    const int32_t* prompt_tokens,
-    int32_t prompt_len,
-    int32_t max_new_tokens,
-    float temperature,
-    float top_p
-) {
-    GenerationResult result;
-    result.channel_tokens.resize(config_.n_channels);
-    result.channel_logprobs.resize(config_.n_channels, 0.0f);
-    result.ttft_ms = 0;
-    result.tpot_ms = 0;
-    result.total_tokens = 0;
-    result.best_channel = 0;
-    result.best_score = 0;
-    
-    if (!weightsLoaded_) {
-        std::cerr << "[generate] Weights not loaded!" << std::endl;
-        return result;
-    }
-
-    // The KV cache holds max_seq_len positions per layer and decode writes at
-    // seq_pos = prompt_len + step. Nothing bounded that before, so a long enough
-    // prompt or generation walked past the end of every layer's cache.
-    {
-        antigravity::LimitError lim =
-            antigravity::checkSequence(prompt_len, max_new_tokens, config_.max_seq_len);
-        if (lim != antigravity::LimitError::Ok) {
-            std::cerr << "[generate] " << antigravity::describe(lim)
-                      << " (prompt_len=" << prompt_len << ", max_new_tokens="
-                      << max_new_tokens << ", max_seq_len=" << config_.max_seq_len
-                      << "); room for " << antigravity::remainingCapacity(prompt_len,
-                                                                          config_.max_seq_len)
-                      << " more tokens" << std::endl;
-            return result;
-        }
-    }
-
+// Prompt tokens 0 .. prompt_len-2 into every channel's KV cache, all C channels at once. The
+// last prompt token is left for the caller: generate() feeds it as the first decode step, and
+// debugForward() runs it one layer at a time so each layer's output can be read back.
+void MetalTransformerEngine::encodePrefill(const int32_t* prompt_tokens, int32_t prompt_len,
+                                           uint32_t C, id<MTLBuffer> batch_hidden_1,
+                                           id<MTLBuffer> batch_hidden_2) {
     const uint32_t H = config_.hidden_dim;
-    const uint32_t C = config_.n_channels;
-    const bool is_qwen = (config_.vocab_size > 32000);
-    const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
-    const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
-    
-    std::vector<std::mt19937> channel_rngs(C);
-    seedChannelRngs(channel_rngs);
-    
-    // Track active channels (not yet hit EOS)
-    std::vector<bool> channel_active(C, true);
-    
-    // Allocate unified hidden state buffers holding all C channels contiguously
-    size_t batch_hidden_bytes = C * H * sizeof(uint16_t);
-    id<MTLBuffer> batch_hidden_1 = [device_ newBufferWithLength:batch_hidden_bytes options:MTLResourceStorageModeShared];
-    id<MTLBuffer> batch_hidden_2 = [device_ newBufferWithLength:batch_hidden_bytes options:MTLResourceStorageModeShared];
-    
-    auto t_start = std::chrono::high_resolution_clock::now();
-    bool ttft_recorded = false;
-    double sum_decode_ms = 0;
-    int decode_steps = 0;
-    
-    // ---- Prefill: Process prompt tokens 0..prompt_len-2 into KV cache ----
     //
     // Several prompt tokens go into ONE command buffer. This loop used to create a command
     // buffer per prompt token and block on waitUntilCompleted each time, so a 100-token
@@ -1640,7 +1586,180 @@ GenerationResult MetalTransformerEngine::generate(
             [cmdBuf waitUntilCompleted];
         }
     }
+}
+
+bool MetalTransformerEngine::debugForward(const int32_t* prompt_tokens, int32_t prompt_len,
+                                          std::vector<float>& hidden,
+                                          std::vector<float>& logits) {
+    if (!weightsLoaded_) {
+        std::cerr << "[debugForward] weights not loaded" << std::endl;
+        return false;
+    }
+    if (prompt_tokens == nullptr) {
+        std::cerr << "[debugForward] no prompt" << std::endl;
+        return false;
+    }
+    const antigravity::LimitError lim =
+        antigravity::checkSequence(prompt_len, 0, config_.max_seq_len);
+    if (lim != antigravity::LimitError::Ok) {
+        std::cerr << "[debugForward] " << antigravity::describe(lim) << " (prompt_len="
+                  << prompt_len << ", max_seq_len=" << config_.max_seq_len << ")" << std::endl;
+        return false;
+    }
+
+    const uint32_t H = config_.hidden_dim;
+    const uint32_t C = config_.n_channels;
+    const uint32_t V = config_.vocab_size;
+    const uint32_t L = config_.n_layers;
+    hidden.assign((size_t)(L + 1) * C * H, 0.0f);
+    logits.assign((size_t)C * V, 0.0f);
+
+    const size_t batch_hidden_bytes = (size_t)C * H * sizeof(uint16_t);
+    id<MTLBuffer> batch_hidden_1 = [device_ newBufferWithLength:batch_hidden_bytes
+                                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> batch_hidden_2 = [device_ newBufferWithLength:batch_hidden_bytes
+                                                        options:MTLResourceStorageModeShared];
+    if (!batch_hidden_1 || !batch_hidden_2) {
+        std::cerr << "[debugForward] could not allocate hidden-state buffers" << std::endl;
+        return false;
+    }
+
+    // The same prefill generate() runs, not a copy of it.
+    encodePrefill(prompt_tokens, prompt_len, C, batch_hidden_1, batch_hidden_2);
+
+    // [C, H] of FP16 from a shared buffer into block `slot` of `hidden`.
+    auto readHidden = [&](id<MTLBuffer> buf, uint32_t slot) {
+        const _Float16* src = (const _Float16*)[buf contents];
+        float* dst = hidden.data() + (size_t)slot * C * H;
+        for (size_t i = 0; i < (size_t)C * H; i++) dst[i] = (float)src[i];
+    };
+
+    // The last prompt position, one command buffer per stage so every layer's output can be
+    // read back before the next layer overwrites the buffer it lives in. Command buffers on one
+    // queue run in order and each encoder is serial, so this is the same sequence of
+    // dispatches generate()'s first decode step encodes into a single buffer.
+    const uint32_t seq_pos = (uint32_t)prompt_len - 1;
+    uint32_t tok = (uint32_t)prompt_tokens[prompt_len - 1];
+    if (tok >= V) tok = 0;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        if (embedPipeline_) {
+            [enc setComputePipelineState:embedPipeline_];
+            for (uint32_t c = 0; c < C; c++) {
+                [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
+                [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+                [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
+                uint32_t hdim = H;
+                [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+                dispatchGrid(enc, embedPipeline_, MTLSizeMake(1, H, 1));
+            }
+        } else {
+            // A null embedding pipeline is silently skipped by generate(). Here it is reported:
+            // that is one of the failures this entry point exists to find.
+            std::cerr << "[debugForward] embedding pipeline is null; block 0 is whatever the "
+                         "buffer held" << std::endl;
+        }
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+    }
+    readHidden(batch_hidden_1, 0);
+
+    for (uint32_t l = 0; l < L; l++) {
+        id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+        id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            forwardLayer(cmdBuf, enc, (int)l, in_buf, out_buf, C, seq_pos);
+            [enc endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+        }
+        readHidden(out_buf, l + 1);
+    }
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        id<MTLBuffer> final_hidden = (L % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+        dispatchRMSNorm(enc, final_hidden, finalNorm_, scratch1_, C, H);
+        dispatchGEMM(enc, scratch1_, lmHead_, scratchLogits_, C, H, V);
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+    }
+    const _Float16* lsrc = (const _Float16*)[scratchLogits_ contents];
+    for (size_t i = 0; i < (size_t)C * V; i++) logits[i] = (float)lsrc[i];
+    return true;
+}
+
+GenerationResult MetalTransformerEngine::generate(
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    int32_t max_new_tokens,
+    float temperature,
+    float top_p
+) {
+    GenerationResult result;
+    result.channel_tokens.resize(config_.n_channels);
+    result.channel_logprobs.resize(config_.n_channels, 0.0f);
+    result.ttft_ms = 0;
+    result.tpot_ms = 0;
+    result.total_tokens = 0;
+    result.best_channel = 0;
+    result.best_score = 0;
     
+    if (!weightsLoaded_) {
+        std::cerr << "[generate] Weights not loaded!" << std::endl;
+        return result;
+    }
+
+    // The KV cache holds max_seq_len positions per layer and decode writes at
+    // seq_pos = prompt_len + step. Nothing bounded that before, so a long enough
+    // prompt or generation walked past the end of every layer's cache.
+    {
+        antigravity::LimitError lim =
+            antigravity::checkSequence(prompt_len, max_new_tokens, config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generate] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len << ", max_new_tokens="
+                      << max_new_tokens << ", max_seq_len=" << config_.max_seq_len
+                      << "); room for " << antigravity::remainingCapacity(prompt_len,
+                                                                          config_.max_seq_len)
+                      << " more tokens" << std::endl;
+            return result;
+        }
+    }
+
+    const uint32_t H = config_.hidden_dim;
+    const uint32_t C = config_.n_channels;
+    const bool is_qwen = (config_.vocab_size > 32000);
+    const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
+    const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
+    
+    std::vector<std::mt19937> channel_rngs(C);
+    seedChannelRngs(channel_rngs);
+    
+    // Track active channels (not yet hit EOS)
+    std::vector<bool> channel_active(C, true);
+    
+    // Allocate unified hidden state buffers holding all C channels contiguously
+    size_t batch_hidden_bytes = C * H * sizeof(uint16_t);
+    id<MTLBuffer> batch_hidden_1 = [device_ newBufferWithLength:batch_hidden_bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> batch_hidden_2 = [device_ newBufferWithLength:batch_hidden_bytes options:MTLResourceStorageModeShared];
+    
+    auto t_start = std::chrono::high_resolution_clock::now();
+    bool ttft_recorded = false;
+    double sum_decode_ms = 0;
+    int decode_steps = 0;
+    
+    // ---- Prefill: Process prompt tokens 0..prompt_len-2 into KV cache ----
+    // Factored out so debugForward() runs exactly this code rather than a copy of it.
+    encodePrefill(prompt_tokens, prompt_len, C, batch_hidden_1, batch_hidden_2);
+
     // ---- Decode: Autoregressive generation starting from prompt_tokens[prompt_len - 1] ----
     for (int step = 0; step < max_new_tokens; step++) {
         @autoreleasepool {

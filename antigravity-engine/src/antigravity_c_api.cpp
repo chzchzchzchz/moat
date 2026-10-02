@@ -514,6 +514,61 @@ void AntigravityEngineSanitizeBuffers(AntigravityEngineContext* ctx) {
     }
 }
 
+int32_t AntigravityEngineDebugShape(
+    AntigravityEngineContext* ctx,
+    int32_t* out_n_channels,
+    int32_t* out_n_layers,
+    int32_t* out_hidden_dim,
+    int32_t* out_vocab_size
+) {
+    if (!ctx || !out_n_channels || !out_n_layers || !out_hidden_dim || !out_vocab_size) return -2;
+    if (!ctx->nativeEngine) return -1;
+    const ITransformerEngine::DebugShape shape = ctx->nativeEngine->debugShape();
+    if (shape.n_channels <= 0 || shape.n_layers <= 0 || shape.hidden_dim <= 0 ||
+        shape.vocab_size <= 0) {
+        return -3;
+    }
+    *out_n_channels = shape.n_channels;
+    *out_n_layers = shape.n_layers;
+    *out_hidden_dim = shape.hidden_dim;
+    *out_vocab_size = shape.vocab_size;
+    return 0;
+}
+
+int32_t AntigravityEngineDebugForward(
+    AntigravityEngineContext* ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    float* out_hidden,
+    int64_t hidden_capacity,
+    float* out_logits,
+    int64_t logits_capacity
+) {
+    if (!ctx || !prompt_tokens || !out_hidden || !out_logits || prompt_len <= 0 ||
+        hidden_capacity <= 0 || logits_capacity <= 0) {
+        return -2;
+    }
+    if (!ctx->nativeEngine) return -1;
+    int32_t auth = CheckContextAuthorization(ctx, "sdk");
+    if (auth != 0) return auth;
+
+    std::vector<float> hidden, logits;
+    if (!ctx->nativeEngine->debugForward(prompt_tokens, prompt_len, hidden, logits)) return -3;
+
+    // The caller sized these from AntigravityEngineDebugShape(). If that disagrees with what
+    // came back, refuse and write nothing: a short buffer here would be overrun, which is the
+    // failure this whole API surface exists to help find.
+    if ((int64_t)hidden.size() > hidden_capacity || (int64_t)logits.size() > logits_capacity) {
+        std::cerr << "[AntigravityEngineDebugForward] buffers too small: need " << hidden.size()
+                  << " hidden and " << logits.size() << " logit floats, given "
+                  << hidden_capacity << " and " << logits_capacity << std::endl;
+        return -4;
+    }
+    std::memcpy(out_hidden, hidden.data(), hidden.size() * sizeof(float));
+    std::memcpy(out_logits, logits.data(), logits.size() * sizeof(float));
+    return 0;
+}
+
 int32_t AntigravityEngineNativeGenerate(
     AntigravityEngineContext* ctx,
     const int32_t* prompt_tokens,
