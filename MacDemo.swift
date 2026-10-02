@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import AppKit
 
@@ -63,7 +64,8 @@ class AppViewModel: ObservableObject {
             }
             
             DispatchQueue.main.async { self.status = "Loading weights..." }
-            let modelPath = "/Users/MohssineChazi2/moat/models/tinyllama/model_fp16.safetensors"
+            let modelDir = ProcessInfo.processInfo.environment["ANTIGRAVITY_MODEL_DIR"] ?? "models"
+            let modelPath = modelDir + "/tinyllama/model_fp16.safetensors"
             let res = modelPath.withCString { AntigravityEngineLoadModel(ctx, $0) }
             if res != 0 {
                 DispatchQueue.main.async { self.status = "Failed to load weights (err \(res))" }

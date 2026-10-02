@@ -67,7 +67,7 @@ public struct ContentView: View {
                     .font(.subheadline)
                     .bold()
                     .foregroundColor(.green)
-                Text("Audio, ASR, and reasoning are strictly local (0 bytes network). Class A Secure Enclave storage.")
+                Text("Audio, ASR, and reasoning are strictly local (0 bytes network). Records are encrypted with AES-256-GCM under a Keychain-held key.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

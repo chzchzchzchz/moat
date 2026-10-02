@@ -5,11 +5,17 @@ from mlx_lm.sample_utils import make_sampler
 import numpy as np
 import asyncio
 import time
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 app = FastAPI()
 
 # Restoring the massive 4B model since we just unlocked True Batched Inference
-path = "/Users/MohssineChazi2/moat/models/qwen3_5_4b_4bit"
+path = os.path.join(MOAT_ROOT, "models/qwen3_5_4b_4bit")
 print(f"Loading Journal Backend with {path}...")
 model, tokenizer = load(path, model_config={"trust_remote_code": True})
 

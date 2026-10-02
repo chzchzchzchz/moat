@@ -1,0 +1,787 @@
+{
+  "provenance": "Extracted from the first 50-problem reference run, before the per-sample truncation fix. generate()'s num_return_sequences pads every sequence to the batch's longest, so a length-based truncation test marked all 8 samples truncated whenever any one hit the cap. Every answer on 35 of 50 problems was discarded and the run reported 18.0% for both conditions with zero disagreements. Kept so the guards are tested against real broken data and not only against data constructed to trip them.",
+  "config": {
+    "samples": 8
+  },
+  "comparison": {
+    "n_problems": 50,
+    "baseline": {
+      "correct": 9,
+      "accuracy": 0.18,
+      "ci95": [
+        0.09770192668830174,
+        0.30796053677695
+      ]
+    },
+    "candidate": {
+      "correct": 9,
+      "accuracy": 0.18,
+      "ci95": [
+        0.09770192668830174,
+        0.30796053677695
+      ]
+    },
+    "paired": {
+      "only_candidate_correct": 0,
+      "only_baseline_correct": 0,
+      "both_or_neither": 50
+    },
+    "delta_accuracy": 0.0,
+    "p_value": 1.0,
+    "alpha": 0.05,
+    "significant": false,
+    "verdict": "no difference distinguishable from chance: +0.0 points over 50 problems, p = 1.0000 (the 0 problems the two conditions disagree on are consistent with a coin flip)"
+  },
+  "records": [
+    {
+      "problem_index": 0,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        18.0,
+        18.0,
+        20.0,
+        18.0,
+        98.0,
+        24.0,
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "problem_index": 1,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 2,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 3,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        180.0,
+        180.0,
+        540.0,
+        3780.0,
+        1260.0,
+        180.0,
+        180.0,
+        4260.0
+      ]
+    },
+    {
+      "problem_index": 4,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 5,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        16.0,
+        16.0,
+        16.0,
+        16.0,
+        16.0,
+        16.0,
+        48.0,
+        16.0
+      ]
+    },
+    {
+      "problem_index": 6,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 7,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 8,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 9,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 7,
+      "sample_answers": [
+        null,
+        3.0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 10,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 11,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 12,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 5,
+      "sample_answers": [
+        12.0,
+        null,
+        null,
+        null,
+        90.0,
+        null,
+        12.0,
+        null
+      ]
+    },
+    {
+      "problem_index": 13,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 14,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 15,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 3,
+      "sample_answers": [
+        4.0,
+        8000.0,
+        8000.0,
+        null,
+        null,
+        0.025,
+        null,
+        1.2
+      ]
+    },
+    {
+      "problem_index": 16,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 6,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        1.0,
+        null,
+        null,
+        null,
+        1.0
+      ]
+    },
+    {
+      "problem_index": 17,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 18,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        7.0,
+        4.0,
+        35.0,
+        7.0,
+        15.0,
+        7.0,
+        4.0,
+        1.0
+      ]
+    },
+    {
+      "problem_index": 19,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 20,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 21,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 22,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        7.0,
+        7.0,
+        4.0,
+        7.0,
+        7.0,
+        7.0,
+        7.0,
+        7.0
+      ]
+    },
+    {
+      "problem_index": 23,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 24,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 25,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 26,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        81.0,
+        233.0,
+        243.0,
+        248.0,
+        247.5,
+        243.0,
+        248.0,
+        248.0
+      ]
+    },
+    {
+      "problem_index": 27,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        989.92,
+        60.0,
+        16.0,
+        240.03,
+        900.0,
+        3600.0,
+        15.0,
+        1680.0
+      ]
+    },
+    {
+      "problem_index": 28,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        45.0,
+        40.0,
+        25.0,
+        40.0,
+        40.0,
+        60.0,
+        40.0,
+        15.0
+      ]
+    },
+    {
+      "problem_index": 29,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 30,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 31,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 32,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 33,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 34,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        23.0,
+        23.0,
+        23.0,
+        23.0,
+        23.0,
+        78.0,
+        23.0,
+        23.0
+      ]
+    },
+    {
+      "problem_index": 35,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        9.0,
+        9.0,
+        9.0,
+        9.0,
+        9.0,
+        9.0,
+        7.6,
+        9.0
+      ]
+    },
+    {
+      "problem_index": 36,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        30.0,
+        150.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        75.0,
+        5.0
+      ]
+    },
+    {
+      "problem_index": 37,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 38,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 39,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 40,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        8.0,
+        8.0,
+        2.0,
+        8.0,
+        8.0,
+        8.0,
+        2.0,
+        8.0
+      ]
+    },
+    {
+      "problem_index": 41,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 42,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        26.0,
+        26.0,
+        26.0,
+        26.0,
+        40.0,
+        26.0,
+        26.0,
+        26.0
+      ]
+    },
+    {
+      "problem_index": 43,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 44,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 7,
+      "sample_answers": [
+        null,
+        3.0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 45,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 46,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 7,
+      "sample_answers": [
+        null,
+        177.0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 47,
+      "n_samples_truncated": 8,
+      "n_samples_with_no_answer": 8,
+      "sample_answers": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "problem_index": 48,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ]
+    },
+    {
+      "problem_index": 49,
+      "n_samples_truncated": 0,
+      "n_samples_with_no_answer": 0,
+      "sample_answers": [
+        30.0,
+        88.0,
+        30.0,
+        30.0,
+        30.0,
+        7.0,
+        30.0,
+        3.75
+      ]
+    }
+  ]
+}

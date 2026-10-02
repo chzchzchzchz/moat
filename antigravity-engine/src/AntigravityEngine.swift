@@ -164,7 +164,10 @@ public final class AntigravityEngine {
         )
     }
 
-    /// Zero out all internal Metal buffers for Secure Enclave compliance
+    /// Zero out all internal Metal buffers.
+    ///
+    /// This is a plain memory wipe of shared MTLBuffers. It is not a Secure Enclave
+    /// operation and carries no hardware-backed guarantee.
     public func sanitizeBuffers() {
         if let handle = engineHandle {
             antigravity_sanitize_buffers(handle)

@@ -1,0 +1,488 @@
+name: CI
+
+on:
+  # Only main on push: every other branch is covered by its pull request, and
+  # listing both made each commit on a PR branch build twice.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp-bridge-contract:
+    name: C++ bridge contract (no GPU, no weights)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The bridge is pure C++ behind an opaque handle, so it links against stub
+      # implementations of the Metal C API and runs anywhere. This is the test that
+      # catches buffer-layout drift between generation and verification.
+      - name: Build contract test
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            src/antigravity_engine_c.cpp tests/test_bridge_contract.cpp \
+            -o bin/test_bridge_contract
+
+      - name: Run contract test
+        working-directory: antigravity-engine
+        run: ./bin/test_bridge_contract
+
+      # std::discrete_distribution given NaN weights returns index 0. The sampler fed
+      # it NaN whenever a single logit was non-finite, so a forward pass producing NaN
+      # emitted the same token forever and the run completed and wrote results — the
+      # shape of the 587-problem checkpoint in this repo. The arithmetic now lives in a
+      # Metal-free header so this is checked on every commit, not once by hand.
+      - name: Check token sampling against non-finite logits
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_sampling.cpp -o bin/test_sampling
+          ./bin/test_sampling
+
+      # Top-p used to std::sort the whole vocabulary to find a nucleus of a few dozen tokens:
+      # 18 ms per channel per token at Qwen's 151,936, about 180 ms of CPU per decode step at 8
+      # channels. It now partial-sorts, widening only as far as the nucleus needs, and the raw
+      # log-prob the engine used to compute in two further passes comes out of the sampler's
+      # own. Every token passes through this, so it is held to bit-for-bit agreement with what
+      # it replaced: the same token as a frozen copy of the old sampler on 2,304 draws, the same
+      # nucleus as a full sort on 432 draws with exact ties, and log-probs bit-identical to the
+      # engine's old loop. Timing is printed, not asserted; CI machines vary too much.
+      - name: Check the sampler against the one it replaced
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Isrc -Itests \
+            tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence
+          ./bin/test_sampling_equivalence
+
+      # generate() now samples its channels concurrently. The equivalence suite proves the
+      # threaded trajectory matches the serial one, but matching outputs do not prove the
+      # absence of a race — so it also runs under ThreadSanitizer, which flags a deliberately
+      # shared RNG with five data-race reports and this code with none.
+      - name: Check concurrent channel sampling under ThreadSanitizer
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O1 -g -fsanitize=thread -pthread -Isrc -Itests \
+            tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence_tsan
+          TSAN_OPTIONS=halt_on_error=1 ./bin/test_sampling_equivalence_tsan
+
+      # Why the degenerate run says "给": it is TinyLlama's token 31999, the last id in the
+      # vocabulary, and the sampler as it was then maps any non-finite logit to the last index
+      # under libc++ (index 0 under libstdc++). This pins that explanation to the library
+      # behaviour it rests on, here and again on macOS below.
+      - name: Check why the degenerate run emitted 给 (libstdc++)
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tests/test_gei_is_a_nan_signature.cpp -o bin/test_gei_is_a_nan_signature
+          ./bin/test_gei_is_a_nan_signature
+
+      # Both of these bounds stand between a caller-supplied integer and a write
+      # past the end of a Metal buffer, which does not fault — it corrupts the next
+      # allocation and yields plausible output. Neither was enforced anywhere:
+      # k_draft reached generateSpeculative straight from the public C API, and
+      # nothing compared prompt_len + max_new_tokens against the KV cache length.
+      - name: Check the generation argument bounds
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_engine_limits.cpp -o bin/test_engine_limits
+          ./bin/test_engine_limits
+
+      # The header parser decides where every weight comes from, and it was hand-rolled
+      # inline with four defects. The worst: "__metadata__" was skipped by finding the
+      # first '}' after the key, so metadata holding a nested object anywhere but last
+      # made parsing resume mid-object. A reproduction of that code on such a header
+      # returns one tensor named "format" carrying the real tensor's offsets, with the
+      # real tensor absent — and an absent tensor means its weight buffer keeps whatever
+      # it held. Nothing compared any offset against the file size either, so a truncated
+      # checkpoint was mmapped and read past its end. Both produce confident constant
+      # output rather than an error.
+      - name: Check the safetensors header parser
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_safetensors_header.cpp -o bin/test_safetensors_header
+          ./bin/test_safetensors_header
+
+      # Every weight in a BF16 checkpoint passes through bf16_to_fp16, which lived inside
+      # transformer_engine.mm where no test could reach it — what "verified" meant was a
+      # Python reimplementation agreeing with itself. Running the real function against an
+      # independent reference over all 65,536 bit patterns found two defects: a BF16 NaN
+      # with a mantissa below 0x10 became +Inf, and the subnormal path truncated where it
+      # should round. And F32 tensors had no path at all: they took a branch commented
+      # "already FP16 or compatible, direct copy", which copies the first half of the data
+      # and reads each pair of F32 bytes as one FP16 value. That one is not latent.
+      - name: Check weight dtype conversion
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_weight_convert.cpp -o bin/test_weight_convert
+          ./bin/test_weight_convert
+
+      # The xcframework packages only the static library — no .metal and no
+      # .metallib travel with it — and every shader path the engine tries is
+      # relative to the process working directory, which on a device resolves to
+      # nothing. src/shader_sources.h is the floor beneath that. If a kernel is
+      # edited and the header is not regenerated, the shipped binary keeps running
+      # the old kernel silently, so check both that the header matches the sources
+      # and that regenerating it is a no-op.
+      - name: Check embedded shader sources
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_embedded_shaders.cpp -o bin/test_embedded_shaders
+          ./bin/test_embedded_shaders
+          python3 scripts/embed_shaders.py
+          git diff --exit-code -- src/shader_sources.h \
+            || { echo "src/shader_sources.h is out of date; run python3 scripts/embed_shaders.py"; exit 1; }
+
+      # The INT4 packer decides the exact bytes the GPU reads. A layout that is off
+      # by one nibble or one scale index does not crash — it makes plausible garbage.
+      - name: Build and run the INT4 super-block packer test
+        working-directory: antigravity-engine
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_superblock_pack.cpp -o bin/test_superblock_pack
+          ./bin/test_superblock_pack
+
+      # Whether gemv_int4_kernel computes the right thing depends on something
+      # outside the kernel: that loadTensor really hands it a [K x N] row-major
+      # buffer. Get that wrong and every index stays in bounds — the answer is just
+      # wrong. This runs the kernel's arithmetic on the host against an FP16 GEMV.
+      - name: Check the INT4 GEMV arithmetic
+        working-directory: antigravity-engine
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/test_int4_gemv_math.cpp -o bin/test_int4_gemv_math
+          ./bin/test_int4_gemv_math
+
+      # Two implementations of the same format live in this repo: src/dequant.py,
+      # which the quantization tests are written against, and src/superblock_pack.h,
+      # which the engine actually calls at weight-load time. Nothing tied them
+      # together, so they could drift apart and the GPU would read bytes no test had
+      # ever checked. This compares them byte for byte.
+      - name: Cross-check the packer against src/dequant.py
+        working-directory: antigravity-engine
+        run: |
+          python3 -m pip install --quiet --upgrade pip numpy
+          python3 tests/superblock_crosscheck.py bin/test_superblock_pack
+
+      - name: Compile-check the C API surface
+        run: |
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -Iantigravity-engine/src antigravity-engine/src/antigravity_engine_c.cpp
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -Iantigravity-engine/src antigravity-engine/src/test_c_api_client.cpp
+          g++ -fsyntax-only -std=c++17 -Wall -Wextra -Werror \
+            -IAntigravityDemo.swiftpm/Core/include AntigravityDemo.swiftpm/Core/antigravity_engine_c.cpp
+
+  python-security:
+    name: Python security + verifier tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pytest numpy z3-solver
+
+      # Every suite here runs in under a few seconds without torch, a GPU or model
+      # weights. Among them: that model-generated code is not executed by default,
+      # and that the restricted expression evaluator rejects the interpreter escapes
+      # which defeated the previous __builtins__ whitelist.
+      #
+      # Deliberately excluded, with reasons:
+      # Suites needing torch run in the python-torch job below instead.
+      - name: Run Python test suites
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -v \
+            tests/test_restricted_eval.py \
+            tests/test_superblock_format.py \
+            tests/test_genprm.py \
+            tests/test_ast_adversarial_suite.py \
+            tests/test_attention.py \
+            tests/test_batch_generator.py \
+            tests/test_batched_speed.py \
+            tests/test_batched_speed_metal.py \
+            tests/test_dora.py \
+            tests/test_fuzz_extreme_inputs.py \
+            tests/test_quantization.py \
+            tests/test_speculative_alpha.py \
+            tests/test_verifier.py \
+            tests/test_quality_scoring.py \
+            tests/test_benchmark_quality_harness.py \
+            tests/test_engine_sanity_check.py \
+            tests/test_benchmark_reference_resume.py \
+            tests/test_forward_compare.py
+
+      - name: Syntax-check every Python source file
+        run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests
+
+      # compileall only proves a file parses. A module that reads a name above the
+      # line binding it parses fine and then raises NameError on import — the script
+      # is dead and nothing notices. Four scripts in this repo were in exactly that
+      # state, all from one edit, and compileall passed every one of them.
+      - name: Check for names used at import time before they are defined
+        run: python3 tools/check_import_time_names.py .
+
+  python-torch:
+    name: Python suites requiring torch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Split from the fast job so that job keeps sub-20s feedback; the CPU torch
+      # wheel alone takes about a minute to install.
+      - name: Install dependencies
+        run: |
+          # Derived from the imports these suites actually reach, not from memory:
+          # numpy, psutil, pytest, safetensors, tokenizers, torch, z3. transformers is
+          # imported lazily inside try blocks, so it is not required here.
+          python -m pip install --upgrade pip pytest numpy z3-solver safetensors tokenizers psutil
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+
+      # Cases needing TinyLlama weights or Apple Silicon self-skip: the benchmark
+      # guards on MPS, and the generation tests guard on the weights being present.
+      # Excluded entirely: test_orchestrator.py and test_soak_thermal.py, whose every
+      # test drives real generation and so has nothing left to run without weights.
+      - name: Run torch-dependent suites
+        working-directory: antigravity-engine
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -v \
+            tests/test_model_loader.py \
+            tests/test_therapist_sentinel.py \
+            tests/test_benchmark_rollout.py \
+            tests/test_full_system_top_to_bottom.py \
+            tests/test_forensic_hardware_physics.py
+
+  metal-gpu:
+    name: INT4 kernels on a real GPU (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Describe the GPU, if there is one
+        working-directory: antigravity-engine
+        run: |
+          system_profiler SPDisplaysDataType 2>/dev/null | head -20 || true
+          sysctl -n machdep.cpu.brand_string
+
+      # Its own job, not a step inside swift-build, because the answer decides what
+      # CI can verify about these kernels and behind a `swift build -v` log it was
+      # unreadable.
+      #
+      # Settled by measurement, both ways: on macos-14 this reports "no Metal device
+      # on this machine", so the hosted runners are arm64 VMs without GPU passthrough
+      # and the engine cannot run on them. macos-14-xlarge was probed too and that
+      # label is not available on this account — the job fails in four seconds with no
+      # logs — so there is no GitHub-hosted path to a GPU here at all. The engine's own
+      # numbers therefore come from scripts/run_quality_benchmark.sh on a Mac, or from
+      # a self-hosted runner via the quality-benchmark workflow's `runner` input. Every other check on the INT4 path reproduces the kernels'
+      # arithmetic on the CPU, which cannot catch a wrong barrier, a threadgroup
+      # array in the wrong address space, or a lane split that leaves tile cells
+      # unwritten. Only running the shader catches those.
+      - name: Run the INT4 kernels on the GPU
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          clang++ -std=c++17 -fobjc-arc -x objective-c++ -Isrc \
+            tests/test_metal_int4_gpu.mm \
+            -framework Metal -framework Foundation \
+            -o bin/test_metal_int4_gpu
+          ./bin/test_metal_int4_gpu | tee metal_probe.txt
+          {
+            echo "### INT4 kernels on the GPU"
+            echo
+            echo '```'
+            cat metal_probe.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q SKIPPED metal_probe.txt; then
+            echo "::warning::No Metal device on this runner — the INT4 kernels were compiled but NOT executed."
+          else
+            echo "::notice::The INT4 kernels executed on a real GPU and matched the host reference."
+          fi
+
+      - name: Upload the probe result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-probe
+          path: antigravity-engine/metal_probe.txt
+          if-no-files-found: warn
+
+  swift-build:
+    name: Swift SDK build + tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nothing else in this repository compiles these. swift build links the PREBUILT
+      # xcframework, so the Objective-C++ engine sources are never compiled by it, and
+      # any change to transformer_engine.mm was unverified by CI. Compile them directly.
+      #
+      # First in the job, because it is the step most likely to fail and it depends on
+      # nothing above it. It used to run after the xcframework unpack, so a plain
+      # redefinition in transformer_engine.mm cost a full macOS round trip to learn about.
+      - name: Compile the Objective-C++ Metal engine
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
+            src/transformer_engine.mm \
+            -framework Metal -framework Foundation
+          echo "transformer_engine.mm compiles"
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
+            src/antigravity_c_api.cpp \
+            -framework Metal -framework Foundation
+          echo "antigravity_c_api.cpp compiles"
+
+
+      # The sampler is tested on every commit, but on Linux, under libstdc++ — and the engine
+      # ships with Apple's libc++, whose std::sort, std::partial_sort and
+      # std::discrete_distribution are different implementations. Run the same suites here,
+      # with the toolchain the engine is actually built with. They need no GPU.
+      - name: Check the sampler under libc++ (the library the engine ships with)
+        working-directory: antigravity-engine
+        run: |
+          mkdir -p bin
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror -Isrc \
+            tests/test_sampling.cpp -o bin/test_sampling_libcxx
+          ./bin/test_sampling_libcxx
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Isrc -Itests \
+            tests/test_sampling_equivalence.cpp -o bin/test_sampling_equivalence_libcxx
+          ./bin/test_sampling_equivalence_libcxx
+          # The machine the degenerate run was made on used Apple's libc++. This is where the
+          # "non-finite logit -> token 31999 -> 给" explanation has to hold.
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tests/test_gei_is_a_nan_signature.cpp -o bin/test_gei_is_a_nan_signature_libcxx
+          ./bin/test_gei_is_a_nan_signature_libcxx
+
+      # Package.swift points its binaryTarget at frameworks/AntigravityEngine.xcframework,
+      # but only the .zip is committed, so a clean checkout cannot resolve it.
+      - name: Unpack the prebuilt xcframework
+        working-directory: antigravity-engine/frameworks
+        run: |
+          unzip -q -o AntigravityEngine.xcframework.zip
+          # The committed zip carries AppleDouble resource forks (._*, __MACOSX).
+          # Clang sees ._AntigravityEngine.h etc. as headers missing from the module
+          # umbrella and warns on every build. Drop them.
+          rm -rf __MACOSX
+          find AntigravityEngine.xcframework -name '._*' -delete
+          test -d AntigravityEngine.xcframework
+      - name: Compile Metal shaders
+        working-directory: antigravity-engine
+        run: |
+          set -e
+          mkdir -p build/metal
+          fail=0
+          for f in src/shaders/*.metal; do
+            name=$(basename "$f" .metal)
+            echo "--- $name ---"
+            if xcrun -sdk macosx metal -Werror -c "$f" -o "build/metal/$name.air"; then
+              xcrun -sdk macosx metallib "build/metal/$name.air" -o "build/metal/$name.metallib"
+              echo "    ok -> $name.metallib"
+            else
+              echo "    FAILED to compile $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # The .metallib files are committed, and the engine prefers them over the
+      # .metal sources. A kernel added to a source after its .metallib was built is
+      # simply absent from the library: no error, the pipeline just never exists and
+      # whatever needed it silently does nothing. MetalTransformerEngine detects this
+      # at runtime and recompiles the source, but shipping a stale library costs the
+      # startup compile every launch, so flag it here.
+      #
+      # The pairings are not by filename — they mirror the loadShaderLibrary() calls
+      # in src/transformer_engine.mm, which is the only thing that decides which
+      # source backs which library.
+      - name: Check committed .metallib files against their sources
+        working-directory: antigravity-engine
+        run: |
+          set -u
+          stale=0
+          check() {
+            src="src/shaders/$1"; lib="src/shaders/$2"
+            [ -f "$lib" ] || { echo "no $lib committed; nothing to check"; return; }
+            echo "--- $lib vs $src ---"
+            for kernel in $(grep -oE '^kernel void [A-Za-z0-9_]+' "$src" | awk '{print $3}'); do
+              # metallib embeds each exported function name as a literal string.
+              if strings "$lib" | grep -qx "$kernel"; then
+                echo "    ok       $kernel"
+              else
+                echo "    MISSING  $kernel"
+                stale=1
+              fi
+            done
+          }
+          check batched_gemm.metal      batched_gemm.metallib
+          check transformer_ops.metal   transformer_ops.metallib
+          check deltanet_forward.metal  deltanet.metallib
+          check moe_gemm.metal          moe.metallib
+          if [ "$stale" -ne 0 ]; then
+            echo
+            echo "A committed .metallib is missing kernels its .metal source defines."
+            echo "Rebuild it from the freshly compiled libraries uploaded by this run:"
+            echo "  cp build/metal/<name>.metallib src/shaders/<name>.metallib"
+            exit 1
+          fi
+
+      - name: Upload freshly built metallibs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metallibs
+          path: antigravity-engine/build/metal/*.metallib
+          if-no-files-found: warn
+
+      # Everything else verifying the INT4 path reproduces the kernels' arithmetic on
+      # the CPU, which cannot catch a mistake in the shader itself — a wrong barrier,
+      # a threadgroup array in the wrong address space, a lane split that leaves tile
+      # cells unwritten. Those need the shader to actually run. The macos-14 runner is
+      # arm64, so if it exposes a Metal device these kernels get executed for the
+      # first time. The test skips with exit 0 when there is no device, and fails only
+      # when a kernel runs and disagrees with the host reference.
+      - name: Show toolchain
+        run: swift --version
+
+      # This is the step that was missing: every Swift change gets compiled.
+      - name: Build
+        working-directory: antigravity-engine
+        run: swift build -v
+
+      # Tests needing TinyLlama weights self-skip via FileManager.fileExists, so the
+      # weight-free tests (tokenizer, SOAP parsing, encryption, vision refusal) still run.
+      - name: Test
+        working-directory: antigravity-engine
+        run: swift test

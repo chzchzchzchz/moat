@@ -3,10 +3,13 @@
 #include <filesystem>
 #include <vector>
 
+#include <cstdlib>
+
 namespace fs = std::filesystem;
 
 int main() {
-    std::string models_dir = "/Users/MohssineChazi2/moat/models/";
+    const char* env_dir = std::getenv("ANTIGRAVITY_MODEL_DIR");
+    std::string models_dir = (env_dir && env_dir[0] != '\0') ? std::string(env_dir) : std::string("models");
     
     // Find a .gguf file
     std::string gguf_file;

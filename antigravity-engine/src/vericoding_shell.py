@@ -3,6 +3,8 @@ Project Antigravity — Pillar B: Neurosymbolic Vericoding Shell (iPhone-Native)
 
 iPhone-First Design Constraints:
   - NO subprocess spawning (iOS sandbox prohibits fork/exec)
+    Note: in-process execution is not automatically safer. See safe_eval below
+    and iOSCodeExecutor.execute_simple_program for what is and is not contained.
   - NO Python runtime on device (everything is Swift/C++/Metal)
   - Verification runs IN-PROCESS via embedded Z3 C++ library (libz3.a)
   - Code execution sandbox uses iOS JavaScriptCore (JSC) engine, not Python
@@ -26,6 +28,74 @@ import hashlib
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+
+
+# ---------------------------------------------------------------------------
+# Restricted expression evaluation
+# ---------------------------------------------------------------------------
+#
+# This module previously used eval()/exec() with a __builtins__ whitelist. That
+# is not a sandbox: attribute traversal reaches the interpreter without needing
+# any builtin. Both of these escaped it and reached os in-process --
+#
+#   ().__class__.__base__.__subclasses__()  ->  catch_warnings  ->  os
+#
+# -- returning the working directory from the "safe math" path and the process
+# uid from the "restricted exec" path. The Z3 specification evaluators did not
+# even pass a builtins whitelist, so Python supplied the real one.
+#
+# safe_eval walks the AST instead and permits only the node types below, so an
+# attribute lookup or subscript that is not explicitly allowed never executes.
+
+import ast as _ast
+
+
+class UnsafeExpressionError(ValueError):
+    """Raised when an expression uses syntax outside the permitted subset."""
+
+
+_ALLOWED_NODES = (
+    _ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.BoolOp, _ast.Compare,
+    _ast.Call, _ast.Name, _ast.Load, _ast.Constant, _ast.Attribute,
+    _ast.Tuple, _ast.List, _ast.IfExp,
+    _ast.Add, _ast.Sub, _ast.Mult, _ast.Div, _ast.FloorDiv, _ast.Mod,
+    _ast.Pow, _ast.USub, _ast.UAdd, _ast.Not, _ast.And, _ast.Or,
+    _ast.Eq, _ast.NotEq, _ast.Lt, _ast.LtE, _ast.Gt, _ast.GtE,
+    _ast.BitAnd, _ast.BitOr, _ast.BitXor, _ast.LShift, _ast.RShift, _ast.Invert,
+)
+
+
+def safe_eval(expr: str, names: dict, allowed_attr_roots: frozenset = frozenset()):
+    """
+    Evaluate `expr` using only `names` and the node types in _ALLOWED_NODES.
+
+    Attribute access is refused unless the attribute is read from a bare name in
+    `allowed_attr_roots` (used for `z3.Int` and similar) and does not begin with
+    an underscore, which blocks the dunder traversal that defeats a builtins
+    whitelist.
+    """
+    try:
+        tree = _ast.parse(expr, mode="eval")
+    except SyntaxError as e:
+        raise UnsafeExpressionError(f"could not parse expression: {e}") from e
+
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise UnsafeExpressionError(
+                f"{type(node).__name__} is not permitted in a restricted expression"
+            )
+        if isinstance(node, _ast.Attribute):
+            if node.attr.startswith("_"):
+                raise UnsafeExpressionError(f"attribute {node.attr!r} is not permitted")
+            if not (isinstance(node.value, _ast.Name) and node.value.id in allowed_attr_roots):
+                raise UnsafeExpressionError(
+                    f"attribute access is only permitted on {sorted(allowed_attr_roots)}"
+                )
+        if isinstance(node, _ast.Name) and node.id not in names:
+            raise UnsafeExpressionError(f"name {node.id!r} is not defined in this context")
+
+    return eval(compile(tree, "<restricted>", "eval"), {"__builtins__": {}}, dict(names))
+
 
 # ─── iPhone Hardware Constants ───────────────────────────────────────────────
 
@@ -79,7 +149,9 @@ class EmbeddedZ3Verifier:
         Verify a function contract using Z3.
 
         This uses a STRUCTURED API (not raw code strings) that maps directly
-        to the Swift C++ binding on iOS. No eval(), no exec(), no subprocess.
+        to the Swift C++ binding on iOS. Specification strings are evaluated
+        through safe_eval, which walks the AST and permits only the operators,
+        literals and declared names it whitelists -- not through bare eval().
 
         Args:
             variables: {"name": "type"} where type is "Int", "Real", "Bool"
@@ -116,13 +188,13 @@ class EmbeddedZ3Verifier:
 
             # Add preconditions
             for pre_str in preconditions:
-                expr = eval(pre_str, {'z3': z3, **z3_vars})
+                expr = safe_eval(pre_str, {'z3': z3, **z3_vars}, frozenset({'z3'}))
                 s.add(expr)
 
             # Try to find counterexample to postconditions
             post_negations = []
             for post_str in postconditions:
-                expr = eval(post_str, {'z3': z3, **z3_vars})
+                expr = safe_eval(post_str, {'z3': z3, **z3_vars}, frozenset({'z3'}))
                 post_negations.append(z3.Not(expr))
 
             s.add(z3.Or(*post_negations) if len(post_negations) > 1 else post_negations[0])
@@ -194,7 +266,7 @@ class EmbeddedZ3Verifier:
                 s.add(z3.ULE(v, hi))
 
             # Check if operation can overflow
-            result_expr = eval(operation, {'z3': z3, **variables})
+            result_expr = safe_eval(operation, {'z3': z3, **variables}, frozenset({'z3'}))
 
             # For unsigned: check if result exceeds max value
             max_val = (1 << bit_width) - 1
@@ -241,8 +313,13 @@ class iOSCodeExecutor:
     as a fallback, but the iOS deployment uses JSC.framework exclusively.
     """
 
-    def __init__(self, timeout_ms: int = IOS_JSC_TIMEOUT_MS):
+    def __init__(
+        self,
+        timeout_ms: int = IOS_JSC_TIMEOUT_MS,
+        allow_unrestricted_exec: bool = False,
+    ):
         self.timeout_ms = timeout_ms
+        self.allow_unrestricted_exec = allow_unrestricted_exec
 
     def execute_math_expression(self, expr: str) -> Tuple[bool, str, Optional[str]]:
         """
@@ -269,18 +346,38 @@ class iOSCodeExecutor:
             pass
 
         try:
-            result = eval(expr, safe_globals, {})
+            result = safe_eval(expr, safe_globals, frozenset({'math'}))
             return True, str(result), None
+        except UnsafeExpressionError as e:
+            return False, '', f"rejected: {e}"
         except Exception as e:
             return False, '', str(e)
 
     def execute_simple_program(self, code: str) -> Tuple[bool, str, Optional[str]]:
         """
-        Execute a simple program in-process with restricted builtins.
+        Execute a program in-process with a restricted builtins mapping.
 
-        On iOS this maps to JavaScriptCore evaluation.
-        On macOS reference: uses restricted exec().
+        SECURITY: a builtins whitelist does not contain Python. Attribute
+        traversal from any reachable object reaches the interpreter without
+        using a single builtin, and this path was verified to obtain os and read
+        the process uid. Because exec() runs in this process there is also no
+        timeout and no memory cap: a loop here hangs the caller outright.
+
+        It therefore refuses unless allow_unrestricted_exec=True was passed to
+        the initializer. Prefer GenPRMVerifier.execute_code_unsandboxed(), which
+        at least runs in a subprocess under a timeout, a memory cap, a scrubbed
+        environment and an empty working directory.
+
+        On iOS this is intended to map to JavaScriptCore evaluation, which is a
+        real isolate; that binding is not implemented here.
         """
+        if not self.allow_unrestricted_exec:
+            return False, '', (
+                "In-process code execution is disabled: a restricted-builtins "
+                "namespace is not a sandbox. Pass allow_unrestricted_exec=True to "
+                "iOSCodeExecutor to override, or use "
+                "GenPRMVerifier.execute_code_unsandboxed() for subprocess limits."
+            )
         safe_globals = {
             '__builtins__': {
                 'print': print, 'range': range, 'len': len,

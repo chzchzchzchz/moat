@@ -22,6 +22,18 @@ from orchestrator import AntigravityEngine
 from native_bridge import NativeMetalEngine
 from tokenizer import LlamaTokenizer
 
+# These exercise real generation, which needs TinyLlama weights on disk. Without
+# them the orchestrator correctly raises rather than inventing output, so the test
+# cannot run. Skip instead of failing, the way the Swift suite skips its
+# weight-dependent cases.
+_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "tinyllama")
+_HAS_WEIGHTS = os.path.exists(os.path.join(_MODEL_DIR, "model.safetensors"))
+requires_weights = pytest.mark.skipif(
+    not _HAS_WEIGHTS,
+    reason=f"TinyLlama weights not found at {_MODEL_DIR}; real generation cannot run",
+)
+
+
 MODEL_DIR = "models/tinyllama"
 ORIGINAL_WEIGHTS = os.path.join(MODEL_DIR, "model.safetensors")
 CORRUPT_DIR = "scratch/corrupt_model"
@@ -155,6 +167,7 @@ def test_3_memory_step_function():
     gc.collect()
 
 
+@requires_weights
 def test_4_entropy_temperature():
     """Verify temperature-dependent sampling behavior."""
     model_dir = "models/qwen" if os.path.exists("models/qwen") else "models/tinyllama"

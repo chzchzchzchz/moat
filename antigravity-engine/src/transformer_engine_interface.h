@@ -16,6 +16,8 @@ struct GenerationResult {
     float best_score = 0;
 };
 
+// Search parameters for generateMCTS(). See its declaration below: this drives a
+// chunk-wise greedy best-of-N hill climb, not a Monte Carlo tree search.
 struct MCTSConfig {
     int chunk_tokens = 30;
     int num_chunks = 4;
@@ -37,7 +39,31 @@ public:
     virtual ~ITransformerEngine() = default;
 
     virtual bool loadWeights(const std::string& safetensors_path) = 0;
+
+    // Limits callers must respect, reported by the engine rather than assumed by
+    // the caller. Both bound a write into a Metal buffer, so exceeding either
+    // corrupts memory instead of failing — see src/engine_limits.h. Non-pure so an
+    // implementation that has not been audited still compiles; the defaults match
+    // TransformerConfig's, and an engine sizing its buffers differently overrides.
+    virtual int32_t maxDraftChunkTokens() const { return 64; }   // q_len_max
+    virtual int32_t maxSequenceLength() const { return 2048; }   // max_seq_len
     
+    // Diagnostics, for localising a broken forward pass layer by layer against a reference
+    // implementation (tools/compare_forward.py). Non-pure for the same reason as the limits
+    // above: an engine that does not implement them still compiles, and reports a zero shape
+    // and a failed forward, which the C API turns into "not supported".
+    struct DebugShape {
+        int32_t n_channels = 0;
+        int32_t n_layers = 0;
+        int32_t hidden_dim = 0;
+        int32_t vocab_size = 0;
+    };
+    virtual DebugShape debugShape() const { return DebugShape{}; }
+    virtual bool debugForward(const int32_t* /*prompt_tokens*/, int32_t /*prompt_len*/,
+                              std::vector<float>& /*hidden*/, std::vector<float>& /*logits*/) {
+        return false;
+    }
+
     // For pure compute benchmarking
     virtual void allocateUnifiedMemoryMap() = 0;
     
@@ -69,6 +95,20 @@ public:
         float top_p
     ) = 0;
 
+    // Chunk-wise best-of-N search over the generated sequence.
+    //
+    // NOT Monte Carlo Tree Search, despite the name, which is kept because it is
+    // part of the published C ABI (AntigravityEngineNativeMCTSGenerate). The
+    // algorithm is a greedy hill climb: for each of num_chunks rounds it generates
+    // branches_per_chunk candidate continuations of chunk_tokens each, scores them
+    // with the Process Reward heuristic below, appends the single best one to the
+    // running prefix, and moves on. There is no tree, no visit counts, no UCT
+    // selection and no backpropagation -- a losing branch is discarded immediately
+    // and never revisited, so the search cannot recover from an early wrong turn.
+    //
+    // The Process Reward heuristic is
+    //     score = logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5
+    // which is hand-tuned, not a learned value network or trained reward model.
     virtual MCTSResult generateMCTS(
         const int32_t* prompt_tokens,
         int32_t prompt_len,

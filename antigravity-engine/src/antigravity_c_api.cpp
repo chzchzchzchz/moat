@@ -8,6 +8,8 @@
 #include "license_verifier.h"
 #include "gguf_reader.h"
 #include "prm_weights.h"
+#include "engine_limits.h"
+#include <climits>
 #if defined(USE_VULKAN) && __has_include(<vulkan/vulkan.h>)
 #include "vulkan_transformer_engine.h"
 #endif
@@ -512,6 +514,61 @@ void AntigravityEngineSanitizeBuffers(AntigravityEngineContext* ctx) {
     }
 }
 
+int32_t AntigravityEngineDebugShape(
+    AntigravityEngineContext* ctx,
+    int32_t* out_n_channels,
+    int32_t* out_n_layers,
+    int32_t* out_hidden_dim,
+    int32_t* out_vocab_size
+) {
+    if (!ctx || !out_n_channels || !out_n_layers || !out_hidden_dim || !out_vocab_size) return -2;
+    if (!ctx->nativeEngine) return -1;
+    const ITransformerEngine::DebugShape shape = ctx->nativeEngine->debugShape();
+    if (shape.n_channels <= 0 || shape.n_layers <= 0 || shape.hidden_dim <= 0 ||
+        shape.vocab_size <= 0) {
+        return -3;
+    }
+    *out_n_channels = shape.n_channels;
+    *out_n_layers = shape.n_layers;
+    *out_hidden_dim = shape.hidden_dim;
+    *out_vocab_size = shape.vocab_size;
+    return 0;
+}
+
+int32_t AntigravityEngineDebugForward(
+    AntigravityEngineContext* ctx,
+    const int32_t* prompt_tokens,
+    int32_t prompt_len,
+    float* out_hidden,
+    int64_t hidden_capacity,
+    float* out_logits,
+    int64_t logits_capacity
+) {
+    if (!ctx || !prompt_tokens || !out_hidden || !out_logits || prompt_len <= 0 ||
+        hidden_capacity <= 0 || logits_capacity <= 0) {
+        return -2;
+    }
+    if (!ctx->nativeEngine) return -1;
+    int32_t auth = CheckContextAuthorization(ctx, "sdk");
+    if (auth != 0) return auth;
+
+    std::vector<float> hidden, logits;
+    if (!ctx->nativeEngine->debugForward(prompt_tokens, prompt_len, hidden, logits)) return -3;
+
+    // The caller sized these from AntigravityEngineDebugShape(). If that disagrees with what
+    // came back, refuse and write nothing: a short buffer here would be overrun, which is the
+    // failure this whole API surface exists to help find.
+    if ((int64_t)hidden.size() > hidden_capacity || (int64_t)logits.size() > logits_capacity) {
+        std::cerr << "[AntigravityEngineDebugForward] buffers too small: need " << hidden.size()
+                  << " hidden and " << logits.size() << " logit floats, given "
+                  << hidden_capacity << " and " << logits_capacity << std::endl;
+        return -4;
+    }
+    std::memcpy(out_hidden, hidden.data(), hidden.size() * sizeof(float));
+    std::memcpy(out_logits, logits.data(), logits.size() * sizeof(float));
+    return 0;
+}
+
 int32_t AntigravityEngineNativeGenerate(
     AntigravityEngineContext* ctx,
     const int32_t* prompt_tokens,
@@ -526,6 +583,21 @@ int32_t AntigravityEngineNativeGenerate(
     double* out_total_ms
 ) {
     if (!ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
+    if (ctx->nativeEngine) {
+        // prompt_len + max_new_tokens has to fit the KV cache: decode writes at
+        // seq_pos, which advances once per token from prompt_len, and nothing
+        // downstream bounded it. See src/engine_limits.h.
+        antigravity::LimitError lim = antigravity::checkSequence(
+            prompt_len, max_new_tokens, ctx->nativeEngine->maxSequenceLength());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerate] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << ctx->nativeEngine->maxSequenceLength() << ")"
+                      << std::endl;
+            return -2;
+        }
+    }
     if (!ctx->nativeEngine) return -1;
     int32_t auth = CheckContextAuthorization(ctx, "sdk");
     if (auth != 0) return auth;
@@ -574,6 +646,31 @@ int32_t AntigravityEngineNativeGenerateSpeculative(
     double* out_total_ms
 ) {
     if (!ctx || !draft_ctx || !prompt_tokens || !out_tokens || prompt_len <= 0 || max_new_tokens <= 0) return -2;
+    if (ctx->nativeEngine) {
+        // k_draft was the one generation argument nothing validated. Speculative
+        // decode forwards a chunk of k_draft + 1 rows in one pass, and q_len_max is
+        // what every scratch buffer was sized for, so an oversized k_draft writes
+        // past the end of all six of them by an amount the caller picks.
+        antigravity::LimitError lim = antigravity::checkDraftChunk(
+            k_draft, ctx->nativeEngine->maxDraftChunkTokens());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerateSpeculative] "
+                      << antigravity::describe(lim) << " (k_draft=" << k_draft
+                      << ", q_len_max=" << ctx->nativeEngine->maxDraftChunkTokens() << ")"
+                      << std::endl;
+            return -2;
+        }
+        lim = antigravity::checkSequence(prompt_len, max_new_tokens,
+                                        ctx->nativeEngine->maxSequenceLength());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerateSpeculative] "
+                      << antigravity::describe(lim) << " (prompt_len=" << prompt_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << ctx->nativeEngine->maxSequenceLength() << ")"
+                      << std::endl;
+            return -2;
+        }
+    }
     if (!ctx->nativeEngine || !draft_ctx->nativeEngine) return -1;
     if (!ctx->nativeEngine->weightsLoaded_ || !draft_ctx->nativeEngine->weightsLoaded_) return -1;
     int32_t auth = CheckContextAuthorization(ctx, "sdk");
@@ -616,6 +713,24 @@ int32_t AntigravityEngineNativeGenerateMultimodal(
     double* out_total_ms
 ) {
     if (!ctx || !out_tokens || max_new_tokens <= 0) return -2;
+    if (ctx->nativeEngine) {
+        // Prefill here is the image patches followed by the text tokens, so the
+        // cache has to hold both plus everything generated.
+        const int64_t prefill = (int64_t)(n_image_patches > 0 ? n_image_patches : 0)
+                              + (int64_t)(text_len > 0 ? text_len : 0);
+        antigravity::LimitError lim = antigravity::checkSequence(
+            (int32_t)std::min<int64_t>(prefill, INT32_MAX), max_new_tokens,
+            ctx->nativeEngine->maxSequenceLength());
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[AntigravityEngineNativeGenerateMultimodal] "
+                      << antigravity::describe(lim) << " (patches=" << n_image_patches
+                      << ", text_len=" << text_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << ctx->nativeEngine->maxSequenceLength() << ")"
+                      << std::endl;
+            return -2;
+        }
+    }
     if (!ctx->nativeEngine) return -1;
     int32_t auth_mm = CheckContextAuthorization(ctx, "multimodal");
     if (auth_mm != 0) return auth_mm;
@@ -670,8 +785,14 @@ int32_t AntigravityEngineNativeMCTSGenerate(
 
     MCTSResult res = ctx->nativeEngine->generateMCTS(prompt_tokens, prompt_len, cfg);
 
-    int max_capacity = cfg.chunk_tokens * cfg.num_chunks;
-    int n_toks = std::min((int)res.best_tokens.size(), max_capacity);
+    // out_tokens is documented as chunk_tokens * num_chunks entries. Multiplied in
+    // int32 that product overflows for large configs, and a wrapped-negative
+    // capacity would make the copy below silently write nothing; compute it wide
+    // and clamp.
+    const int64_t max_capacity = (int64_t)cfg.chunk_tokens * (int64_t)cfg.num_chunks;
+    const int64_t n_toks64 = std::min<int64_t>((int64_t)res.best_tokens.size(),
+                                               std::max<int64_t>(0, max_capacity));
+    const int n_toks = (int)n_toks64;
     for (int t = 0; t < n_toks; t++) {
         out_tokens[t] = res.best_tokens[t];
     }

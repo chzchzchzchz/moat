@@ -29,6 +29,30 @@ models/
 antigravity-engine/src/metal_runner
 antigravity-engine/src/test_c_api_client
 
+# Test binaries CI builds into antigravity-engine/bin/ on every run. The older
+# ones in that directory are tracked; new ones are build outputs, not sources.
+antigravity-engine/bin/test_embedded_shaders
+antigravity-engine/bin/test_superblock_pack
+antigravity-engine/bin/test_int4_gemv_math
+antigravity-engine/bin/test_engine_limits
+antigravity-engine/bin/test_metal_int4_gpu
+antigravity-engine/bin/test_sampling
+antigravity-engine/bin/test_safetensors_header
+antigravity-engine/bin/test_weight_convert
+antigravity-engine/bin/test_sampling_equivalence
+antigravity-engine/bin/test_sampling_equivalence_tsan
+antigravity-engine/bin/test_sampling_libcxx
+antigravity-engine/bin/test_sampling_equivalence_libcxx
+antigravity-engine/bin/test_gei_is_a_nan_signature
+antigravity-engine/bin/test_gei_is_a_nan_signature_libcxx
+
+# In-progress benchmark checkpoints. tools/benchmark_quality_reference.py writes one after
+# every problem so a killed run can resume, and deletes it once the real artifact exists. It
+# is working state, not a result: committing one mid-run records a measurement that is
+# neither finished nor labelled as unfinished.
+*.json.partial
+*.json.partial.tmp
+
 # Xcode / SwiftPM
 *.xcuserdata
 DerivedData/
@@ -50,3 +74,11 @@ credentials.json
 secrets.yaml
 secrets.yml
 secrets.json
+
+# Compiled Metal libraries. Build outputs — scripts/build_xcframework.sh, build_ios_app.sh and
+# scripts/run_quality_benchmark.sh all write them — and dangerous when committed: the engine
+# prefers a .metallib that exports every kernel name it needs, and a stale one does. The
+# committed transformer_ops.metallib predated three kernel fixes in its source, so a run that
+# found it ran the unfixed kernels while CI's name-only check passed. Without the binary the
+# engine compiles the .metal source, which is always current.
+antigravity-engine/src/shaders/*.metallib

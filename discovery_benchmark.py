@@ -2,10 +2,16 @@ import json
 import re
 from mlx_lm import load, generate
 from mlx_lm.sample_utils import make_sampler
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 def load_gsm8k(limit=3):
     data = []
-    with open('/Users/MohssineChazi2/moat/gsm8k_test_set.jsonl', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'gsm8k_test_set.jsonl'), 'r') as f:
         for i, line in enumerate(f):
             if i >= limit: break
             data.append(json.loads(line))
@@ -19,7 +25,7 @@ def extract_answer(text):
     return None
 
 def main():
-    path = "/Users/MohssineChazi2/moat/models/qwen3_5_2b_4bit"
+    path = os.path.join(MOAT_ROOT, "models/qwen3_5_2b_4bit")
     print(f"Loading {path} for Test-Time Compute Discovery...")
     model, tokenizer = load(path, model_config={"trust_remote_code": True})
     

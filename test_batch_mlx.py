@@ -2,8 +2,14 @@ import time
 import mlx.core as mx
 from mlx_lm import load, batch_generate
 from mlx_lm.sample_utils import make_sampler
+import os
 
-model, tokenizer = load("/Users/MohssineChazi2/moat/models/qwen3_5_4b_4bit", model_config={"trust_remote_code": True})
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
+
+model, tokenizer = load(os.path.join(MOAT_ROOT, "models/qwen3_5_4b_4bit"), model_config={"trust_remote_code": True})
 
 prompt = "Journal Entry: I am feeling overwhelmed and burned out. Insight:"
 input_ids = tokenizer.encode(prompt)

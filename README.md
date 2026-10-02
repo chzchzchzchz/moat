@@ -89,25 +89,91 @@ The engine supports multi-channel parallel decoding (e.g., N=4 channels). During
 
 ### 5. Security and Data Protection
 - **Zero Network Egress**: Inference runs locally with no external socket connections. The included `ZeroEgressNetworkAuditor` monitors OS socket counters to verify no outbound data leaves during processing.
+- **Model-Generated Code Execution (off by default)**: `GenPRMVerifier` can score a reasoning trace by running the Python the model emitted and comparing its output to the stated answer. Because the model's output is shaped by whatever text reaches the prompt, enabling this turns a prompt injection into code execution on the host, with filesystem and network access — which would also break the zero-egress property above. It is therefore disabled unless you pass `enable_code_execution=True`. When enabled, the subprocess is limited by a wall-clock timeout, `RLIMIT_AS` at `max_memory_mb` (POSIX), a scrubbed environment, an empty working directory and `python -I`. That is confinement, not a sandbox: there is no syscall filter, namespace, or network restriction.
 - **Encrypted Persistence**: Clinical notes and patient identifiers are encrypted at rest using AES-256-GCM via Apple CryptoKit. Keys are retrieved from the macOS/iOS Keychain (`kSecClassGenericPassword`), and decryption operations authenticate tag integrity before releasing plaintext.
 
 ---
 
-## Empirical Performance (Verified)
+## Performance — what is measured, and what is not
 
-Performance measured on Apple Silicon M-series hardware with TinyLlama 1.1B:
+Every throughput number this project has ever published, with its source:
 
-| Metric | Measured Value | Notes |
+| Claim | Where it comes from | Status |
 | :--- | :--- | :--- |
-| **Single-Channel Native Metal** | **~5.3 tokens/sec** | End-to-end custom C++ Metal compute shaders |
-| **4-Channel Parallel Decode** | **~27.6 aggregate tokens/sec** | 4 parallel rollout channels executed simultaneously |
-| **PyTorch MPS Fallback** | **~27.0 tokens/sec** | Single-channel reference via PyTorch MPS |
-| **Model VRAM Footprint** | **3,037 MB** | TinyLlama 1.1B in FP16 / BF16 representation |
-| **Post-Unload Memory** | **0 MB** | Full VRAM deallocation verified via Metal allocator |
+| 5.13763 tok/s single-channel | `antigravity-engine/benchmark_metrics.json` | committed artifact, no hardware, model, date or sample count recorded |
+| 5.28812 tok/s single-channel | `antigravity-engine/benchmark_real_weights.json` | committed artifact, same run description, different number |
+| 855.62 tok/s single-channel | `antigravity-engine/benchmark_results_v2.json` | committed artifact, 166x the other two for the same quantity |
+| 30,327.6 tok/s | `metal_hardware_proof.md` | **not token throughput** — `src/metal_runner.cpp` times one 8x2048x2048 GEMM and divides by the batch size. A TinyLlama decode step is 154 GEMMs plus attention, norms, RoPE and sampling |
+| ~27.0 tok/s (PyTorch MPS) | this README, until now | **no artifact contains this number** |
+| ~27.6 tok/s (4-channel) | this README, until now | **no artifact contains this number** |
 
-> **Note on Benchmarking**: Early iterations of this codebase contained mock loops that reported unverified throughputs (e.g., 243 tok/s). The figures above represent actual measured hardware execution with real weights generating verified text.
+Three committed artifacts give three different figures for single-channel
+decode, and two of the numbers this README used to headline are in no artifact
+at all. None of the artifacts records which chip, which OS, which model, when,
+or over how many samples — so none of them can be reproduced or compared, and
+this table is the honest summary: the engine's throughput is currently unknown.
+
+`tools/benchmark_throughput.py` is what replaces them. It measures the native
+engine against PyTorch MPS on one machine in one run and writes a JSON artifact
+carrying the hardware profile, every individual sample rather than the best one,
+the weight footprint, and the fraction of the machine's memory bandwidth reached.
+It exits non-zero and records the failure if anything did not run.
+
+Memory, which is measured and does reproduce:
+
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| Model VRAM footprint (FP16) | 3,037 MB | TinyLlama 1.1B, FP16/BF16, plus KV caches |
+| Post-unload memory | 0 MB | full deallocation verified via the Metal allocator |
+
+INT4 super-block weights are now on the inference path (`ANTIGRAVITY_INT4=1`),
+which should cut the projection weights to roughly a quarter of that. The
+resulting footprint and throughput have not been measured on hardware, so no
+number is quoted for them here.
+
+### Accuracy
+
+The claim this project exists to make is that N parallel reasoning channels buy
+accuracy. **That has not been demonstrated on this engine.**
+
+`antigravity-engine/antigravity_benchmark_results.json` is the only artifact
+that measures it. Its accuracies run 40%, 0%, 0%, 20%, 40% as channels go 1, 2,
+4, 8, 16 — read as a scaling curve, except the token counts show about five
+problems per row, where one problem is worth 20 points. The repo's other
+`antigravity_benchmark_results.json` scores 0% at every channel count.
+
+The often-quoted 68.8% -> 74.2% (n=449) result is real, but it came from
+HuggingFace running Qwen2.5-Math-1.5B. It is evidence that best-of-N works. It
+is not evidence about this engine, which did not run it.
+
+`tools/benchmark_quality.py` measures the engine itself on GSM8K. It reports
+each condition's Wilson interval, runs an exact paired test on the same
+problems, refuses to call a difference a lift when it cannot be distinguished
+from chance, and on a null result prints the sample size that would have been
+needed.
+
+On any Apple Silicon Mac, one command does the whole thing — GPU check, dylib
+build, weight download, measurement:
+
+```
+antigravity-engine/scripts/run_quality_benchmark.sh          # 40 problems
+PROBLEMS=200 antigravity-engine/scripts/run_quality_benchmark.sh
+```
+
+**This cannot be run in CI.** GitHub-hosted macOS runners are arm64 VMs without
+GPU passthrough: `MTLCreateSystemDefaultDevice()` returns nil on `macos-14`, which
+the `INT4 kernels on a real GPU (macOS)` job measures and reports rather than
+assumes. So CI compiles every shader with `-Werror` and checks the INT4 layout,
+packing and GEMV arithmetic against a host reference, but no kernel has ever
+executed and no accuracy number exists yet. The artifact the script writes is the
+number; until someone runs it on hardware, this project has no measured accuracy
+claim for its own engine.
 
 ---
+
+> **Blocked on hardware:** the engine's own 587-problem benchmark shows it emitting
+> one character regardless of input. What to run on an Apple Silicon Mac, in priority
+> order, and what has already been ruled out: [antigravity-engine/NEXT_ON_HARDWARE.md](antigravity-engine/NEXT_ON_HARDWARE.md)
 
 ## Proof That It Works
 
@@ -258,7 +324,14 @@ To maintain full transparency, here is the current engineering status of all sys
   - AES-256-GCM column encryption backed by Keychain Data Protection.
 
 - **Work in Progress & Roadmapped**:
-  - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics. Training an on-device neural verifier is in progress.
-  - **Tree Search**: The Best-of-N decoding currently conducts sequential multi-channel rollouts; full Monte Carlo Tree Search (MCTS) expansion is planned.
-  - **Speculative Sampling**: Speculative drafting currently uses greedy decoding rather than stochastic top-p sampling.
+  - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics — concretely `logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5`, hand-tuned rather than learned. Training an on-device neural verifier is in progress.
+  - **Tree Search**: Despite the name, `generateMCTS` / `AntigravityEngineNativeMCTSGenerate` is **not** Monte Carlo Tree Search. It is a chunk-wise greedy hill climb: each round generates N continuations, scores them with the PRM heuristic, appends the single best one and moves on. There is no tree, no visit counts, no UCT selection and no backpropagation, so it cannot recover from an early wrong turn. The name is retained because it is part of the published ABI. Real UCT expansion and backpropagation are planned.
+  - **Speculative Sampling**: `AntigravityEngineNativeGenerateSpeculative` accepts `temperature` and `top_p` but **ignores them** — both draft and target decode greedily, because the acceptance test is an exact match against the target's greedy pick, which is only distribution-correct for greedy. Proper stochastic speculative sampling needs a probability-ratio accept/reject step and is roadmapped. Output is also single-channel regardless of `n_channels`.
   - **Cross-Platform**: Windows ARM64 and Vulkan shader backends are experimental drafts and not yet functional for production use.
+
+- **Notes on Verification**:
+  - CI (`.github/workflows/ci.yml`) runs on every pull request: the C++ bridge contract test and C API compile checks under `-Werror` on Linux, the Python security and verifier tests on Linux, and `swift build` plus `swift test` on a macOS arm64 runner.
+  - Tests needing TinyLlama weights or Apple Silicon report as **skipped**, not passed, so the run output distinguishes what was verified from what could not run. The figures quoted above for full-weight inference still require Apple Silicon and real model weights, and are not reproduced by CI.
+  - `test_orchestrator.py` and `test_soak_thermal.py` remain outside CI: every test in them drives real generation, so nothing would run without weights.
+  - `Package.swift` points its `binaryTarget` at `frameworks/AntigravityEngine.xcframework`, but only the `.zip` is committed. Unzip it before `swift build`, as the CI job does, or the build fails to resolve the target.
+  - Set `ANTIGRAVITY_MODEL_DIR` to point the engine, the PRM weight loader and the test clients at a model directory outside the working tree.
