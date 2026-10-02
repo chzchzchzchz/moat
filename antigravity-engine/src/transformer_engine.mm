@@ -103,6 +103,26 @@ id<MTLLibrary> MetalTransformerEngine::loadShaderLibrary(
     NSString* srcPath = resolveShaderPath(metalSourceRelPath);
     NSError* err = nil;
 
+    // A .metallib older than its .metal source was built before the source's last edit, so it
+    // holds the OLD kernels — and exporting every required name, it passes the check below.
+    // That is not hypothetical: transformer_ops.metallib was committed on 2026-09-15 and three
+    // kernel fixes landed in its source afterwards (the KV-cache write bound, the RMSNorm
+    // reduction, the RoPE table bound), so any run that found the binary ran the unfixed
+    // kernels. Prefer the source whenever it is newer. The binaries are no longer committed,
+    // so a .metallib here was built locally after checkout, and modification times mean what
+    // they say.
+    if (libPath && srcPath) {
+        NSFileManager* fm = [NSFileManager defaultManager];
+        NSDate* libDate = [[fm attributesOfItemAtPath:libPath error:nil] fileModificationDate];
+        NSDate* srcDate = [[fm attributesOfItemAtPath:srcPath error:nil] fileModificationDate];
+        if (libDate && srcDate && [srcDate compare:libDate] == NSOrderedDescending) {
+            std::cerr << "[MetalTransformerEngine] " << libPath.UTF8String
+                      << " is older than " << srcPath.UTF8String
+                      << "; compiling the source so the current kernels run" << std::endl;
+            libPath = nil;
+        }
+    }
+
     id<MTLLibrary> prebuilt = nil;
     if (libPath) {
         prebuilt = [device_ newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&err];

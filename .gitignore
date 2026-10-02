@@ -74,3 +74,11 @@ credentials.json
 secrets.yaml
 secrets.yml
 secrets.json
+
+# Compiled Metal libraries. Build outputs — scripts/build_xcframework.sh, build_ios_app.sh and
+# scripts/run_quality_benchmark.sh all write them — and dangerous when committed: the engine
+# prefers a .metallib that exports every kernel name it needs, and a stale one does. The
+# committed transformer_ops.metallib predated three kernel fixes in its source, so a run that
+# found it ran the unfixed kernels while CI's name-only check passed. Without the binary the
+# engine compiles the .metal source, which is always current.
+antigravity-engine/src/shaders/*.metallib

@@ -83,7 +83,7 @@ kernel void dequantize_superblocks_kernel(
 // KERNEL 2: Fused Batched GEMM Kernel using Metal SIMD Matrix Tiles
 //
 // Computes: C [N x M] = A [N x K] * B_dequantized [K x M]
-// Uses simdgroup_matrix<half, 8, 8> for hardware acceleration.
+// Uses simdgroup_matrix multiply-accumulate on half tiles into a float accumulator.
 // =============================================================================
 kernel void batched_gemm_simdgroup(
     device const half*       activations   [[buffer(0)]], // [N x K]
@@ -92,17 +92,31 @@ kernel void batched_gemm_simdgroup(
     constant uint&           N_batch       [[buffer(3)]],
     constant uint&           K_dim         [[buffer(4)]],
     constant uint&           M_dim         [[buffer(5)]],
-    uint2 group_id [[threadgroup_position_in_grid]],
-    uint thread_idx [[thread_index_in_simdgroup]]
+    uint3 group_id  [[threadgroup_position_in_grid]],
+    uint  tid_in_tg [[thread_index_in_threadgroup]],
+    uint3 tg_size   [[threads_per_threadgroup]]
 ) {
     uint row_start = group_id.y * 8;
     uint col_start = group_id.x * 8;
+    uint helpers = tg_size.x * tg_size.y * tg_size.z;
 
     if (row_start >= N_batch || col_start >= M_dim) return;
 
-    // SIMD matrix accumulator (8x8 half precision)
-    simdgroup_matrix<half, 8, 8> acc_matrix;
-    acc_matrix = simdgroup_matrix<half, 8, 8>(0.0h);
+    // The running sum is FLOAT. It was half — simdgroup_matrix<half, 8, 8> — so every output
+    // was a running FP16 sum over K terms: 2,048 for the attention and MLP input projections,
+    // 5,632 for the down projection. FP16 carries about three significant digits; once the sum
+    // is large, small terms round away entirely, and past 65,504 it is Inf. The GEMV kernels,
+    // which the engine uses for a single row, already accumulated in float, so the same model
+    // was computed more accurately with one channel than with eight.
+    //
+    // Measured, so this is not over-sold: emulating FP16 accumulation on the CPU over TinyLlama
+    // left greedy output unchanged over 64 tokens (tools/experiments/fp16_accumulation.py), so
+    // this is NOT what broke gsm8k_full_checkpoint.json. It is the better kernel, and it
+    // removes one difference between the 1-channel and 8-channel paths.
+    //
+    // The tiles stay half: half x half products accumulate into the float matrix, so the
+    // bandwidth the GEMM reads is unchanged.
+    simdgroup_matrix<float, 8, 8> acc_matrix = simdgroup_matrix<float, 8, 8>(0.0f);
 
     // Accumulate over K dimension in chunks of 8
     for (uint k = 0; k < K_dim; k += 8) {
@@ -115,27 +129,22 @@ kernel void batched_gemm_simdgroup(
         // Load Weight Tile (B) [8 x 8] from device memory
         simdgroup_load(b_tile, weights + k * M_dim + col_start, M_dim);
 
-        // Hardware Multiply-Accumulate on SIMD Matrix Tile
         simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix);
     }
 
-    // Store result tile back to global memory C [N x M] with bounds checking
-    if (row_start + 8 <= N_batch && col_start + 8 <= M_dim) {
-        simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
-    } else {
-        threadgroup half edge_tile[64];
-        simdgroup_store(acc_matrix, edge_tile, 8);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (thread_idx == 0) {
-            for (uint r = 0; r < 8; r++) {
-                if (row_start + r < N_batch) {
-                    for (uint c = 0; c < 8; c++) {
-                        if (col_start + c < M_dim) {
-                            output[(row_start + r) * M_dim + (col_start + c)] = edge_tile[r * 8 + c];
-                        }
-                    }
-                }
-            }
+    // A float matrix cannot be simdgroup_store-d into a half buffer, so every tile is staged
+    // through threadgroup memory and converted per element. The copy is spread across the
+    // threadgroup and bounds-checked, so a tile hanging past N_batch or M_dim writes only its
+    // in-range cells — with 2 channels, which is the sanity check's default, that is every
+    // tile. It used to be one thread copying all 64 cells serially.
+    threadgroup float out_tile[64];
+    simdgroup_store(acc_matrix, out_tile, 8);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = tid_in_tg; e < 64; e += helpers) {
+        uint r = e >> 3;
+        uint c = e & 7;
+        if (row_start + r < N_batch && col_start + c < M_dim) {
+            output[(row_start + r) * M_dim + (col_start + c)] = half(out_tile[e]);
         }
     }
 }
@@ -170,7 +179,9 @@ kernel void fused_batched_gemm_int4(
 
     if (row_start >= N_batch || col_start >= M_dim) return;
 
-    simdgroup_matrix<half, 8, 8> acc_matrix = simdgroup_matrix<half, 8, 8>(0.0h);
+    // Float accumulator, as in batched_gemm_simdgroup — see the note there. The
+    // dequantized tile and the activations stay half.
+    simdgroup_matrix<float, 8, 8> acc_matrix = simdgroup_matrix<float, 8, 8>(0.0f);
 
     for (uint k = 0; k < K_dim; k += 8) {
         simdgroup_matrix<half, 8, 8> a_tile;
@@ -225,18 +236,17 @@ kernel void fused_batched_gemm_int4(
     // to not be a multiple of 8, which every dimension this engine uses today is
     // (2048, 5632, 256, 32000, 151936), but vocabularies like GPT-2's 50257 are not, and
     // the failure would be silently wrong logits rather than a crash.
-    if (row_start + 8 <= N_batch && col_start + 8 <= M_dim) {
-        simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim);
-    } else {
-        threadgroup half edge_tile[64];
-        simdgroup_store(acc_matrix, edge_tile, 8);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint e = tid_in_tg; e < 64; e += helpers) {
-            uint r = e >> 3;
-            uint c = e & 7;
-            if (row_start + r < N_batch && col_start + c < M_dim) {
-                output[(row_start + r) * M_dim + (col_start + c)] = edge_tile[e];
-            }
+    // A float accumulator cannot be simdgroup_store-d into a half buffer, so every tile is
+    // staged and converted per element, with the same bounds check — which also subsumes the
+    // fast path, since a full tile is simply one where every cell is in range.
+    threadgroup float out_tile[64];
+    simdgroup_store(acc_matrix, out_tile, 8);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = tid_in_tg; e < 64; e += helpers) {
+        uint r = e >> 3;
+        uint c = e & 7;
+        if (row_start + r < N_batch && col_start + c < M_dim) {
+            output[(row_start + r) * M_dim + (col_start + c)] = half(out_tile[e]);
         }
     }
 }
