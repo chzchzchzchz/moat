@@ -129,6 +129,25 @@ if ! PYTHONPATH=src "${PYTHON}" tools/check_engine_sanity.py \
       "${int4_flag[@]}"; then
   echo "Stopping: grading an engine in this state would produce a number that looks" >&2
   echo "like a weak model rather than the fault it is." >&2
+
+  # A failing check says the forward pass is broken, not where. The comparison against
+  # transformers says where: the first layer whose output departs from the reference, the
+  # first holding NaN or Inf, or the first where channels given the same input disagree.
+  # It needs torch and transformers, which the benchmark itself does not, so it runs when
+  # they are installed and otherwise prints the command.
+  say "Where does the forward pass go wrong?"
+  if "${PYTHON}" -c 'import torch, transformers' 2>/dev/null; then
+    PYTHONPATH=src "${PYTHON}" tools/compare_forward.py \
+      --model-dir "${MODEL_DIR}" \
+      --dylib build/lib/libantigravity_engine.dylib \
+      --channels "${CHANNELS}" \
+      "${int4_flag[@]}" \
+      --out forward_compare.json || true
+  else
+    echo "To find the layer: ${PYTHON} -m pip install torch transformers, then" >&2
+    echo "  PYTHONPATH=src ${PYTHON} tools/compare_forward.py --model-dir ${MODEL_DIR} \\" >&2
+    echo "      --dylib build/lib/libantigravity_engine.dylib --channels ${CHANNELS}" >&2
+  fi
   exit 1
 fi
 

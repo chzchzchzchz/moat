@@ -126,11 +126,32 @@ Two cheap checks before anything invasive:
 - **Compare `ANTIGRAVITY_INT4=1` against FP16.** If one path is clean and the other is
   not, that halves the search space.
 
-Beyond that, the fastest localisation is a layer-by-layer diff against `transformers`
-running the same weights, which needs API surface that does not exist yet — there is no
-way to read intermediate activations or raw logits through `antigravity_c_api.h`. A
-debug entry point returning the logits for one forward pass would be worth the small
-amount of new surface.
+Then **find the layer** — this used to need API surface that did not exist, and now does:
+
+```
+python3 -m pip install torch transformers
+PYTHONPATH=src python3 tools/compare_forward.py --model-dir models/bench \
+    --dylib build/lib/libantigravity_engine.dylib --channels 8
+```
+
+`scripts/run_quality_benchmark.sh` runs it automatically when the sanity check fails.
+`AntigravityEngineDebugForward` returns every layer's output for every channel, and the
+logits, for the last prompt position — through the same prefill code and the same batched
+GEMMs as generation (generate()'s prefill was factored out so both call it). The tool runs
+the same token ids through `transformers` in fp32 on the CPU and names the earliest of:
+
+- **the first block holding NaN or Inf** — the onset behind the 给 rows;
+- **the first block where channels disagree** — every channel gets identical input, so any
+  difference is a batch-indexing defect, found without the reference at all;
+- **the first block that departs from the reference** by more than 10% relative error.
+
+The thresholds are calibrated, not guessed: a correct FP16 engine, emulated on TinyLlama with
+FP16 storage and FP16 accumulation, stays within 1.05% per layer and 0.6% on the logits
+(`src/forward_compare.py` records the measurement), and a broken layer typically lands at
+50–150%. `tools/experiments/validate_compare_forward.py` checks the whole pipeline on real
+TinyLlama with a CPU stand-in for the engine: clean, it must agree; with an injected
+transposed `o_proj`, swapped SwiGLU operands, a NaN, or one corrupted channel, it must name
+the injected layer.
 
 ## 3. The measurement that has never been made
 
