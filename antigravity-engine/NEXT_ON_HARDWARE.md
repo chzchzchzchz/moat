@@ -85,12 +85,24 @@ it more positions to go wrong at.
 
 `tools/experiments/old_softmax_reduction.py` runs TinyLlama on the CPU with exactly that
 reduction in the attention softmax (half scores in, half probabilities out), against the
-correct softmax, greedy, on GSM8K:
+correct softmax, greedy, 60 new tokens, on the first five GSM8K problems in the reference
+benchmark's prompt format:
 
 | problem | correct softmax | the `c7d5196` softmax |
 | :--- | :--- | :--- |
 | 0 (114 tokens) | "…Janet's ducks lay 16 eggs per day. She eats three for breakfast…" | `тç disposér occurrence<unk> E E E Eтfast A E Justice e.DEADE cod.…` — word salad, a non-finite step at 5 |
 | 1 (72 tokens) | "…The robe takes 2 bolts of blue fiber and half that much white fiber…" | non-finite logits on **60 of 60** steps |
+| 2 (103 tokens) | step-by-step text | `…LEASEALEASEALEASEALEASE…` — salad, finite |
+| 3 (79 tokens) | step-by-step text | `YYYYYYYYYYYYYYYYYçççç Sobreetreet…` — salad, finite |
+| 4 (180 tokens) | step-by-step text | `aliasRU cer ceraliasexississississ…` — salad, finite |
+
+**5 of 5 problems degenerate with the old reduction, 0 of 5 with the correct one**, and the
+correct one has no non-finite logits on any of the 300 steps. 2 of the 5 old runs hit
+non-finite logits there. In the run's **own** input format — the bare question, no BOS, no
+template, as `run_full_gsm8k.py` sent it (`--bare`) — the old reduction gives non-finite
+logits on **4 of 5**: three from the very first step, one after `" He runs Bahn,"`. The
+artifact had 413 of 587 (70%). The correct softmax gives none; greedy on a bare question it
+simply ends with `</s>`, which is why the table uses the templated prompt for the text.
 
 Those are the artifact's two signatures. Greedy argmax over NaN picks id 0 (`<unk>`) in
 PyTorch; the engine's sampler under libc++ picked 31999 (给), as established above.
