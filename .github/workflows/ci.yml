@@ -234,7 +234,8 @@ jobs:
             tests/test_benchmark_quality_harness.py \
             tests/test_engine_sanity_check.py \
             tests/test_benchmark_reference_resume.py \
-            tests/test_forward_compare.py
+            tests/test_forward_compare.py \
+            tests/test_shader_reductions.py
 
       - name: Syntax-check every Python source file
         run: python -m compileall -q antigravity-engine/src src tests antigravity-engine/tests

@@ -60,9 +60,52 @@ logits**, not a model fixated on a character. And the artifact says more:
   a stricter one and said 382, 205 and 56. A non-finite value that appears at some position and then never
   leaves is what a NaN written into the KV cache looks like: every later step attends to it.
 
-**If the check passes on current code**, something on this branch fixed the forward pass,
-and it is worth knowing what: run the same check at `c7d5196` (where the artifact was made)
-and bisect. **If it fails**, the defect is still there; section 2 is where to start.
+### The cause: the softmax reduction — reproduced, without a GPU
+
+At `c7d5196`, `forwardLayer` — the path `generate()` used for every prefill and decode
+step — dispatched `softmax_kernel` with `min(cur_seq_len, 256)` threads per head, and the
+kernel (the source at `c7d5196`, and the `transformer_ops.metallib` committed at `3c5382e`
+that the engine loaded first: its AIR has the same six barriers and no SIMD intrinsics)
+combined the per-thread max and sum with
+
+```metal
+for (uint s = threads_per_threadgroup / 2; s > 0; s >>= 1)
+    if (tid < s) shared[tid] = op(shared[tid], shared[tid + s]);
+```
+
+That folds every partial into `shared[0]` only when the thread count is a power of two.
+For **247 of the first 256 positions** it is not, and the loop skips keys: 2 of 6, 36 of
+100, 127 of 255. So attention at those positions is normalised by a maximum and a sum
+that miss keys. A missed maximum makes `exp(score − max)` exceed 1; a missed sum makes the
+row add up to more than 1; and the result is stored as `half`, so a large enough miss is
+`inf`, which the value product and the next RMSNorm turn into NaN. Every GSM8K prompt is shorter than 256
+tokens, so every prefill position went through it, and the corrupted keys and values stay
+in the KV cache for the rest of the sequence. That is the onset, and longer prompts give
+it more positions to go wrong at.
+
+`tools/experiments/old_softmax_reduction.py` runs TinyLlama on the CPU with exactly that
+reduction in the attention softmax (half scores in, half probabilities out), against the
+correct softmax, greedy, on GSM8K:
+
+| problem | correct softmax | the `c7d5196` softmax |
+| :--- | :--- | :--- |
+| 0 (114 tokens) | "…Janet's ducks lay 16 eggs per day. She eats three for breakfast…" | `тç disposér occurrence<unk> E E E Eтfast A E Justice e.DEADE cod.…` — word salad, a non-finite step at 5 |
+| 1 (72 tokens) | "…The robe takes 2 bolts of blue fiber and half that much white fiber…" | non-finite logits on **60 of 60** steps |
+
+Those are the artifact's two signatures. Greedy argmax over NaN picks id 0 (`<unk>`) in
+PyTorch; the engine's sampler under libc++ picked 31999 (给), as established above.
+
+It was fixed in the source by `de36c23` (SIMD-group reductions, correct for any thread
+count) and not by anything on this branch; the matching RMSNorm loop was fixed in
+`24c3bae` (unreachable there: `min(dim, 256)` is 256 for every real model).
+`tests/test_shader_reductions.py` now fails if any shader reintroduces the loop — it
+flags three in the `c7d5196` source and none today. The stale metallibs that would have
+kept the old kernel loading are untracked, and a metallib older than its `.metal` is no
+longer loaded.
+
+**So the check below is expected to pass on current code.** If it does not, the defect
+is somewhere else as well; section 2 is where to start. Running it at `c7d5196` is the
+direct hardware confirmation of this cause.
 
 ### Already ruled out, so do not re-investigate
 
@@ -268,7 +311,7 @@ Every kernel in `src/shaders` has been read looking for the cause of the degener
 | `moe_router` | **fixed earlier** — `thread float logits[64]` indexed by a runtime count, and a softmax with no maximum subtracted |
 | `batched_gemm_simdgroup` | correct, including its bounds-checked edge store |
 | `gqa_attention_scores_kernel` | correct — `batch_idx` is always 0 because the grid's x extent is `n_heads`, matching a per-channel cache; mask is right for decode |
-| `softmax_kernel` | correct — dispatched at 32 threads so the cross-SIMD reduction degenerates properly; in-place is safe |
+| `softmax_kernel` | **the cause of the degenerate run, already fixed upstream** — at `c7d5196` its tree reduction skipped keys for any thread count that is not a power of two (see section 1); now SIMD-group reductions, correct at both dispatch widths (32, and `min(cur_seq_len, 256)` in the batched path); in-place is safe |
 | `attention_value_kernel` | correct — probs stride matches what the scores kernel wrote |
 | `silu_elementwise_mul_kernel` | correct for finite inputs; guards `gid >= size` |
 | `residual_add_kernel` | correct; guards `gid >= size` |
@@ -282,8 +325,10 @@ and `antigravity_c_api.cpp`'s `dequantPipeline`. None is deleted — each is the
 real work and two have had genuine bugs fixed in them — but each is now annotated where
 it is created, so none of them reads as a working feature.
 
-**No defect found in this audit explains the degenerate run.** Six of the fixes are
+**The audit of the current kernels missed the cause**, because by then it was fixed:
+`softmax_kernel` had been rewritten with SIMD-group reductions in `de36c23`, so reading
+today's source found it correct. It was found by decoding the metallib that run loaded and
+reading the kernels as they were at `c7d5196` (section 1). Six of the fixes above are
 latent: they need a dimension that is not a multiple of 8, a `hidden_dim` below 256, a
 sequence past `max_seq_len`, or a non-dense checkpoint, and none of those held for the
-TinyLlama run that produced it. Which means the cause is still open, and item 1 above is
-still the first thing to do.
+TinyLlama run. Item 1 is still the first thing to do — now as confirmation.
