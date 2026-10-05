@@ -26,7 +26,7 @@ voting is the interesting question, and any comparison with llama.cpp or MLX.
 Reproduce:
 
 ```
-MODEL_DIR=models/qwen35 PROMPT_FORMAT=qwen-chat-nothink MAX_TOKENS=512 \
+MODEL_DIR=models/qwen35 PROMPT_FORMAT=qwen-chat-nothink MAX_TOKENS=768 PROBLEMS=100 \
   scripts/run_quality_benchmark.sh
 python3 tools/compare_forward.py --model-dir models/qwen35
 PYTHONPATH=src python3 tools/benchmark_throughput.py --model models/qwen35 --bandwidth-gbs 56
