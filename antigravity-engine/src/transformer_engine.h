@@ -1,7 +1,9 @@
 #pragma once
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
+#include "sampling.h"
 #include <vector>
+#include <unordered_map>
 #include <string>
 #include <cstdint>
 #include <random>
@@ -51,6 +53,29 @@ public:
         float top_p
     ) override;
 
+    // Diagnostic forward pass for localising a broken forward pass against a reference
+    // implementation (tools/compare_forward.py). Feeds the prompt to all n_channels exactly as
+    // generate() does — same prefill code, same batched GEMMs — and for the LAST prompt
+    // position reads back every layer's output for every channel, then the logits.
+    //
+    //   hidden  (n_layers + 1) * n_channels * hidden_dim floats. Block 0 is the embedding
+    //           lookup; block l + 1 is layer l's output. Each block is [n_channels, hidden_dim].
+    //   logits  n_channels * vocab_size floats.
+    //
+    // Every channel is given the same input, so every channel must produce the same numbers;
+    // a difference between channels is itself a finding (a batch-stride or indexing defect).
+    // Returns false, with a message on stderr, if it cannot run.
+    bool debugForward(const int32_t* prompt_tokens, int32_t prompt_len,
+                      std::vector<float>& hidden, std::vector<float>& logits) override;
+    DebugShape debugShape() const override {
+        DebugShape shape;
+        shape.n_channels = config_.n_channels;
+        shape.n_layers = config_.n_layers;
+        shape.hidden_dim = config_.hidden_dim;
+        shape.vocab_size = config_.vocab_size;
+        return shape;
+    }
+
     // Run Speculative Decoding decode using a Draft Engine
     GenerationResult generateSpeculative(
         ITransformerEngine* draft_engine,
@@ -73,7 +98,20 @@ public:
         float top_p
     ) override;
     
-    // Run chunk-based Monte Carlo Tree Search
+    // Chunk-wise best-of-N search over the generated sequence.
+    //
+    // NOT Monte Carlo Tree Search, despite the name, which is kept because it is
+    // part of the published C ABI (AntigravityEngineNativeMCTSGenerate). The
+    // algorithm is a greedy hill climb: for each of num_chunks rounds it generates
+    // branches_per_chunk candidate continuations of chunk_tokens each, scores them
+    // with the Process Reward heuristic below, appends the single best one to the
+    // running prefix, and moves on. There is no tree, no visit counts, no UCT
+    // selection and no backpropagation -- a losing branch is discarded immediately
+    // and never revisited, so the search cannot recover from an early wrong turn.
+    //
+    // The Process Reward heuristic is
+    //     score = logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5
+    // which is hand-tuned, not a learned value network or trained reward model.
     MCTSResult generateMCTS(
         const int32_t* prompt_tokens,
         int32_t prompt_len,
@@ -82,7 +120,17 @@ public:
     
     // Query physical memory usage
     uint64_t getAllocatedBytes() const override;
+
+    // The real limits this engine's buffers were sized for.
+    int32_t maxDraftChunkTokens() const override { return config_.q_len_max; }
+    int32_t maxSequenceLength() const override { return config_.max_seq_len; }
     
+    // Store projection weights as INT4 super-blocks instead of FP16. Must be set
+    // before loadWeights(); afterwards the buffers already exist. Defaults from
+    // the ANTIGRAVITY_INT4 environment variable.
+    void setQuantizeOnLoad(bool on) { quantizeOnLoad_ = on; }
+    bool quantizeOnLoad() const { return quantizeOnLoad_; }
+
     void sanitizeBuffers() override;
     void print_l2_norm(id<MTLBuffer> buf, uint32_t elements, const std::string& name);
     void rollbackKVCache(uint32_t step); // Allows reverting KV cache for speculative rollback
@@ -108,6 +156,8 @@ private:
     id<MTLComputePipelineState> residualPipeline_;
     id<MTLComputePipelineState> embedPipeline_;
     id<MTLComputePipelineState> kvAppendPipeline_;
+    id<MTLComputePipelineState> gemvInt4Pipeline_;        // INT4 super-block GEMV (decode)
+    id<MTLComputePipelineState> fusedGemmInt4Pipeline_;   // INT4 super-block GEMM (prefill)
     
     // Model weight buffers (one per layer)
     struct LayerWeights {
@@ -123,6 +173,42 @@ private:
     };
     
     std::vector<LayerWeights> layerWeights_;
+
+    // Weight buffers holding INT4 super-blocks rather than FP16, and their [K x N]
+    // shape, which the packed bytes no longer carry. Decode is bandwidth-bound, so
+    // keeping these 4-bit in VRAM is what raises the throughput ceiling; they are
+    // dequantized into registers inside the kernel and never materialised as FP16.
+    struct QuantizedWeight { uint32_t K; uint32_t N; };
+    std::unordered_map<void*, QuantizedWeight> quantizedWeights_;
+    bool quantizeOnLoad_ = false;
+    // ANTIGRAVITY_SEED. When set, every generation call's channel RNGs are derived from it and
+    // from generationCalls_, so a whole run reproduces while successive calls still differ.
+    // Unset, channels are seeded from std::random_device exactly as before.
+    bool hasFixedSeed_ = false;
+    uint64_t fixedSeed_ = 0;
+    uint64_t generationCalls_ = 0;
+    void seedChannelRngs(std::vector<std::mt19937>& rngs);
+
+    // How many non-finite logits sampleToken() has had to discard. Non-zero means the
+    // forward pass produced NaN or Inf, which used to collapse sampling to token 0
+    // with no indication at all. generate() reports it so a run cannot look clean.
+    uint64_t nonFiniteLogitCount_ = 0;
+    uint64_t emptyDistributionCount_ = 0;
+
+public:
+    uint64_t nonFiniteLogitCount() const { return nonFiniteLogitCount_; }
+    uint64_t emptyDistributionCount() const { return emptyDistributionCount_; }
+private:
+
+    bool isQuantized(id<MTLBuffer> b) const {
+        return b && quantizedWeights_.count((__bridge void*)b) > 0;
+    }
+
+    // Pack an FP16 tensor into 144-byte super-blocks. Mirrors
+    // quantize_weights_int4 + repack_to_superblocks in src/dequant.py.
+    id<MTLBuffer> quantizeToSuperblocks(const uint16_t* fp16, size_t n_elements,
+                                        uint32_t K, uint32_t N);
+
     id<MTLBuffer> embedWeights_;      // [vocab_size, hidden_dim]
     id<MTLBuffer> finalNorm_;         // [hidden_dim]
     id<MTLBuffer> lmHead_;            // [vocab_size, hidden_dim]
@@ -150,9 +236,25 @@ private:
     uint64_t allocatedBytes_;
     
     // Internal helpers
+    // Launch exactly `grid` threads, packed into threadgroups of a sensible width.
+    //
+    // Most dispatch sites in this engine passed the total thread count as the
+    // THREADGROUP count with threadsPerThreadgroup = (1,1,1). On Apple GPUs a
+    // threadgroup is scheduled onto a 32-lane SIMD group, so that masks off 31 of
+    // every 32 lanes and, worse, leaves almost no memory requests in flight --
+    // which is what a bandwidth-bound decode needs. dispatchThreads takes the total
+    // thread count directly and handles a non-uniform remainder itself, so
+    // thread_position_in_grid keeps exactly the same meaning and no out-of-range
+    // threads are launched.
+    void dispatchGrid(id<MTLComputeCommandEncoder> enc,
+                      id<MTLComputePipelineState> pso,
+                      MTLSize grid);
+
     void dispatchGEMM(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C, uint32_t M, uint32_t K, uint32_t N);
     void dispatchRMSNorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> input, id<MTLBuffer> weight, id<MTLBuffer> output, uint32_t batch, uint32_t dim);
     void dispatchRoPE(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> q, id<MTLBuffer> k, uint32_t start_pos, uint32_t batch, uint32_t seq_len = 1);
+    void encodePrefill(const int32_t* prompt_tokens, int32_t prompt_len, uint32_t C,
+                       id<MTLBuffer> batch_hidden_1, id<MTLBuffer> batch_hidden_2);
     void forwardLayer(
         id<MTLCommandBuffer> cmdBuf,
         id<MTLComputeCommandEncoder> enc,
@@ -173,9 +275,23 @@ private:
         uint32_t q_len,
         uint32_t seq_pos
     );
-    int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p, std::mt19937& rng);
+    // raw_logprob, if given, receives the token's un-tempered log-probability, computed in
+    // the sampler's own passes. See antigravity::sampleTokenFromLogits.
+    int32_t sampleToken(const _Float16* logits, int vocab_size, float temperature, float top_p,
+                        std::mt19937& rng, float* raw_logprob = nullptr);
+    // Fold one sampling call's statistics into the running counters, warning once on the
+    // first empty distribution. Separate from sampleToken so generate() can sample its
+    // channels concurrently and then apply these in channel order, on one thread.
+    void recordSamplingStats(const antigravity::SamplingStats& stats, int vocab_size);
     
     // Safetensors parser
+    // Load a shader library, preferring a prebuilt .metallib but only when it
+    // exports every kernel in `requiredFunctions`; a .metallib committed before a
+    // .metal change would otherwise silently shadow the new kernels.
+    id<MTLLibrary> loadShaderLibrary(NSString* metallibRelPath,
+                                     NSString* metalSourceRelPath,
+                                     NSArray<NSString*>* requiredFunctions);
+
     bool parseSafetensors(const std::string& path);
     void reinitBuffersAndRoPE();
 };

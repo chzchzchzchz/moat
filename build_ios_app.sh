@@ -15,12 +15,16 @@ clang++ -O3 -std=c++17 -x objective-c++ -fobjc-arc \
     -c antigravity-engine/src/transformer_engine.mm -o transformer_engine.o
 
 clang++ -O3 -std=c++17 -x objective-c++ -fobjc-arc \
+    -c antigravity-engine/src/qwen35_engine.mm -o qwen35_engine.o
+
+clang++ -O3 -std=c++17 -x objective-c++ -fobjc-arc \
     -c antigravity-engine/src/antigravity_c_api.cpp -o antigravity_c_api.o
 
 # Compile Swift App CLI
 swiftc -O test_swift_app.swift \
     -import-objc-header antigravity-engine/src/antigravity_c_api.h \
     transformer_engine.o \
+    qwen35_engine.o \
     antigravity_c_api.o \
     -framework Metal -framework Foundation -lc++ \
     -o swift_app_runner

@@ -4,8 +4,8 @@
 #include <vector>
 #include <cmath>
 #include <cassert>
+#include "shader_sources.h"
 
-#define METALLIB_PATH "antigravity-engine/src/shaders/batched_gemm.metallib"
 
 struct SuperBlock {
     uint16_t scales[8];
@@ -42,13 +42,36 @@ int main() {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         assert(device != nil && "Metal device required");
 
-        NSString* libPath = @"src/shaders/batched_gemm.metallib";
-        if (![[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
-            libPath = @"antigravity-engine/src/shaders/batched_gemm.metallib";
-        }
+        // A prebuilt .metallib is only a fast path — it is a build artifact that may
+        // not be present, and when it is, it may predate a kernel added to the source.
+        // The embedded source (src/shader_sources.h) is always available, so use the
+        // library only when it exports what this test needs.
         NSError* error = nil;
-        id<MTLLibrary> library = [device newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&error];
-        assert(library != nil && "metallib must exist");
+        id<MTLLibrary> library = nil;
+        for (NSString* libPath in @[@"src/shaders/batched_gemm.metallib",
+                                    @"antigravity-engine/src/shaders/batched_gemm.metallib"]) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:libPath]) continue;
+            id<MTLLibrary> candidate =
+                [device newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&error];
+            if (candidate
+                && [candidate newFunctionWithName:@"dequantize_superblocks_kernel"]
+                && [candidate newFunctionWithName:@"batched_gemm_simdgroup"]) {
+                library = candidate;
+                break;
+            }
+        }
+        if (!library) {
+            const char* embedded = antigravity::shaders::find("batched_gemm");
+            assert(embedded != nullptr && "batched_gemm.metal must be embedded");
+            library = [device newLibraryWithSource:[NSString stringWithUTF8String:embedded]
+                                           options:[[MTLCompileOptions alloc] init]
+                                             error:&error];
+            if (!library) {
+                std::cerr << "failed to compile embedded batched_gemm.metal: "
+                          << error.localizedDescription.UTF8String << std::endl;
+            }
+        }
+        assert(library != nil && "a shader library must be available");
 
         id<MTLFunction> dequantFunc = [library newFunctionWithName:@"dequantize_superblocks_kernel"];
         id<MTLFunction> gemmFunc    = [library newFunctionWithName:@"batched_gemm_simdgroup"];

@@ -3,18 +3,23 @@ import time
 import os
 from mlx_lm import load, generate
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
+
 def load_gsm8k(limit=3):
     data = []
-    with open('/Users/MohssineChazi2/moat/gsm8k_test_set.jsonl', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'gsm8k_test_set.jsonl'), 'r') as f:
         for i, line in enumerate(f):
             if i >= limit: break
             data.append(json.loads(line))
     return data
 
 MODELS = [
-    ("0.8B", "/Users/MohssineChazi2/moat/models/qwen3_5_0_8b_4bit"),
-    ("2B", "/Users/MohssineChazi2/moat/models/qwen3_5_2b_4bit"),
-    ("4B", "/Users/MohssineChazi2/moat/models/qwen3_5_4b_4bit"),
+    ("0.8B", os.path.join(MOAT_ROOT, "models/qwen3_5_0_8b_4bit")),
+    ("2B", os.path.join(MOAT_ROOT, "models/qwen3_5_2b_4bit")),
+    ("4B", os.path.join(MOAT_ROOT, "models/qwen3_5_4b_4bit")),
 ]
 
 def main():
@@ -53,7 +58,7 @@ def main():
         except Exception as e:
             print(f"MLX Error for {name}:", e)
             
-    with open("/Users/MohssineChazi2/moat/benchmark_results.json", "w") as f:
+    with open(os.path.join(MOAT_ROOT, "benchmark_results.json"), "w") as f:
         json.dump(results, f, indent=2)
         
     print("Benchmark complete. Wrote benchmark_results.json")

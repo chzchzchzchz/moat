@@ -2,10 +2,16 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from mlx_lm import load, generate
 import sys
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 app = FastAPI()
 
-MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "/Users/MohssineChazi2/moat/models/qwen3_5_4b_4bit"
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(MOAT_ROOT, "models/qwen3_5_4b_4bit")
 print(f"Loading {MODEL_PATH}...")
 model, tokenizer = load(MODEL_PATH, model_config={"trust_remote_code": True})
 

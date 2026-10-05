@@ -5,9 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include "shader_sources.h"
 
-// Metal compiled library path
-#define METALLIB_PATH "antigravity-engine/src/shaders/batched_gemm.metallib"
 
 struct SuperBlock {
     uint16_t scales[8];            // FP16 scale factors
@@ -30,13 +29,35 @@ int main(int argc, char** argv) {
         }
         std::cout << "Metal GPU: " << [[device name] UTF8String] << "\n";
 
-        // 2. Load compiled metallib using non-deprecated URL API
-        NSString* libPath = [NSString stringWithUTF8String:METALLIB_PATH];
-        NSURL* libURL = [NSURL fileURLWithPath:libPath];
+        // 2. Build the shader library. A prebuilt .metallib is a build artifact that
+        // may be absent or may predate a kernel added to the source, so it is used
+        // only when it exports what this runner needs; src/shader_sources.h always has
+        // the source compiled into the binary.
         NSError* error = nil;
-        id<MTLLibrary> library = [device newLibraryWithURL:libURL error:&error];
+        id<MTLLibrary> library = nil;
+        for (NSString* libPath in @[@"src/shaders/batched_gemm.metallib",
+                                    @"antigravity-engine/src/shaders/batched_gemm.metallib"]) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:libPath]) continue;
+            id<MTLLibrary> candidate =
+                [device newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&error];
+            if (candidate
+                && [candidate newFunctionWithName:@"dequantize_superblocks_kernel"]
+                && [candidate newFunctionWithName:@"batched_gemm_simdgroup"]) {
+                library = candidate;
+                break;
+            }
+        }
         if (!library) {
-            std::cerr << "Error loading metallib: " << [[error localizedDescription] UTF8String] << "\n";
+            const char* embedded = antigravity::shaders::find("batched_gemm");
+            if (embedded) {
+                library = [device newLibraryWithSource:[NSString stringWithUTF8String:embedded]
+                                               options:[[MTLCompileOptions alloc] init]
+                                                 error:&error];
+            }
+        }
+        if (!library) {
+            std::cerr << "Error building shader library: "
+                      << [[error localizedDescription] UTF8String] << "\n";
             return 1;
         }
 

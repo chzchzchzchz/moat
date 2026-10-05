@@ -104,7 +104,10 @@ int32_t AntigravityEngineVerifyCandidates(
 uint64_t AntigravityEngineGetAllocatedMemoryBytes(const AntigravityEngineContext* ctx);
 
 /**
- * Zero out all internal Metal buffers for Secure Enclave compliance.
+ * Zero out all internal Metal buffers (activations, weights, output, KV cache).
+ *
+ * This is a plain memory wipe of shared MTLBuffers. It is not a Secure Enclave
+ * operation and carries no hardware-backed guarantee.
  *
  * @param ctx Engine handle pointer.
  */

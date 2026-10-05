@@ -19,6 +19,11 @@ import torch.optim as optim
 import numpy as np
 from pathlib import Path
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+
 # Set seeds for deterministic training
 torch.manual_seed(42)
 np.random.seed(42)
@@ -120,7 +125,7 @@ def train_prm():
     print("\n✅ PRM Training Completed Successfully!")
     
     # Export to Safetensors
-    models_dir = Path("/Users/MohssineChazi2/moat/models")
+    models_dir = Path(os.path.join(MOAT_ROOT, "models"))
     models_dir.mkdir(parents=True, exist_ok=True)
     safetensors_path = models_dir / "prm_head.safetensors"
 
@@ -141,7 +146,7 @@ def train_prm():
         print(f"Could not export safetensors: {e}")
 
     # Export to C++ Header for Native Metal Engine
-    header_path = Path("/Users/MohssineChazi2/moat/antigravity-engine/src/prm_weights.h")
+    header_path = Path(os.path.join(MOAT_ROOT, "antigravity-engine/src/prm_weights.h"))
     w1 = model.fc1.weight.detach().cpu().numpy() # [64, 2048]
     b1 = model.fc1.bias.detach().cpu().numpy()   # [64]
     w2 = model.fc2.weight.detach().cpu().numpy() # [1, 64]

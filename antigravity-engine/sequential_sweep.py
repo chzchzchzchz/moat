@@ -1,7 +1,12 @@
 import os
 import re
 
-repo_root = "/Users/MohssineChazi2/moat/antigravity-engine"
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+
+repo_root = os.path.join(MOAT_ROOT, "antigravity-engine")
 allowed_exts = {".py", ".cpp", ".mm", ".h", ".metal", ".swift", ".kt", ".md", ".c", ".txt", ".sh"}
 exclude_dirs = {".git", "venv", "build", ".build", "mcache", "build_xcf", "src/shaders"}
 

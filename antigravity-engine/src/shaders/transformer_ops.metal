@@ -19,20 +19,35 @@ kernel void rmsnorm_kernel(
     device const half* x_b = x + batch_idx * dim;
     device half* out_b = out + batch_idx * dim;
     
-    threadgroup float sum_sq_shared[1024]; 
-    
+    // 1024 is the largest threadgroup an Apple GPU will schedule, so this bounds any
+    // dispatch. dispatchRMSNorm currently asks for min(dim, 256).
+    threadgroup float sum_sq_shared[1024];
+
     float local_sum = 0.0;
     for (uint i = tid; i < dim; i += threads_per_threadgroup) {
         float val = (float)x_b[i];
         local_sum += val * val;
     }
     sum_sq_shared[tid] = local_sum;
-    
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    
-    // Reduction
-    for (uint s = threads_per_threadgroup / 2; s > 0; s >>= 1) {
-        if (tid < s) {
+
+    // Tree reduction, halving ROUNDED UP with a bounds guard.
+    //
+    // This previously started at threads_per_threadgroup / 2 and halved with >>= 1,
+    // which only sums every entry when the thread count is a power of two. At 200
+    // threads it summed 128 of them and silently discarded the other 72; at 100 it
+    // summed 64. The result is an RMS norm computed from a fraction of the row, which
+    // under-estimates mean_sq, over-scales the activations, and pushes them toward the
+    // Inf and NaN that then propagate through the rest of the layer.
+    //
+    // Not reachable at present: threads_per_threadgroup is min(dim, 256) and every real
+    // hidden_dim is at least 256, so the count is exactly 256 and the old loop was
+    // correct. It becomes reachable the moment that dispatch changes or a model with a
+    // hidden_dim below 256 is loaded, and it would fail silently, so it is fixed rather
+    // than noted.
+    for (uint s = (threads_per_threadgroup + 1u) / 2u; s > 0u; s = (s == 1u) ? 0u : (s + 1u) / 2u) {
+        if (tid < s && tid + s < threads_per_threadgroup) {
             sum_sq_shared[tid] += sum_sq_shared[tid + s];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -58,6 +73,7 @@ kernel void rope_kernel(
     constant uint& n_kv_heads [[buffer(6)]],
     constant uint& head_dim [[buffer(7)]],
     constant uint& start_pos [[buffer(8)]],
+    constant uint& max_seq [[buffer(9)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     uint batch_seq_idx = gid.x;
@@ -69,7 +85,14 @@ kernel void rope_kernel(
     
     uint seq_pos = batch_seq_idx % seq_len;
     uint absolute_pos = start_pos + seq_pos;
-    
+
+    // The frequency tables hold max_seq entries. Without this the read runs off the
+    // end of them, which is the same defect kv_cache_append_kernel had: an
+    // out-of-bounds device read that does not fault, just returns whatever is next in
+    // the allocation and rotates Q and K by a garbage angle. checkSequence() now bounds
+    // the caller, but this kernel should not depend on that to stay in its own buffers.
+    if (absolute_pos >= max_seq) return;
+
     float f_cos = (float)freqs_cos[absolute_pos * half_dim + i];
     float f_sin = (float)freqs_sin[absolute_pos * half_dim + i];
     
@@ -348,9 +371,16 @@ kernel void kv_cache_append_kernel(
     uint dim_idx = gid.z;
     
     if (q_idx >= q_len || head_idx >= n_kv_heads || dim_idx >= head_dim) return;
-    
+
+    // max_seq was passed in but never used as a bound. Without this, a seq_pos at
+    // or past the cache length writes outside this head's region: for heads before
+    // the last that silently corrupts the NEXT head's cache, and for the last head
+    // it runs off the end of the buffer. Neither shows up as a failure.
+    uint slot = seq_pos + q_idx;
+    if (slot >= max_seq) return;
+
     uint slice_idx = (q_idx * n_kv_heads + head_idx) * head_dim + dim_idx;
-    uint cache_idx = (head_idx * max_seq + seq_pos + q_idx) * head_dim + dim_idx;
-    
+    uint cache_idx = (head_idx * max_seq + slot) * head_dim + dim_idx;
+
     cache[cache_idx] = slice[slice_idx];
 }

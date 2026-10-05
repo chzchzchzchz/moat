@@ -1,9 +1,14 @@
 import sys
 import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-sys.path.insert(0, "/Users/MohssineChazi2/moat/antigravity-engine/src")
+sys.path.insert(0, os.path.join(MOAT_ROOT, "antigravity-engine/src"))
 from genprm_verifier import GenPRMVerifier
+
 
 model_dir = "models/qwen"
 prob = "Janet's ducks lay 20 eggs per day. She eats 3 for breakfast every morning and uses 4 for baking. She sells the remainder at the farmers' market for $3 per egg. How much money does she make in 5 days?"

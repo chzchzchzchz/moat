@@ -22,10 +22,21 @@ Standard autoregressive language model inference on mobile devices suffers from 
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **llama.cpp (INT4 CPU)** | 125.0 ms | 24.5 tok/s | 3.1 GB | N/A (Single Pass) | Compliant (Slow) |
 | **Apple MLX (FP16)** | 95.0 ms | 42.0 tok/s | 5.8 GB | N/A (Single Pass) | **NON-COMPLIANT (OOM)** |
-| **Antigravity (Python Engine Layer)** | 63.1 ms | 620.0 tok/s | 0.79 GB | 0.9995 (Live List-Wise) | Compliant ✅ |
-| **Antigravity (Native Metal SIMD GPU)** | **12.4 ms** | **30,327.6 tok/s** | **0.79 GB** | **0.9995 (Live List-Wise)** | **Compliant ✅ (6.88x Speedup)** |
+| **Antigravity (Python Engine Layer)** | 63.1 ms | 620.0 tok/s † | 0.79 GB | 0.9995 (Live List-Wise) | Compliant ✅ |
+| **Antigravity (Native Metal SIMD GPU)** | **12.4 ms** | **30,327.6 GEMM/s** † | **0.79 GB** | **0.9995 (Live List-Wise)** | Compliant ✅ |
 
-*Note: Native Metal GPU matrix tile GEMM throughput measured live via compiled C++ runner (`metal_runner`) on Apple Silicon hardware.*
+> † **These two rows do not measure the same thing as the two above them, and the
+> table must not be read as a like-for-like comparison.** The llama.cpp and MLX
+> figures are end-to-end decode: a full forward pass through every layer per
+> token. The Antigravity figures come from `metal_runner`, which times a single
+> 2048x2048 projection GEMM and divides by the batch size — see 2.1 for what
+> that converts to. The 0.79 GB and 0.9995 entries have no artifact behind them
+> in this repository either.
+>
+> Measured end-to-end decode for this engine is in
+> `antigravity-engine/benchmark_metrics.json` and its two companions, which give
+> 5.13763, 5.28812 and 855.62 tok/s for the same quantity. It is not known which,
+> if any, is right; `tools/benchmark_throughput.py` exists to replace all three.
 
 ---
 
@@ -38,10 +49,32 @@ Native Metal compute shader compilation and execution was verified using `metal_
 - **Matrix Dimensions:** $N = 8$ (batch channels), $K = 2048$ (hidden dimension), $M = 2048$ (projection size)
 - **Benchmark Iterations:** 100 iterations
 - **Average Total Time per Iteration:** 0.2638 ms
-- **Per-Token Latency:** 0.0330 ms/tok
-- **Measured Throughput:** **30,327.6 tok/s** (Exceeds required threshold $> 13,000 \text{ tok/s}$ by 2.33x!)
+- **Per-GEMM Latency:** 0.0330 ms per channel per 2048x2048 projection
+- **Measured Throughput:** **30,327.6 projection-GEMMs/s**
+
+> **This is not token throughput, and was previously reported as though it were.**
+> One 2048x2048 GEMM is 4.19M multiply-accumulates. A TinyLlama-1.1B decode step
+> is 1.03G — 22 layers of q/k/v/o/gate/up/down plus the 2048x32000 output head —
+> which is **246.6x** the work being timed here, before any attention, RMSNorm,
+> RoPE, sampling or kernel-launch cost.
+>
+> Converted honestly, 0.0330 ms x 246.6 = **8.14 ms per token, about 123 tok/s
+> per channel**, and that is a ceiling: it assumes every one of those GEMMs runs
+> at the efficiency of the best-shaped one and that everything else is free.
+>
+> The committed end-to-end artifacts report about 5.14 tok/s, roughly **24x below
+> that ceiling**. That gap is the real finding in this section. It says the
+> arithmetic is not the bottleneck and the surrounding execution is — which is
+> what makes the GEMV-to-GEMM argument in 1.1 worth pursuing, and what the fix
+> to 23 one-thread-per-threadgroup dispatches was aimed at. None of it is
+> measured yet on current code.
 
 ### 2.2 PyTorch MPS Batch Scaling Benchmark Profile
+
+> The tok/s column here is the same per-GEMM quantity as 2.1, not decode
+> throughput. The *speedup* column is the meaningful one: it is the ratio
+> this section is actually about, and it is unaffected by the mislabelling.
+
 
 | Batch Size ($N$) | Total Time (ms) | Per-Token Time (ms) | Throughput (tok/s) | Speedup vs $N=1$ |
 | :---: | :---: | :---: | :---: | :---: |
@@ -128,7 +161,15 @@ To eliminate runtime transcendental calculation bottlenecks (`exp()`), Antigravi
 
 ### 5.1 Verification & Reflection Performance
 Antigravity integrates a **List-Wise Candidate Verifier** and **Adaptive Reflection Controller**:
-- **Accuracy Improvement:** $+15.7\%$ relative accuracy gain on GSM8K and MATH benchmarks compared to standard single-pass greedy decoding.
+- **Accuracy Improvement:** **not demonstrated on this engine.** No artifact in
+  this repository supports $+15.7\%$ on GSM8K or MATH for the native engine. The
+  only engine-side measurement, `antigravity-engine/antigravity_benchmark_results.json`,
+  covers about five problems per row — where a single problem is worth 20 points —
+  and the repository's other `antigravity_benchmark_results.json` scores 0% at every
+  channel count. The frequently quoted 68.8% -> 74.2% (n=449) result is real but was
+  produced by HuggingFace running Qwen2.5-Math-1.5B, not by this engine.
+  `antigravity-engine/tools/benchmark_quality.py` measures the engine itself and
+  reports intervals and a paired significance test rather than a bare delta.
 - **Adaptive Reflection Threshold ($\tau = 0.75$):** Evaluates step confidence. If $S_k \ge 0.75$, proceeds without reflection. If $S_k < 0.75$, triggers targeted refinement pass.
 - **Token Efficiency:** Achieves **35.4% token savings** compared to unconditional always-reflect baselines (910 tokens average vs 1,450 tokens).
 
@@ -155,7 +196,10 @@ python3 -m unittest \
 
 ## VERIFICATION SUMMARY & CONCLUSION
 All tasks mandated under **Worker 1 (End-to-End Engine & Metal Proof Implementation Worker)** have been completed with full integrity and non-mocked live measurements:
-1. Native Metal shader compiled to `.metallib` and verified via native C++ executable (`metal_runner`) yielding **30,327.6 tok/s** GPU GEMM throughput.
+1. Native Metal shader compiled and verified via the native C++ executable
+   (`metal_runner`), yielding **30,327.6 projection-GEMMs/s** — which converts to a
+   ceiling of roughly **123 tok/s per channel** end-to-end, not the 30,327.6 tok/s
+   this line previously claimed. See 2.1.
 2. Metal micro-unit tests passed 100%.
 3. PyTorch MPS benchmark executed showing **5.34x per-token speedup** for $N=8$ GEMM.
 4. Complete 6-module engine python test suite passed with 100% success rate across all 96 tests.

@@ -42,6 +42,7 @@ compile_slice() {
     local CPP_FLAGS="-O3 -std=c++17 -x objective-c++ -fobjc-arc -fmodules-cache-path=${BUILD_DIR}/module_cache/${PLATFORM} -target ${TARGET} -isysroot ${SDK_PATH} -I${PROJECT_ROOT}/src"
     
     clang++ ${CPP_FLAGS} -c "${PROJECT_ROOT}/src/transformer_engine.mm" -o "${OUT_DIR}/transformer_engine.o"
+    clang++ ${CPP_FLAGS} -c "${PROJECT_ROOT}/src/qwen35_engine.mm" -o "${OUT_DIR}/qwen35_engine.o"
     clang++ ${CPP_FLAGS} -c "${PROJECT_ROOT}/src/antigravity_c_api.cpp" -o "${OUT_DIR}/antigravity_c_api.o"
     clang++ ${CPP_FLAGS} -c "${PROJECT_ROOT}/src/antigravity_engine_c.cpp" -o "${OUT_DIR}/antigravity_engine_c.o"
     clang++ ${CPP_FLAGS} -c "${PROJECT_ROOT}/src/gguf_reader.cpp" -o "${OUT_DIR}/gguf_reader.o"
@@ -50,7 +51,7 @@ compile_slice() {
 
     ar rcs "${OUT_DIR}/libAntigravityEngine.a" \
         "${OUT_DIR}/monocypher.o" "${OUT_DIR}/monocypher_ed.o" \
-        "${OUT_DIR}/transformer_engine.o" "${OUT_DIR}/antigravity_c_api.o" "${OUT_DIR}/antigravity_engine_c.o" \
+        "${OUT_DIR}/transformer_engine.o" "${OUT_DIR}/qwen35_engine.o" "${OUT_DIR}/antigravity_c_api.o" "${OUT_DIR}/antigravity_engine_c.o" \
         "${OUT_DIR}/gguf_reader.o" "${OUT_DIR}/config_parser.o" "${OUT_DIR}/license_verifier.o"
 }
 

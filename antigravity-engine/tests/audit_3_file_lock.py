@@ -12,13 +12,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from native_bridge import NativeMetalEngine
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+
 
 def test_physical_file_lock():
     """Verify weight file accessibility and unified memory allocation."""
     candidate_model_paths = [
         os.path.abspath("models/tinyllama/model.safetensors"),
         os.path.abspath("../models/tinyllama/model.safetensors"),
-        "/Users/MohssineChazi2/moat/models/tinyllama/model.safetensors"
+        os.path.join(MOAT_ROOT, "models/tinyllama/model.safetensors")
     ]
     model_path = next((p for p in candidate_model_paths if os.path.exists(p)), None)
 
@@ -26,7 +31,7 @@ def test_physical_file_lock():
         os.path.abspath("src/libantigravity_engine.dylib"),
         os.path.abspath("libantigravity_engine.dylib"),
         os.path.abspath("antigravity-engine/src/libantigravity_engine.dylib"),
-        "/Users/MohssineChazi2/moat/antigravity-engine/src/libantigravity_engine.dylib"
+        os.path.join(MOAT_ROOT, "antigravity-engine/src/libantigravity_engine.dylib")
     ]
     dylib_path = next((p for p in candidate_dylib_paths if os.path.exists(p)), None)
 

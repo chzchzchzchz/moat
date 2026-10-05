@@ -20,11 +20,51 @@ Antigravity Engine is a bare-metal C++ transformer inference engine for Apple Si
 - **Decoding**: 4-8 channel parallel Best-of-N decoding with candidate verification
 - **Encryption**: AES-256-GCM column-level encryption for clinical data (Keychain-backed key)
 
-## Real Performance Numbers (HONEST)
-- **Native C++ Metal**: ~5.3 tokens/sec single channel (TinyLlama 1.1B on M-series)
-- **PyTorch MPS fallback**: ~27 tokens/sec
-- **Memory**: 3,037 MB VRAM for TinyLlama 1.1B FP16
-- **4-channel parallel decode**: ~27.6 tokens/sec aggregate across channels
+## Performance
+
+**Throughput is currently unknown.** Three committed artifacts disagree about
+single-channel decode — `benchmark_metrics.json` says 5.13763 tok/s,
+`benchmark_real_weights.json` says 5.28812, and `benchmark_results_v2.json` says
+855.62 — and the "~27 tok/s" and "~27.6 tok/s" figures this section used to give
+appear in no artifact at all. None of the files records the chip, the OS, the
+model, the date or the sample count, so none can be reproduced or compared.
+
+The 30,327.6 tok/s in `metal_hardware_proof.md` measures something else again:
+`src/metal_runner.cpp` times one 8x2048x2048 GEMM and divides by the batch size.
+A TinyLlama decode step is 154 GEMMs plus attention, norms, RoPE and sampling,
+which is why that number and the 5 tok/s ones differ by four orders of magnitude.
+
+`tools/benchmark_throughput.py` replaces them: native engine against PyTorch MPS
+in one run on one machine, writing an artifact that carries the hardware
+profile, every sample, the weight footprint and the fraction of memory bandwidth
+reached, and exiting non-zero if anything failed.
+
+Measured and reproducible:
+- **Memory**: 3,037 MB VRAM for TinyLlama 1.1B in FP16, 0 MB after unload
+
+INT4 super-block weights are on the inference path behind `ANTIGRAVITY_INT4=1`
+and should cut the projection weights to about a quarter of that. Not yet
+measured on hardware, so no figure is quoted.
+
+**Accuracy from parallel channels has not been demonstrated on this engine.**
+The only artifact that measures it covers about five problems per row, where one
+problem is worth 20 points.
+
+`scripts/run_quality_benchmark.sh` measures it properly, in one command on any
+Apple Silicon Mac: it checks the GPU, verifies the INT4 kernels against a host
+reference, builds the dylib, fetches weights, and runs GSM8K reporting Wilson
+intervals and an exact paired test.
+
+It cannot run in CI. `MTLCreateSystemDefaultDevice()` returns nil on GitHub's
+`macos-14` runners — they are arm64 VMs with no GPU — which the `INT4 kernels on a
+real GPU (macOS)` job reports rather than assumes. CI therefore compiles every
+shader with `-Werror` and checks the super-block layout, the packer against
+`src/dequant.py`, and the GEMV arithmetic against a host reference; it has never
+executed a kernel.
+
+> **Blocked on hardware:** the engine's own 587-problem benchmark shows it emitting
+> one character regardless of input. What to run on an Apple Silicon Mac, in priority
+> order, and what has already been ruled out: [NEXT_ON_HARDWARE.md](NEXT_ON_HARDWARE.md)
 
 ## What Works
 - ✅ Metal GPU transformer forward pass (real inference)

@@ -24,10 +24,10 @@ let package = Package(
                 .landscapeRight,
                 .landscapeLeft,
                 .portraitUpsideDown(.when(deviceFamilies: [.pad]))
-            ],
-            capabilities: [
-                .outgoingNetworkConnections()
             ]
+            // No `capabilities:` entry: this demo makes no network connections, and the
+            // project's central claim is zero network egress. Declaring
+            // .outgoingNetworkConnections() requested an entitlement nothing here uses.
         ),
         .executable(name: "AntigravityDemoCLI", targets: ["AppModule"])
     ],

@@ -1,12 +1,17 @@
 import os
 
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
+
 def generate():
     # Read the actual C++ engine code
-    with open('/Users/MohssineChazi2/moat/antigravity-engine/src/transformer_engine.mm', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'antigravity-engine/src/transformer_engine.mm'), 'r') as f:
         metal_code = f.read()
     
     # Read the Verifier code
-    with open('/Users/MohssineChazi2/moat/antigravity-engine/src/verifier.py', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'antigravity-engine/src/verifier.py'), 'r') as f:
         verifier_code = f.read()
         
     doc = r"""# Project Antigravity: Achieving Cloud-Tier Mathematical Reasoning on iPhone Constraints via Edge Test-Time Compute
@@ -57,7 +62,7 @@ To maximize throughput, the Antigravity Engine bypasses high-level frameworks (l
 We target the **Qwen3.5** parameter family (0.8B, 2.0B, and 4.0B). Qwen3.5 represents a unique challenge and opportunity for edge inference because it is not a standard LLaMA-style dense transformer.
 
 ### 4.1 Hybrid Mamba/DeltaNet & Dense Attention
-Qwen3.5 interweaves standard Dense Attention layers with state-space model (SSM) variants, specifically DeltaNet / Linear Attention layers. 
+Qwen3.5 interweaves standard Dense Attention layers with state-space model (SSM) variants, specifically DeltaNet / Linear Attention layers. NOTE: the engine does not implement this — forwardLayer() runs a dense block for every layer, and deltanet_forward and moe_router are compiled but never dispatched. 
 * **Dense Layers:** Standard `q_proj`, `k_proj`, `v_proj`, `o_proj`. These require full $O(N^2)$ attention and large KV caches.
 * **Linear Layers:** `in_proj_qkv`, `conv1d`, `A_log`. These operate similarly to Mamba, possessing a constant-size hidden state that can be updated in $O(1)$ time per token, drastically reducing the KV cache footprint.
 
@@ -119,7 +124,7 @@ By utilizing the idle A17 Pro neural engines, the application completely bypasse
 The Antigravity Engine demonstrates that the physical limitations of mobile devices do not preclude the deployment of elite reasoning models. By intelligently decoupling memory requirements across time and substituting parameter scale with test-time search, we have successfully run cloud-tier mathematical logic natively on Apple Silicon. This breakthrough paves the way for a new generation of fully private, disconnected, and highly capable AI agents operating entirely on the edge.
 """
 
-    with open("/Users/MohssineChazi2/moat/antigravity_whitepaper_extended.md", "w") as f:
+    with open(os.path.join(MOAT_ROOT, "antigravity_whitepaper_extended.md"), "w") as f:
         f.write(doc)
 
 if __name__ == "__main__":

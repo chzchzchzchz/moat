@@ -1,10 +1,16 @@
 import json
 import subprocess
 from tokenizers import Tokenizer
+import os
+
+# Repository root. Set MOAT_ROOT to run against a checkout elsewhere; this replaced
+# absolute paths from one developer's machine that no other checkout has.
+MOAT_ROOT = os.environ.get("MOAT_ROOT") or os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+
 
 def load_gsm8k():
     data = []
-    with open('/Users/MohssineChazi2/moat/gsm8k_test_set.jsonl', 'r') as f:
+    with open(os.path.join(MOAT_ROOT, 'gsm8k_test_set.jsonl'), 'r') as f:
         for i, line in enumerate(f):
             if i >= 1: break
             data.append(json.loads(line))
@@ -12,13 +18,13 @@ def load_gsm8k():
 
 def run_c_engine(prompt_ids, model_path):
     prompt_str = ",".join(map(str, prompt_ids))
-    cmd = ["/Users/MohssineChazi2/moat/test_qwen_runner", prompt_str, model_path]
+    cmd = [os.path.join(MOAT_ROOT, "test_qwen_runner"), prompt_str, model_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.stdout
 
 def main():
     print("Loading Qwen Tokenizer...")
-    tok = Tokenizer.from_file('/Users/MohssineChazi2/moat/models/qwen3_5_4b/tokenizer.json')
+    tok = Tokenizer.from_file(os.path.join(MOAT_ROOT, 'models/qwen3_5_4b/tokenizer.json'))
     
     questions = load_gsm8k()
     q = questions[0]
@@ -29,7 +35,7 @@ def main():
     prompt_ids = tok.encode(prompt).ids
     
     print("Running Native Hybrid Engine with Real Qwen 3.5 4B...")
-    output = run_c_engine(prompt_ids, '/Users/MohssineChazi2/moat/models/qwen3_5_4b/model.safetensors')
+    output = run_c_engine(prompt_ids, os.path.join(MOAT_ROOT, 'models/qwen3_5_4b/model.safetensors'))
     
     paths = []
     lines = output.split('\n')

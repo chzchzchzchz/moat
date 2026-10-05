@@ -51,7 +51,11 @@ final class AntigravityEngineTests: XCTestCase {
     }
 
     func testVisionEncoderFallbackEncoding() throws {
-        let encoder = VisionEncoder(modelURL: nil, hiddenDim: 64, patchSize: 14, imageSize: 28)
+        // The fallback is opt-in: it returns patch colour averages, not vision embeddings.
+        let encoder = VisionEncoder(
+            modelURL: nil, hiddenDim: 64, patchSize: 14, imageSize: 28,
+            allowsNonSemanticFallback: true
+        )
         // 28 / 14 = 2, 2 * 2 = 4 patches
         XCTAssertEqual(encoder.patchCount, 4)
 
@@ -74,6 +78,17 @@ final class AntigravityEngineTests: XCTestCase {
         XCTAssertEqual(embeddings.count, 4 * 64, "Expected 4 patches * 64 hidden_dim = 256 floats")
         // No NaN or Inf values
         XCTAssertFalse(embeddings.contains(where: { $0.isNaN || $0.isInfinite }))
+        XCTAssertFalse(encoder.canProduceEmbeddings, "No CoreML model was supplied")
+
+        // Without the opt-in, the same encoder must refuse rather than return these vectors.
+        let strict = VisionEncoder(
+            modelURL: nil, hiddenDim: 64, patchSize: 14, imageSize: 28
+        )
+        XCTAssertThrowsError(try strict.encode(image: image)) { error in
+            guard case AntigravityError.visionEncodingFailed = error else {
+                return XCTFail("Expected visionEncodingFailed, got \(error)")
+            }
+        }
     }
 
     // MARK: - AgentTool Tests
@@ -207,6 +222,37 @@ final class AntigravityEngineTests: XCTestCase {
         XCTAssertTrue(note.formattedReport.contains("CLINICAL PSYCHOTHERAPY DOCUMENTATION"))
     }
 
+    func testMissingRiskSectionIsNotReportedAsNoRisk() {
+        // A model response with no [RISK] section means risk was not evaluated. The note
+        // must not assert a negative finding: previously this defaulted to
+        // "No acute risk factors identified during session.", putting an unverified
+        // absence-of-self-harm-risk claim into a clinical record.
+        let engine = SOAPTemplateEngine()
+        let outputWithoutRisk = """
+        [SUBJECTIVE]
+        Reports poor sleep.
+        [OBJECTIVE]
+        Alert and oriented.
+        [ASSESSMENT]
+        Insomnia.
+        [PLAN]
+        Sleep hygiene education.
+        """
+
+        let note = engine.parseModelOutput(outputWithoutRisk, patientId: "P-202", clinician: "Dr. Smith")
+
+        XCTAssertFalse(
+            note.riskAssessment.lowercased().contains("no acute risk"),
+            "Absent risk evaluation must not render as a negative finding"
+        )
+        XCTAssertFalse(
+            note.riskAssessment.lowercased().contains("no immediate self-harm"),
+            "Absent risk evaluation must not render as a negative finding"
+        )
+        XCTAssertTrue(note.riskAssessment.contains("NOT ASSESSED"))
+        XCTAssertTrue(note.formattedReport.contains("NOT ASSESSED"))
+    }
+
     // MARK: - PDFExportService Tests
 
     func testPDFExportGeneratesNonEmptyData() throws {
@@ -267,13 +313,15 @@ final class AntigravityEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(tokenizer.vocabSize, 256, "Byte-fallback vocabulary must contain at least 256 bytes")
     }
 
-    func testTokenizerRealBPEWithTinyLlamaVocab() {
+    func testTokenizerRealBPEWithTinyLlamaVocab() throws {
         // Load real TinyLlama tokenizer.json with 32000 tokens and 61249 merge rules
         let tokenizerPath = NSHomeDirectory() + "/moat/models/tinyllama/tokenizer.json"
-        guard FileManager.default.fileExists(atPath: tokenizerPath) else {
-            print("Skipping testTokenizerRealBPEWithTinyLlamaVocab: tokenizer.json not found at \(tokenizerPath)")
-            return
-        }
+        // XCTSkip, not print-and-return: returning early reports the test as passed,
+        // so a run with no tokenizer looked like it had verified the BPE vocabulary.
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: tokenizerPath),
+            "tokenizer.json not found at \(tokenizerPath)"
+        )
 
         let tokenizer = AntigravityTokenizer(tokenizerJSONURL: URL(fileURLWithPath: tokenizerPath))
 
@@ -460,6 +508,9 @@ final class AntigravityEngineTests: XCTestCase {
         let modelPath = NSHomeDirectory() + "/moat/models/tinyllama/model.safetensors"
         let tokenizerPath = NSHomeDirectory() + "/moat/models/tinyllama/tokenizer.json"
 
+        // The assertions above this point exercise Metal allocation and run everywhere.
+        // Everything below needs real weights; without them this half is silently not
+        // covered, which the run output gives no sign of.
         if FileManager.default.fileExists(atPath: modelPath) && FileManager.default.fileExists(atPath: tokenizerPath) {
             try engine.loadModel(at: modelPath)
             XCTAssertTrue(engine.hasWeights, "hasWeights must be true after loading model")
@@ -514,10 +565,13 @@ final class AntigravityEngineTests: XCTestCase {
     func testRealMetalEngineSOAPGenerationAndStorage() async throws {
         let modelPath = NSHomeDirectory() + "/moat/models/tinyllama/model.safetensors"
         let tokenizerPath = NSHomeDirectory() + "/moat/models/tinyllama/tokenizer.json"
-        guard FileManager.default.fileExists(atPath: modelPath) && FileManager.default.fileExists(atPath: tokenizerPath) else {
-            print("Skipping testRealMetalEngineSOAPGenerationAndStorage: model files missing")
-            return
-        }
+        // XCTSkip rather than an early return, for the same reason: this test reported
+        // as passed on every runner that has no TinyLlama weights.
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: modelPath)
+                && FileManager.default.fileExists(atPath: tokenizerPath),
+            "TinyLlama weights not found; real generation cannot run"
+        )
 
         let config = EngineConfig(
             memoryLimitBytes: 4096 * 1024 * 1024,

@@ -30,6 +30,9 @@ public final class DemoViewModel: ObservableObject {
 
     private var engine: AntigravityEngine?
     private let weightManager = WeightManager.shared
+    // No CoreML vision model ships with this demo, so the encoder cannot produce real
+    // patch embeddings and encode(image:) will throw. The image branch below surfaces that
+    // instead of feeding the model shape-correct colour averages and captioning the result.
     private let visionEncoder = VisionEncoder()
 
     public init() {
@@ -86,13 +89,22 @@ public final class DemoViewModel: ObservableObject {
                 try engine.loadModel(at: localURL.path)
             }
 
-            // Convert prompt text to token IDs (BOS token + character byte IDs)
-            var inputTokens: [Int32] = [1]
-            inputTokens.append(contentsOf: promptText.utf8.map { Int32($0) + 3 })
+            // Load the real BPE vocabulary if it was downloaded alongside the weights.
+            // Without this the engine falls back to byte-level tokens, which a model
+            // trained on BPE ids cannot interpret.
+            let tokenizerURL = weightManager.localTokenizerURL
+            if FileManager.default.fileExists(atPath: tokenizerURL.path) {
+                engine.loadTokenizer(from: tokenizerURL)
+            }
+
+            // Tokenize through the engine's tokenizer. This used to map raw UTF-8 bytes to
+            // ids inline (byte + 3), which bypassed the tokenizer entirely and meant a
+            // correctly loaded vocabulary could never take effect.
+            let inputTokens = engine.tokenizer.encode(text: promptText)
 
             // Perform reasoning
             let result: AntigravityGenerationResult
-            if let image = selectedImage {
+            if let image = selectedImage, visionEncoder.canProduceEmbeddings {
                 currentStatus = "Encoding visual patches via CoreML ANE..."
                 let patchEmbeddings = try visionEncoder.encode(image: image)
 
@@ -104,6 +116,10 @@ public final class DemoViewModel: ObservableObject {
                     maxTokens: 60
                 )
             } else {
+                if selectedImage != nil {
+                    currentStatus = "Image reasoning needs a CoreML vision model, which this "
+                                  + "demo does not ship. Running text-only instead."
+                }
                 result = try await engine.reason(
                     promptTokens: inputTokens,
                     maxTokens: 60

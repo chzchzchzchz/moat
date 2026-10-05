@@ -6,6 +6,8 @@
 #include <iostream>
 #include <vector>
 #include <cassert>
+#include <string>
+#include <cstdlib>
 
 int main() {
     std::cout << "=========================================================\n";
@@ -21,13 +23,19 @@ int main() {
 
     AntigravityEngineContext* ctx = AntigravityEngineCreate(&config);
     assert(ctx != nullptr);
-    const char* candidate_paths[] = {
-        "/Users/MohssineChazi2/moat/models/tinyllama/model.safetensors",
-        "../models/tinyllama/model.safetensors",
-        "models/tinyllama/model.safetensors"
-    };
+    std::vector<std::string> candidate_paths;
+    if (const char* env_dir = std::getenv("ANTIGRAVITY_MODEL_DIR")) {
+        if (env_dir[0] != '\0') {
+            candidate_paths.push_back(std::string(env_dir) + "/tinyllama/model.safetensors");
+            candidate_paths.push_back(std::string(env_dir) + "/model.safetensors");
+        }
+    }
+    candidate_paths.push_back("../models/tinyllama/model.safetensors");
+    candidate_paths.push_back("models/tinyllama/model.safetensors");
+
     int load_res = -1;
-    for (const char* path : candidate_paths) {
+    for (const std::string& path_str : candidate_paths) {
+        const char* path = path_str.c_str();
         std::cout << "Attempting to load weights from: " << path << "...\n";
         load_res = AntigravityEngineLoadModel(ctx, path);
         if (load_res == 0) break;

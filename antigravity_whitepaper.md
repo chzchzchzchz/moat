@@ -1,7 +1,39 @@
 # Project Antigravity: Achieving Cloud-Tier Mathematical Reasoning on iPhone Constraints via Edge Test-Time Compute
 
+> ## Status of the claims in this paper
+>
+> This paper argues a design. Most of what it describes is **proposed and implemented,
+> not measured**, and the distinction is not visible in the prose below, so it is set
+> out here.
+>
+> **Demonstrated.** The memory argument. A 4-bit 4B checkpoint is ~2.2 GB, which is a
+> property of the weight files and does fit an iPhone's Jetsam budget. The engine
+> allocates and fully releases its Metal buffers. The INT4 super-block format is
+> implemented and its layout is verified byte-for-byte against the reference
+> quantizer.
+>
+> **Implemented but unmeasured.** The engine itself. It has never run on a phone, and
+> it has no measured accuracy figure on any benchmark. Its throughput is genuinely
+> unknown: three committed artifacts disagree about single-channel decode by a factor
+> of 166 (5.13763, 5.28812 and 855.62 tok/s), and a fourth number often quoted,
+> 30,327.6 tok/s, times a single 2048x2048 GEMM rather than a token — converted
+> honestly it implies a ceiling near 123 tok/s per channel. See
+> `metal_hardware_proof.md` section 2.1.
+>
+> **Not demonstrated.** "Competing directly with 70B cloud models." No comparison
+> against a 70B model was run. The frequently cited 68.8% -> 74.2% (n=449) accuracy
+> result is real but came from HuggingFace running Qwen2.5-Math-1.5B, not from this
+> engine — it is evidence that best-of-N works as a method, not evidence about this
+> implementation. Nothing in this repository has measured whether parallel channels
+> buy accuracy on this engine.
+>
+> `antigravity-engine/scripts/run_quality_benchmark.sh` produces that measurement in
+> one command on an Apple Silicon Mac. Until it is run, the accuracy claims here are
+> hypotheses.
+>
+
 ## Abstract
-Recent advancements in large language models (LLMs) have demonstrated that Test-Time Compute (TTC)—generating multiple reasoning trajectories and selecting the best one—can elevate smaller models to the reasoning capabilities of massively parameterized systems. However, scaling test-time compute traditionally requires massive parallel GPU clusters, rendering it inaccessible for edge devices like smartphones. In this whitepaper, we present **Project Antigravity**, a native Apple Silicon compute engine designed to execute *Sequential Swapped Best-of-N* search on the edge. By utilizing 4-bit grouped quantization and the Qwen3.5 hybrid architecture, we demonstrate that a 4B parameter model can execute complex mathematical reasoning locally on an iPhone memory budget (~2.2 GB footprint), competing directly with 70B cloud models.
+Recent advancements in large language models (LLMs) have demonstrated that Test-Time Compute (TTC)—generating multiple reasoning trajectories and selecting the best one—can elevate smaller models to the reasoning capabilities of massively parameterized systems. However, scaling test-time compute traditionally requires massive parallel GPU clusters, rendering it inaccessible for edge devices like smartphones. In this whitepaper, we present **Project Antigravity**, a native Apple Silicon compute engine designed to execute *Sequential Swapped Best-of-N* search on the edge. By utilizing 4-bit grouped quantization and the Qwen3.5 hybrid architecture, we argue that a 4B parameter model can execute complex mathematical reasoning within an iPhone memory budget (~2.2 GB footprint). Whether it thereby competes with far larger cloud models is untested — see the status note above.
 
 ## 1. Introduction
 The deployment of reasoning models on mobile devices is strictly bounded by thermal limits, battery constraints, and aggressive OS-level memory pruning (e.g., iOS Jetsam limits physical RAM per app to roughly 3.5 GB). Previous approaches rely on aggressive distillation or pruning, which catastrophically damages multi-step logic and mathematical reasoning. 
@@ -9,7 +41,7 @@ The deployment of reasoning models on mobile devices is strictly bounded by ther
 Rather than shrinking the model until it loses capability, **Antigravity** introduces an edge-native implementation of Test-Time Search (simulating paradigms like OpenAI o1 or DeepSeek-R1). 
 
 ### The Core Discovery
-Our groundbreaking discovery is that **Generation and Verification budgets can be physically decoupled in time** to bypass RAM ceilings. By deploying a small hybrid Reasoner model (Qwen3.5-4B at 4-bit, 2.2GB) to generate $N$ parallel candidate traces, swapping it completely out of memory, and loading a separate Verifier model to rank the outputs, we achieve a mathematically superior `Pass@N` accuracy while maintaining peak memory utilization safely under 3.0 GB.
+The central idea is that **Generation and Verification budgets can be decoupled in time** to bypass RAM ceilings. By deploying a small hybrid Reasoner model (Qwen3.5-4B at 4-bit, 2.2GB) to generate $N$ parallel candidate traces, swapping it completely out of memory, and loading a separate Verifier model to rank the outputs, the aim is a higher `Pass@N` accuracy while keeping peak memory under 3.0 GB. The memory half of that is measured; the accuracy half is not.
 
 ## 2. Architecture & Methodology
 

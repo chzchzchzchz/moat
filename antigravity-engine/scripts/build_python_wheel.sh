@@ -41,6 +41,7 @@ clang++ -std=c++17 -x objective-c++ -O3 -dynamiclib \
   -framework Metal -framework Foundation \
   "${PROJECT_ROOT}/src/antigravity_c_api.cpp" \
   "${PROJECT_ROOT}/src/transformer_engine.mm" \
+  "${PROJECT_ROOT}/src/qwen35_engine.mm" \
   "${PROJECT_ROOT}/src/antigravity_engine_c.cpp" \
   "${PROJECT_ROOT}/src/gguf_reader.cpp" \
   "${PROJECT_ROOT}/src/config_parser.cpp" \

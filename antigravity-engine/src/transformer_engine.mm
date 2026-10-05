@@ -27,43 +27,154 @@
 #include <unistd.h>
 #include <map>
 #include "transformer_engine.h"
+#include "superblock_pack.h"
+#include "shader_sources.h"
+#include "engine_limits.h"
+#include "sampling.h"
+#include "weight_convert.h"
+#include "safetensors_header.h"
 
-// BFloat16 → Float16 conversion helper
-static inline uint16_t bf16_to_fp16(uint16_t bf16) {
-    // BFloat16: 1 sign + 8 exp + 7 mantissa
-    // Float16:  1 sign + 5 exp + 10 mantissa
-    uint32_t sign = (bf16 >> 15) & 1;
-    int32_t  exp  = ((bf16 >> 7) & 0xFF) - 127;  // unbias BF16 exponent
-    uint32_t mant = bf16 & 0x7F;                  // 7-bit mantissa
-    
-    // Handle special cases
-    if (exp == 128) {
-        // Inf or NaN → FP16 Inf/NaN
-        return (uint16_t)((sign << 15) | (0x1F << 10) | (mant >> 4));
-    }
-    if (exp < -24) {
-        // Underflow to zero
-        return (uint16_t)(sign << 15);
-    }
-    
-    // Rebias for FP16 (bias=15)
-    int32_t fp16_exp = exp + 15;
-    // Extend mantissa from 7-bit to 10-bit
-    uint32_t fp16_mant = mant << 3;
-    
-    if (fp16_exp <= 0) {
-        // Subnormal in FP16
-        fp16_mant = (0x400 | fp16_mant) >> (1 - fp16_exp);
-        fp16_exp = 0;
-    } else if (fp16_exp >= 0x1F) {
-        // Overflow to Inf
-        fp16_exp = 0x1F;
-        fp16_mant = 0;
-    }
-    
-    return (uint16_t)((sign << 15) | (fp16_exp << 10) | (fp16_mant & 0x3FF));
+// BFloat16 -> Float16 conversion now lives in src/weight_convert.h, where a test can
+// reach it. It was here, untestable, and what "verified" meant was a Python
+// reimplementation in tools/analyze_existing_artifacts.py agreeing with itself.
+// Testing the real function turned up two defects in it: a BF16 NaN whose mantissa was
+// below 0x10 became +Inf, and the subnormal path truncated where it should round, which
+// disagreed with a correct reference on 1278 of the 65,536 bit patterns.
+//
+// loadTensor reaches it through antigravity::elementAsFp16, which also handles F16 and
+// F32, so there is no longer a caller here that names it directly.
+
+
+
+// ============================================================================
+// Shader library loading
+// ============================================================================
+
+namespace {
+
+// Shader files are looked up relative to a handful of plausible roots so the
+// engine works from a repo checkout, from an app bundle, and from whatever
+// directory a harness happens to run in. ANTIGRAVITY_SHADER_DIR wins when set.
+NSArray<NSString*>* shaderSearchRoots() {
+    static NSArray<NSString*>* roots = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray<NSString*>* r = [NSMutableArray array];
+        const char* env = getenv("ANTIGRAVITY_SHADER_DIR");
+        if (env && *env) [r addObject:[NSString stringWithUTF8String:env]];
+        NSString* bundled = [[NSBundle mainBundle] resourcePath];
+        if (bundled) [r addObject:bundled];
+        [r addObject:[[NSFileManager defaultManager] currentDirectoryPath]];
+        [r addObject:@"."];
+        [r addObject:@"antigravity-engine"];
+        [r addObject:@".."];
+        [r addObject:@"../antigravity-engine"];
+        roots = [r copy];
+    });
+    return roots;
 }
 
+NSString* resolveShaderPath(NSString* rel) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if ([rel isAbsolutePath] && [fm fileExistsAtPath:rel]) return rel;
+    for (NSString* root in shaderSearchRoots()) {
+        NSString* candidate = [root stringByAppendingPathComponent:rel];
+        if ([fm fileExistsAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+bool libraryExportsAll(id<MTLLibrary> lib, NSArray<NSString*>* names) {
+    if (!lib) return false;
+    for (NSString* name in names) {
+        if (![lib newFunctionWithName:name]) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+id<MTLLibrary> MetalTransformerEngine::loadShaderLibrary(
+    NSString* metallibRelPath,
+    NSString* metalSourceRelPath,
+    NSArray<NSString*>* requiredFunctions
+) {
+    NSString* libPath = resolveShaderPath(metallibRelPath);
+    NSString* srcPath = resolveShaderPath(metalSourceRelPath);
+    NSError* err = nil;
+
+    // A .metallib older than its .metal source was built before the source's last edit, so it
+    // holds the OLD kernels — and exporting every required name, it passes the check below.
+    // That is not hypothetical: transformer_ops.metallib was committed on 2026-09-15 and three
+    // kernel fixes landed in its source afterwards (the KV-cache write bound, the RMSNorm
+    // reduction, the RoPE table bound), so any run that found the binary ran the unfixed
+    // kernels. Prefer the source whenever it is newer. The binaries are no longer committed,
+    // so a .metallib here was built locally after checkout, and modification times mean what
+    // they say.
+    if (libPath && srcPath) {
+        NSFileManager* fm = [NSFileManager defaultManager];
+        NSDate* libDate = [[fm attributesOfItemAtPath:libPath error:nil] fileModificationDate];
+        NSDate* srcDate = [[fm attributesOfItemAtPath:srcPath error:nil] fileModificationDate];
+        if (libDate && srcDate && [srcDate compare:libDate] == NSOrderedDescending) {
+            std::cerr << "[MetalTransformerEngine] " << libPath.UTF8String
+                      << " is older than " << srcPath.UTF8String
+                      << "; compiling the source so the current kernels run" << std::endl;
+            libPath = nil;
+        }
+    }
+
+    id<MTLLibrary> prebuilt = nil;
+    if (libPath) {
+        prebuilt = [device_ newLibraryWithURL:[NSURL fileURLWithPath:libPath] error:&err];
+        if (prebuilt && libraryExportsAll(prebuilt, requiredFunctions)) {
+            return prebuilt;
+        }
+        if (prebuilt) {
+            // The .metallib is checked in; a kernel added to the .metal source since
+            // it was built is simply absent. Taking it anyway would drop that kernel
+            // with no error at all, so prefer recompiling the source.
+            std::cerr << "[MetalTransformerEngine] " << libPath.UTF8String
+                      << " does not export every required kernel (stale build); "
+                      << "compiling from source instead" << std::endl;
+        }
+    }
+
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+
+    if (srcPath) {
+        NSString* source = [NSString stringWithContentsOfFile:srcPath
+                                                     encoding:NSUTF8StringEncoding
+                                                        error:&err];
+        if (source) {
+            id<MTLLibrary> compiled = [device_ newLibraryWithSource:source options:opts error:&err];
+            if (compiled) return compiled;
+            std::cerr << "[MetalTransformerEngine] failed to compile " << srcPath.UTF8String
+                      << ": " << (err ? err.localizedDescription.UTF8String : "unknown error")
+                      << std::endl;
+        }
+    }
+
+    // The floor: the source is compiled into the binary. Neither the .metal files
+    // nor the .metallib files are packaged inside AntigravityEngine.xcframework, and
+    // every path above is resolved relative to the process working directory — so on
+    // a device nothing above this point can succeed, and without it every pipeline
+    // outside the one inline fallback kernel would simply be null.
+    const std::string stem = [[metalSourceRelPath.lastPathComponent
+                               stringByDeletingPathExtension] UTF8String];
+    if (const char* embedded = antigravity::shaders::find(stem.c_str())) {
+        id<MTLLibrary> compiled =
+            [device_ newLibraryWithSource:[NSString stringWithUTF8String:embedded]
+                                  options:opts
+                                    error:&err];
+        if (compiled) return compiled;
+        std::cerr << "[MetalTransformerEngine] failed to compile embedded " << stem
+                  << ".metal: " << (err ? err.localizedDescription.UTF8String : "unknown error")
+                  << std::endl;
+    }
+
+    // A stale library is still better than none for the kernels it does export.
+    return prebuilt;
+}
 
 // ============================================================================
 // Constructor
@@ -81,50 +192,31 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     queue_ = [device_ newCommandQueue];
     
     // ---- Load Shader Libraries ----
-    NSError* err = nil;
+    // The engine ships prebuilt .metallib files, but they are checked in and go
+    // stale the moment a .metal source gains a kernel. loadShaderLibrary() accepts
+    // a .metallib only when it still exports everything we need, and otherwise
+    // compiles the source, so adding a kernel never silently does nothing.
+    gemmLib_ = loadShaderLibrary(@"src/shaders/batched_gemm.metallib",
+                                 @"src/shaders/batched_gemm.metal",
+                                 @[@"batched_gemm_simdgroup",
+                                   @"gemv_int4_kernel",
+                                   @"fused_batched_gemm_int4"]);
 
-    
-    
-    // Try compiled metallib first, fall back to runtime compilation
-    NSArray<NSString*>* gemmPaths = @[
-        @"src/shaders/batched_gemm.metallib",
-        @"antigravity-engine/src/shaders/batched_gemm.metallib"
-    ];
-    for (NSString* path in gemmPaths) {
-        NSURL* url = [NSURL fileURLWithPath:path];
-        gemmLib_ = [device_ newLibraryWithURL:url error:&err];
-        if (gemmLib_) break;
-    }
-    
-    // Compile transformer_ops from source if metallib not available
-    NSArray<NSString*>* opsPaths = @[
-        @"src/shaders/transformer_ops.metallib",
-        @"antigravity-engine/src/shaders/transformer_ops.metallib",
-        @"src/shaders/transformer_ops.metal",
-        @"antigravity-engine/src/shaders/transformer_ops.metal"
-    ];
-    for (NSString* path in opsPaths) {
-        if ([path hasSuffix:@".metallib"]) {
-            NSURL* url = [NSURL fileURLWithPath:path];
-            opsLib_ = [device_ newLibraryWithURL:url error:&err];
-        } else {
-            // Compile from source
-            NSString* source = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&err];
-            if (source) {
-                MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-                opsLib_ = [device_ newLibraryWithSource:source options:opts error:&err];
-            }
-        }
-        if (opsLib_) break;
-    }
-    
-    // Fall back: compile GEMM from inline source
+    opsLib_ = loadShaderLibrary(@"src/shaders/transformer_ops.metallib",
+                                @"src/shaders/transformer_ops.metal",
+                                @[@"gemv_kernel", @"rmsnorm_kernel", @"rope_kernel"]);
+
     if (!gemmLib_) {
-        NSString* gemmSrc = @"#include <metal_stdlib>\nusing namespace metal;\nkernel void batched_gemm_simdgroup(device const half* activations [[buffer(0)]], device const half* weights [[buffer(1)]], device half* output [[buffer(2)]], constant uint& N_batch [[buffer(3)]], constant uint& K_dim [[buffer(4)]], constant uint& M_dim [[buffer(5)]], uint2 group_id [[threadgroup_position_in_grid]]) { uint row_start = group_id.y * 8; uint col_start = group_id.x * 8; if (row_start >= N_batch || col_start >= M_dim) return; simdgroup_matrix<half, 8, 8> acc_matrix = simdgroup_matrix<half, 8, 8>(0.0h); for (uint k = 0; k < K_dim; k += 8) { simdgroup_matrix<half, 8, 8> a_tile; simdgroup_matrix<half, 8, 8> b_tile; simdgroup_load(a_tile, activations + row_start * K_dim + k, K_dim); simdgroup_load(b_tile, weights + k * M_dim + col_start, M_dim); simdgroup_multiply_accumulate(acc_matrix, a_tile, b_tile, acc_matrix); } simdgroup_store(acc_matrix, output + row_start * M_dim + col_start, M_dim); }\n";
-        MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-        gemmLib_ = [device_ newLibraryWithSource:gemmSrc options:opts error:&err];
+        std::cerr << "[MetalTransformerEngine] no GEMM shader library; "
+                     "set ANTIGRAVITY_SHADER_DIR to the directory holding src/shaders"
+                  << std::endl;
     }
-    
+    if (!opsLib_) {
+        std::cerr << "[MetalTransformerEngine] no transformer_ops shader library; "
+                     "set ANTIGRAVITY_SHADER_DIR to the directory holding src/shaders"
+                  << std::endl;
+    }
+
     // ---- Create Compute Pipelines ----
     auto makePipeline = [&](id<MTLLibrary> lib, NSString* name) -> id<MTLComputePipelineState> {
         if (!lib) return nil;
@@ -136,18 +228,32 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     
     gemmPipeline_      = makePipeline(gemmLib_, @"batched_gemm_simdgroup");
     gemvPipeline_      = makePipeline(opsLib_, @"gemv_kernel");
+    gemvInt4Pipeline_      = makePipeline(gemmLib_, @"gemv_int4_kernel");
+    fusedGemmInt4Pipeline_ = makePipeline(gemmLib_, @"fused_batched_gemm_int4");
     rmsnormPipeline_   = makePipeline(opsLib_, @"rmsnorm_kernel");
     ropePipeline_      = makePipeline(opsLib_, @"rope_kernel");
     
-    // Load Qwen 3.5 4B Hybrid Shaders
+    // Load the hybrid-architecture shaders.
+    //
+    // Both pipelines are created and NEITHER is dispatched: grep for deltanetPipeline_
+    // and moeRouterPipeline_ and they appear only here and in the header. forwardLayer()
+    // runs a dense Llama block for every layer with no branching on layer type, so
+    // mixture-of-experts and linear-attention layers are not implemented.
+    //
+    // Kept rather than deleted, because they are the start of real work and the kernels
+    // compile and have been debugged. loadWeights() now warns when a checkpoint carries
+    // weights for either, since running those dense produces wrong output rather than
+    // an error.
     
-    NSURL* deltaUrl = [NSURL fileURLWithPath:@"src/shaders/deltanet.metallib"];
-    id<MTLLibrary> deltaLib = [device_ newLibraryWithURL:deltaUrl error:&err];
+    id<MTLLibrary> deltaLib = loadShaderLibrary(@"src/shaders/deltanet.metallib",
+                                                @"src/shaders/deltanet_forward.metal",
+                                                @[@"deltanet_forward"]);
     if (deltaLib) {
         deltanetPipeline_ = makePipeline(deltaLib, @"deltanet_forward");
     }
-    NSURL* moeUrl = [NSURL fileURLWithPath:@"src/shaders/moe.metallib"];
-    id<MTLLibrary> moeLib = [device_ newLibraryWithURL:moeUrl error:&err];
+    id<MTLLibrary> moeLib = loadShaderLibrary(@"src/shaders/moe.metallib",
+                                              @"src/shaders/moe_gemm.metal",
+                                              @[@"moe_router"]);
     if (moeLib) {
         moeRouterPipeline_ = makePipeline(moeLib, @"moe_router");
     }
@@ -159,6 +265,37 @@ MetalTransformerEngine::MetalTransformerEngine(const TransformerConfig& config)
     embedPipeline_     = makePipeline(opsLib_, @"embedding_lookup_kernel");
     kvAppendPipeline_  = makePipeline(opsLib_, @"kv_cache_append_kernel");
     
+    // Opt-in for now: INT4 changes numerics, so it is switched on explicitly by
+    // the benchmark and quality harnesses rather than silently by default.
+    if (const char* q = getenv("ANTIGRAVITY_INT4")) {
+        quantizeOnLoad_ = (q[0] == '1' || q[0] == 't' || q[0] == 'T' || q[0] == 'y' || q[0] == 'Y');
+    }
+    // Reproducible runs, opt-in. See antigravity::seedChannelRng for why the seed is combined
+    // with a per-call counter rather than used directly.
+    if (const char* seed = getenv("ANTIGRAVITY_SEED")) {
+        if (antigravity::parseSeed(seed, fixedSeed_)) {
+            hasFixedSeed_ = true;
+            std::cout << "[MetalTransformerEngine] ANTIGRAVITY_SEED=" << fixedSeed_
+                      << ": generation is reproducible for this process" << std::endl;
+        } else {
+            // A seed that silently became some other value, or no seed, would make a run look
+            // reproducible while reproducing nothing. Say so instead.
+            std::cerr << "[MetalTransformerEngine] ignoring ANTIGRAVITY_SEED=\"" << seed
+                      << "\": not a non-negative 64-bit decimal integer; seeding from "
+                         "std::random_device" << std::endl;
+        }
+    }
+    // Both are needed: decode (M == 1) takes the GEMV, prefill and the multi-channel
+    // step take the fused GEMM. Quantizing with only one available would leave the
+    // other path refusing to compute rather than producing a wrong answer, but that
+    // is still a dead engine, so fall back to FP16 up front instead.
+    if (quantizeOnLoad_ && (!gemvInt4Pipeline_ || !fusedGemmInt4Pipeline_)) {
+        std::cerr << "[MetalTransformerEngine] INT4 weights requested but "
+                  << (gemvInt4Pipeline_ ? "fused_batched_gemm_int4" : "gemv_int4_kernel")
+                  << " is unavailable; falling back to FP16 weights" << std::endl;
+        quantizeOnLoad_ = false;
+    }
+
     reinitBuffersAndRoPE();
     
     std::cout << "[MetalTransformerEngine] Initialized with " 
@@ -260,121 +397,77 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         std::cerr << "[loadWeights] Cannot open: " << path << std::endl;
         return false;
     }
-    
-    // Read header length (8-byte LE uint64)
+
+    // How big the file actually is. Nothing used to ask, which meant a tensor whose
+    // offsets ran past the end of a truncated checkpoint was mmapped and read anyway.
+    file.seekg(0, std::ios::end);
+    const std::streamoff file_end = file.tellg();
+    if (file_end < 8) {
+        std::cerr << "[loadWeights] File is " << file_end
+                  << " bytes, too short to be a safetensors file: " << path << std::endl;
+        return false;
+    }
+    const uint64_t validated_file_size = (uint64_t)file_end;
+    file.seekg(0, std::ios::beg);
+
+    // Read header length (8-byte LE uint64). Check the read: a short read used to leave
+    // header_len partly unwritten.
     uint64_t header_len = 0;
-    file.read(reinterpret_cast<char*>(&header_len), 8);
+    if (!file.read(reinterpret_cast<char*>(&header_len), 8)) {
+        std::cerr << "[loadWeights] Could not read the 8-byte header length: "
+                  << path << std::endl;
+        return false;
+    }
     if (header_len > 100 * 1024 * 1024) {  // sanity: max 100MB header
         std::cerr << "[loadWeights] Header too large: " << header_len << std::endl;
         return false;
     }
-    
-    // Read JSON header
-    std::string header_json(header_len, '\0');
-    file.read(&header_json[0], header_len);
-    
-    uint64_t data_start = 8 + header_len;
-    
-    // Simple JSON parser for safetensors format
-    // Format: {"tensor_name": {"dtype": "BF16", "shape": [dim0, dim1], "data_offsets": [start, end]}, ...}
-    
-    struct TensorInfo {
-        std::string dtype;
-        std::vector<int64_t> shape;
-        uint64_t offset_start;
-        uint64_t offset_end;
-    };
-    
-    // Minimal JSON parser — extract tensor name, dtype, shape, data_offsets
-    std::map<std::string, TensorInfo> tensors;
-    
-    // Find each key-value pair
-    size_t pos = 0;
-    while (pos < header_json.size()) {
-        // Find key string
-        size_t key_start = header_json.find('"', pos);
-        if (key_start == std::string::npos) break;
-        size_t key_end = header_json.find('"', key_start + 1);
-        if (key_end == std::string::npos) break;
-        std::string key = header_json.substr(key_start + 1, key_end - key_start - 1);
-        
-        // Skip "__metadata__"
-        if (key == "__metadata__") {
-            // Skip until next top-level key
-            pos = header_json.find('}', key_end);
-            if (pos != std::string::npos) pos++;
-            continue;
-        }
-        
-        // Find the value object
-        size_t val_start = header_json.find('{', key_end);
-        if (val_start == std::string::npos) break;
-        
-        // Find matching closing brace
-        int depth = 1;
-        size_t val_end = val_start + 1;
-        while (val_end < header_json.size() && depth > 0) {
-            if (header_json[val_end] == '{') depth++;
-            else if (header_json[val_end] == '}') depth--;
-            val_end++;
-        }
-        
-        std::string val_str = header_json.substr(val_start, val_end - val_start);
-        
-        TensorInfo info;
-        
-        // Extract dtype
-        size_t dtype_pos = val_str.find("\"dtype\"");
-        if (dtype_pos != std::string::npos) {
-            size_t ds = val_str.find('"', dtype_pos + 7);
-            if (ds != std::string::npos) {
-                size_t de = val_str.find('"', ds + 1);
-                if (de != std::string::npos) {
-                    info.dtype = val_str.substr(ds + 1, de - ds - 1);
-                }
-            }
-        }
-        
-        // Extract shape
-        size_t shape_pos = val_str.find("\"shape\"");
-        if (shape_pos != std::string::npos) {
-            size_t arr_s = val_str.find('[', shape_pos);
-            size_t arr_e = val_str.find(']', arr_s);
-            if (arr_s != std::string::npos && arr_e != std::string::npos) {
-                std::string shape_str = val_str.substr(arr_s + 1, arr_e - arr_s - 1);
-                // Parse comma-separated integers
-                std::istringstream ss(shape_str);
-                std::string token;
-                while (std::getline(ss, token, ',')) {
-                    token.erase(std::remove(token.begin(), token.end(), ' '), token.end());
-                    if (!token.empty()) info.shape.push_back(std::stoll(token));
-                }
-            }
-        }
-        
-        // Extract data_offsets
-        size_t off_pos = val_str.find("\"data_offsets\"");
-        if (off_pos != std::string::npos) {
-            size_t arr_s = val_str.find('[', off_pos);
-            size_t arr_e = val_str.find(']', arr_s);
-            if (arr_s != std::string::npos && arr_e != std::string::npos) {
-                std::string off_str = val_str.substr(arr_s + 1, arr_e - arr_s - 1);
-                size_t comma = off_str.find(',');
-                if (comma != std::string::npos) {
-                    std::string s1 = off_str.substr(0, comma);
-                    std::string s2 = off_str.substr(comma + 1);
-                    s1.erase(std::remove(s1.begin(), s1.end(), ' '), s1.end());
-                    s2.erase(std::remove(s2.begin(), s2.end(), ' '), s2.end());
-                    info.offset_start = std::stoull(s1);
-                    info.offset_end = std::stoull(s2);
-                }
-            }
-        }
-        
-        tensors[key] = info;
-        pos = val_end;
+    if (header_len == 0 || header_len > validated_file_size - 8) {
+        std::cerr << "[loadWeights] Header claims " << header_len
+                  << " bytes but the file holds only " << (validated_file_size - 8)
+                  << " after the length field; the file is truncated or not safetensors: "
+                  << path << std::endl;
+        return false;
     }
-    
+
+    // Read JSON header, checking the read for the same reason.
+    std::string header_json(header_len, '\0');
+    if (!file.read(&header_json[0], (std::streamsize)header_len)) {
+        std::cerr << "[loadWeights] Could not read the " << header_len
+                  << "-byte JSON header: " << path << std::endl;
+        return false;
+    }
+
+    const uint64_t data_start = 8 + header_len;
+
+    // Parse and validate the header. This lives in src/safetensors_header.h so it can be
+    // tested without a Metal device — see tests/test_safetensors_header.cpp. The parser
+    // that used to be inline here had four defects, none of which announced itself:
+    //
+    //   - It skipped "__metadata__" by finding the first '}' after the key. With a nested
+    //     object anywhere but last, or a '}' inside a metadata string, parsing resumed in
+    //     the middle of metadata: a reproduction of that code on a header whose metadata
+    //     holds {"extra":{...},"format":"pt"} returns a single tensor named "format",
+    //     carrying the real tensor's data_offsets, with the real tensor absent. An absent
+    //     tensor means loadTensor never runs for it and its buffer keeps whatever it held.
+    //   - TensorInfo::offset_start and offset_end had no initialiser and the struct was
+    //     default-constructed, so a tensor whose data_offsets failed to parse carried
+    //     indeterminate offsets.
+    //   - The tensor was inserted unconditionally, so that malformed entry was kept.
+    //   - std::stoll and std::stoull throw, and this is reached through the extern "C"
+    //     AntigravityEngineLoadModel, so a malformed header threw across a C boundary.
+    //
+    // And nothing compared any offset to the file size.
+    const antigravity::HeaderParseResult parsed =
+        antigravity::parseSafetensorsHeader(header_json, data_start, validated_file_size);
+    if (!parsed.ok) {
+        std::cerr << "[loadWeights] Refusing to load " << path << ": " << parsed.error
+                  << std::endl;
+        return false;
+    }
+    using TensorInfo = antigravity::TensorEntry;
+    const std::map<std::string, TensorInfo>& tensors = parsed.tensors;
+
     std::cout << "[loadWeights] Parsed " << tensors.size() << " tensors from Safetensors" << std::endl;
     
     // Auto-detect architecture parameters from parsed tensor metadata
@@ -384,8 +477,14 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
             size_t p1 = kv.first.find("layers.");
             size_t p2 = kv.first.find('.', p1 + 7);
             if (p2 != std::string::npos) {
-                int l_idx = std::stoi(kv.first.substr(p1 + 7, p2 - p1 - 7));
-                if (l_idx + 1 > max_layer) max_layer = l_idx + 1;
+                // parseInt64 rather than std::stoi: a name like "model.layers.foo.x"
+                // makes std::stoi throw, and this is reached through the extern "C"
+                // AntigravityEngineLoadModel.
+                int64_t l_idx = 0;
+                if (antigravity::parseInt64(kv.first.substr(p1 + 7, p2 - p1 - 7), l_idx)
+                    && l_idx >= 0 && l_idx < 100000 && l_idx + 1 > max_layer) {
+                    max_layer = (int)(l_idx + 1);
+                }
             }
         }
     }
@@ -416,6 +515,40 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         }
     }
 
+    // forwardLayer() is a dense Llama-style block for every layer: RMSNorm, grouped
+    // query attention, SwiGLU, residual. There is no branching on layer type. The
+    // engine creates deltanetPipeline_ and moeRouterPipeline_ in its constructor, which
+    // makes it look as though mixture-of-experts and linear-attention layers are
+    // supported, but neither pipeline is dispatched anywhere — verified by grep: they
+    // are assigned once and referenced nowhere else.
+    //
+    // So a checkpoint whose layers are not all dense would be run as if they were, and
+    // would produce plausible-looking garbage rather than failing. Say so at load time
+    // rather than at benchmark time.
+    {
+        bool has_experts = false, has_linear_attn = false, has_router = false;
+        for (const auto& kv : tensors) {
+            const std::string& name = kv.first;
+            if (name.find("mlp.experts.") != std::string::npos
+                || name.find("shared_expert") != std::string::npos) has_experts = true;
+            if (name.find("linear_attn") != std::string::npos
+                || name.find("conv1d") != std::string::npos
+                || name.find("A_log") != std::string::npos
+                || name.find("dt_bias") != std::string::npos) has_linear_attn = true;
+            if (name.find("mlp.gate.weight") != std::string::npos) has_router = true;
+        }
+        if (has_experts || has_linear_attn || has_router) {
+            std::cerr << "[loadWeights] WARNING: this checkpoint contains tensors for an "
+                         "architecture this engine does not implement —";
+            if (has_experts || has_router) std::cerr << " mixture-of-experts";
+            if (has_linear_attn) std::cerr << " linear-attention/state-space layers";
+            std::cerr << ". forwardLayer() runs a dense block for every layer, so those "
+                         "weights will be ignored or misinterpreted and the output will "
+                         "be wrong without failing. deltanet_forward and moe_router are "
+                         "compiled but never dispatched." << std::endl;
+        }
+    }
+
     std::cout << "[loadWeights] Auto-configured architecture: "
               << config_.n_layers << " layers, hidden_dim=" << config_.hidden_dim
               << ", inter_dim=" << config_.intermediate_dim
@@ -442,7 +575,21 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         return false;
     }
     size_t file_size = sb.st_size;
-    
+
+    // parseSafetensorsHeader validated every tensor's offsets against the size this file
+    // had when the header was read. The mapping below is sized from fstat instead, so if
+    // the two disagree the file changed underneath us and those offsets no longer describe
+    // what is about to be mapped. Cheap to check, and the alternative is reading past the
+    // end of the mapping with offsets that were "already validated".
+    if ((uint64_t)file_size != validated_file_size) {
+        std::cerr << "[loadWeights] File size changed while loading, from "
+                  << validated_file_size << " to " << file_size
+                  << " bytes; refusing to use offsets validated against the old size: "
+                  << path << std::endl;
+        close(fd);
+        return false;
+    }
+
     const char* mapped_data = (const char*)mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (mapped_data == MAP_FAILED) {
         std::cerr << "[loadWeights] mmap failed for: " << path << std::endl;
@@ -453,7 +600,11 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
     const char* raw_data = mapped_data + data_start;
     
     // Helper: load a tensor into a Metal buffer as FP16
-    auto loadTensor = [&](const std::string& name, bool transpose_2d = false) -> id<MTLBuffer> {
+    // `quantizable` marks the big [K x N] projection matrices that dispatchGEMM
+    // consumes; norms and the embedding table are read by kernels that expect FP16.
+    auto loadTensor = [&](const std::string& name,
+                          bool transpose_2d = false,
+                          bool quantizable = false) -> id<MTLBuffer> {
         auto it = tensors.find(name);
         if (it == tensors.end()) {
             // Try with "model." prefix
@@ -472,49 +623,105 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
                   << " offset=" << info.offset_start << std::endl;
         size_t num_elements = 1;
         for (auto d : info.shape) num_elements *= d;
-        
+
+        // Which dtypes this engine can actually load into an FP16 buffer.
+        //
+        // This used to be a single `is_bf16` flag, and everything that was not BF16 took a
+        // branch commented "Already FP16 or compatible, direct copy":
+        //
+        //     memcpy(dest, src, min(fp16_bytes, offset_end - offset_start));
+        //
+        // F32 is not compatible. For N elements the source holds 4N bytes and fp16_bytes is
+        // 2N, so the min() picked 2N and copied the first half of the F32 data into the FP16
+        // buffer — reinterpreting each pair of F32 bytes as one FP16 value, and leaving the
+        // second half of the tensor unread. Every weight in it wrong, no error reported, and
+        // a forward pass whose output does not vary with its input. Unlike most of what this
+        // branch has fixed, that is not latent: it fires on any F32 checkpoint, and plenty
+        // of converted checkpoints are F32.
+        //
+        // So the dtype is now named explicitly, F32 is converted properly, and anything this
+        // engine cannot represent is refused by name instead of being copied as if it were
+        // FP16.
+        const antigravity::SourceDtype src_dtype =
+            antigravity::sourceDtypeFromName(info.dtype);
+        if (src_dtype == antigravity::SourceDtype::Unsupported) {
+            std::cerr << "[loadTensor] " << name << " has dtype " << info.dtype
+                      << ", which this engine cannot load into an FP16 buffer. Convert the "
+                         "checkpoint to F16, BF16 or F32 first. (It used to be copied as if "
+                         "it were FP16, which produced wrong weights and no error.)"
+                      << std::endl;
+            return nil;
+        }
+
+        // parseSafetensorsHeader has already required elementCount * elementSize to equal
+        // the data_offsets span, so the source really does hold num_elements values of this
+        // dtype. Assert the relationship the loops below depend on rather than trusting it
+        // silently: the two conversion loops index by element and have no min() to save them.
+        const size_t src_element_size = antigravity::sourceElementSize(src_dtype);
+        const uint64_t src_bytes = info.offset_end - info.offset_start;
+        if (src_bytes != (uint64_t)num_elements * src_element_size) {
+            std::cerr << "[loadTensor] " << name << " spans " << src_bytes
+                      << " bytes but its shape and dtype " << info.dtype << " require "
+                      << (uint64_t)num_elements * src_element_size << std::endl;
+            return nil;
+        }
+
         size_t fp16_bytes = num_elements * sizeof(uint16_t);
         id<MTLBuffer> buf = [device_ newBufferWithLength:fp16_bytes options:MTLResourceStorageModeShared];
         if (!buf) return nil;
-        
+
         uint16_t* dest = (uint16_t*)[buf contents];
-        const uint16_t* src = (const uint16_t*)(raw_data + info.offset_start);
-        
-        bool is_bf16 = (info.dtype == "BF16" || info.dtype == "bf16" || info.dtype == "bfloat16");
-        
+        const char* src_bytes_ptr = raw_data + info.offset_start;
+
         if (transpose_2d && info.shape.size() == 2) {
             size_t rows = info.shape[0]; // out_features
             size_t cols = info.shape[1]; // in_features
             for (size_t r = 0; r < rows; r++) {
                 for (size_t c = 0; c < cols; c++) {
-                    uint16_t val = src[r * cols + c];
-                    if (is_bf16) val = bf16_to_fp16(val);
-                    dest[c * rows + r] = val;
+                    dest[c * rows + r] =
+                        antigravity::elementAsFp16(src_bytes_ptr, src_dtype, r * cols + c);
                 }
             }
+        } else if (src_dtype == antigravity::SourceDtype::FP16) {
+            // The only case where the bytes are already what the buffer wants. The length
+            // is now exact rather than a min() against the span.
+            std::memcpy(dest, src_bytes_ptr, fp16_bytes);
         } else {
-            if (is_bf16) {
-                // Convert BFloat16 → Float16
-                for (size_t i = 0; i < num_elements; i++) {
-                    dest[i] = bf16_to_fp16(src[i]);
-                }
-            } else {
-                // Already FP16 or compatible, direct copy
-                std::memcpy(dest, src, std::min(fp16_bytes, (size_t)(info.offset_end - info.offset_start)));
+            for (size_t i = 0; i < num_elements; i++) {
+                dest[i] = antigravity::elementAsFp16(src_bytes_ptr, src_dtype, i);
             }
         }
-        
+
         allocatedBytes_ += fp16_bytes;
+
+        if (quantizable && quantizeOnLoad_ && info.shape.size() == 2) {
+            // The buffer is [K x N] row-major: safetensors stores [out, in], so a
+            // transposed load leaves in_features as the row stride, which is the
+            // layout both INT4 kernels index as B[k * N + col].
+            uint32_t K = (uint32_t)(transpose_2d ? info.shape[1] : info.shape[0]);
+            uint32_t N = (uint32_t)(transpose_2d ? info.shape[0] : info.shape[1]);
+            id<MTLBuffer> packed = quantizeToSuperblocks(dest, num_elements, K, N);
+            if (packed) {
+                // The FP16 staging buffer is released here; only the 4-bit copy is kept.
+                allocatedBytes_ -= fp16_bytes;
+                allocatedBytes_ += [packed length];
+                return packed;
+            }
+            std::cerr << "[loadTensor] " << name << " not quantizable ("
+                      << num_elements << " elements is not a multiple of 256); "
+                      << "keeping FP16" << std::endl;
+        }
+
         return buf;
     };
     
     // ---- Load Embedding & Output Head ----
     embedWeights_ = loadTensor("embed_tokens.weight", false);
     finalNorm_ = loadTensor("norm.weight", false);
-    lmHead_ = loadTensor("lm_head.weight", true);
+    lmHead_ = loadTensor("lm_head.weight", true, /*quantizable=*/true);
     if (!lmHead_ && embedWeights_) {
         std::cout << "[loadWeights] lm_head.weight tied to embed_tokens.weight (transposing)" << std::endl;
-        lmHead_ = loadTensor("embed_tokens.weight", true);
+        lmHead_ = loadTensor("embed_tokens.weight", true, /*quantizable=*/true);
     }
     
     if (!embedWeights_ || !finalNorm_ || !lmHead_) {
@@ -528,14 +735,14 @@ bool MetalTransformerEngine::parseSafetensors(const std::string& path) {
         std::string prefix = "layers." + std::to_string(i) + ".";
         
         layerWeights_[i].input_norm  = loadTensor(prefix + "input_layernorm.weight", false);
-        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true);
-        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true);
-        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true);
-        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true);
+        layerWeights_[i].q_proj      = loadTensor(prefix + "self_attn.q_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].k_proj      = loadTensor(prefix + "self_attn.k_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].v_proj      = loadTensor(prefix + "self_attn.v_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].o_proj      = loadTensor(prefix + "self_attn.o_proj.weight", true, /*quantizable=*/true);
         layerWeights_[i].post_attn_norm = loadTensor(prefix + "post_attention_layernorm.weight", false);
-        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true);
-        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true);
-        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true);
+        layerWeights_[i].gate_proj   = loadTensor(prefix + "mlp.gate_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].up_proj     = loadTensor(prefix + "mlp.up_proj.weight", true, /*quantizable=*/true);
+        layerWeights_[i].down_proj   = loadTensor(prefix + "mlp.down_proj.weight", true, /*quantizable=*/true);
         
         // Validate all loaded
         if (!layerWeights_[i].input_norm || !layerWeights_[i].q_proj || !layerWeights_[i].k_proj ||
@@ -563,11 +770,84 @@ bool MetalTransformerEngine::loadWeights(const std::string& safetensors_path) {
 // Metal Dispatch Helpers
 // ============================================================================
 
+id<MTLBuffer> MetalTransformerEngine::quantizeToSuperblocks(
+    const uint16_t* fp16, size_t n_elements, uint32_t K, uint32_t N
+) {
+    const size_t bytes = antigravity::superblockBytesFor(n_elements);
+    if (bytes == 0) return nil;   // not a multiple of 256 elements
+
+    id<MTLBuffer> buf = [device_ newBufferWithLength:bytes
+                                             options:MTLResourceStorageModeShared];
+    if (!buf) return nil;
+
+    if (!antigravity::packSuperblocks(fp16, n_elements, (uint8_t*)[buf contents])) {
+        return nil;
+    }
+
+    quantizedWeights_[(__bridge void*)buf] = QuantizedWeight{K, N};
+    return buf;
+}
+
+void MetalTransformerEngine::dispatchGrid(
+    id<MTLComputeCommandEncoder> enc,
+    id<MTLComputePipelineState> pso,
+    MTLSize grid
+) {
+    if (!pso) return;
+    if (grid.width == 0 || grid.height == 0 || grid.depth == 0) return;
+
+    // Budget threads per group, clamped to what this pipeline allows. 256 is a
+    // common sweet spot on Apple GPUs: several SIMD groups per threadgroup without
+    // starving occupancy.
+    NSUInteger budget = std::min<NSUInteger>(256, pso.maxTotalThreadsPerThreadgroup);
+
+    // Fill from x outward, because thread_position_in_grid.x varies fastest and so
+    // determines whether adjacent lanes touch adjacent memory.
+    NSUInteger tx = std::min<NSUInteger>(grid.width, budget);
+    NSUInteger ty = std::min<NSUInteger>(grid.height, std::max<NSUInteger>(1, budget / tx));
+    NSUInteger tz = std::min<NSUInteger>(grid.depth, std::max<NSUInteger>(1, budget / (tx * ty)));
+
+    [enc dispatchThreads:grid threadsPerThreadgroup:MTLSizeMake(tx, ty, tz)];
+}
+
 void MetalTransformerEngine::dispatchGEMM(
     id<MTLComputeCommandEncoder> enc,
     id<MTLBuffer> A, id<MTLBuffer> B, id<MTLBuffer> C,
     uint32_t M, uint32_t K, uint32_t N
 ) {
+    // Quantized weights take the INT4 kernels: the packed bytes are not an FP16
+    // matrix and must not be fed to the dense path.
+    if (isQuantized(B)) {
+        if (M == 1 && gemvInt4Pipeline_) {
+            [enc setComputePipelineState:gemvInt4Pipeline_];
+            [enc setBuffer:A offset:0 atIndex:0];
+            [enc setBuffer:B offset:0 atIndex:1];
+            [enc setBuffer:C offset:0 atIndex:2];
+            uint32_t uK = K, uN = N;
+            [enc setBytes:&uK length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&uN length:sizeof(uint32_t) atIndex:4];
+            dispatchGrid(enc, gemvInt4Pipeline_, MTLSizeMake(N, 1, 1));
+            return;
+        }
+        if (fusedGemmInt4Pipeline_) {
+            [enc setComputePipelineState:fusedGemmInt4Pipeline_];
+            [enc setBuffer:A offset:0 atIndex:0];
+            [enc setBuffer:B offset:0 atIndex:1];
+            [enc setBuffer:C offset:0 atIndex:2];
+            uint32_t uN = M, uK = K, uM = N;
+            [enc setBytes:&uN length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&uK length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&uM length:sizeof(uint32_t) atIndex:5];
+            MTLSize tg = MTLSizeMake((N + 7) / 8, (M + 7) / 8, 1);
+            [enc dispatchThreadgroups:tg threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+            return;
+        }
+        // No INT4 pipeline: refuse rather than reinterpret packed bytes as FP16.
+        std::cerr << "[dispatchGEMM] quantized weights but no INT4 pipeline available"
+                  << std::endl;
+        return;
+    }
+
     if (M == 1 && gemvPipeline_) {
         [enc setComputePipelineState:gemvPipeline_];
         [enc setBuffer:A offset:0 atIndex:0];   // vector x [K]
@@ -621,11 +901,12 @@ void MetalTransformerEngine::dispatchRMSNorm(
     
     // One threadgroup per batch element, 256 threads per group
     uint32_t threadsPerTG = std::min(dim, (uint32_t)256);
-    MTLSize tg = MTLSizeMake(1, 1, 1);
     MTLSize threads = MTLSizeMake(threadsPerTG, 1, 1);
-    
-    // batch threadgroups
-    tg = MTLSizeMake(batch, 1, 1);
+
+    // One threadgroup per batch element. (This previously carried a dead
+    // MTLSizeMake(1,1,1) initialiser that made the site look like the
+    // one-thread dispatches elsewhere in this file, which it never was.)
+    MTLSize tg = MTLSizeMake(batch, 1, 1);
     [enc dispatchThreadgroups:tg threadsPerThreadgroup:threads];
 }
 
@@ -653,12 +934,15 @@ void MetalTransformerEngine::dispatchRoPE(
     [enc setBytes:&n_kv_heads length:sizeof(uint32_t) atIndex:6];
     [enc setBytes:&head_dim length:sizeof(uint32_t) atIndex:7];
     [enc setBytes:&spos length:sizeof(uint32_t) atIndex:8];
+    // max_seq, so rope_kernel can bound its read of the frequency tables itself
+    // rather than trusting the caller to have bounded absolute_pos.
+    uint32_t rope_max_seq = config_.max_seq_len;
+    [enc setBytes:&rope_max_seq length:sizeof(uint32_t) atIndex:9];
     
     // Grid: (batch * seq_len, max(n_heads, n_kv_heads), head_dim / 2)
     uint32_t max_heads = std::max(n_heads, n_kv_heads);
     MTLSize grid = MTLSizeMake(batch * seq_len, max_heads, head_dim / 2);
-    MTLSize tg = MTLSizeMake(1, 1, 1);
-    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    dispatchGrid(enc, ropePipeline_, grid);
 }
 
 
@@ -716,13 +1000,12 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
             MTLSize grid = MTLSizeMake(ql, nkv, hdim);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
 
             // Append V
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][ch].v_cache offset:0 atIndex:1];
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
         }
 
         uint32_t cur_seq_len = seq_pos + 1;
@@ -740,8 +1023,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(nh, ql, sl);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnScoresPipeline_, grid);
         }
 
         if (softmaxPipeline_) {
@@ -769,8 +1051,7 @@ void MetalTransformerEngine::forwardLayer(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(nh, ql, hd);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnValuePipeline_, grid);
         }
     }
 
@@ -786,8 +1067,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 
     // 7. MLP RMSNorm: scratch1_ = RMSNorm(scratch3_, post_attn_norm)
@@ -807,8 +1087,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_inter = M * I;
         [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_inter, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, siluMulPipeline_, grid);
     }
 
     // 10. Down Projection (Batched GEMM M x I @ I x H)
@@ -823,8 +1102,7 @@ void MetalTransformerEngine::forwardLayer(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 }
 
@@ -872,12 +1150,11 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&wpos length:sizeof(uint32_t) atIndex:5];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:6];
             MTLSize grid = MTLSizeMake(ql, nkv, hdim);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
 
             [enc setBuffer:scratchV_ offset:v_offset atIndex:0];
             [enc setBuffer:kvCaches_[layer_idx][c].v_cache offset:0 atIndex:1];
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, kvAppendPipeline_, grid);
         }
 
         uint32_t cur_seq_len = seq_pos + q_len;
@@ -895,8 +1172,7 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(1 * nh, ql, sl);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnScoresPipeline_, grid);
         }
 
         if (softmaxPipeline_) {
@@ -925,8 +1201,7 @@ void MetalTransformerEngine::forwardBatched(
             [enc setBytes:&ms length:sizeof(uint32_t) atIndex:7];
             [enc setBytes:&ql length:sizeof(uint32_t) atIndex:8];
             MTLSize grid = MTLSizeMake(1 * nh, ql, hd);
-            MTLSize tg = MTLSizeMake(1, 1, 1);
-            [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+            dispatchGrid(enc, attnValuePipeline_, grid);
         }
     }
 
@@ -940,8 +1215,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 
     dispatchRMSNorm(enc, scratch3_, lw.post_attn_norm, scratch1_, M, H);
@@ -958,8 +1232,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_inter = M * I;
         [enc setBytes:&total_inter length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_inter, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, siluMulPipeline_, grid);
     }
 
     dispatchGEMM(enc, scratch2_, lw.down_proj, scratch1_, M, I, H);
@@ -972,8 +1245,7 @@ void MetalTransformerEngine::forwardBatched(
         uint32_t total_size = M * H;
         [enc setBytes:&total_size length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(total_size, 1, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, residualPipeline_, grid);
     }
 }
 
@@ -984,61 +1256,45 @@ void MetalTransformerEngine::forwardBatched(
 
 int32_t MetalTransformerEngine::sampleToken(
     const _Float16* logits, int vocab_size,
-    float temperature, float top_p, std::mt19937& rng
+    float temperature, float top_p, std::mt19937& rng, float* raw_logprob
 ) {
-    std::vector<float> probs(vocab_size);
-    float max_logit = -1e9f;
-    
-    // Temperature scaling
-    float inv_temp = 1.0f / std::max(temperature, 1e-6f);
-    
-    for (int i = 0; i < vocab_size; i++) {
-        probs[i] = (float)logits[i] * inv_temp;
-        if (probs[i] > max_logit) max_logit = probs[i];
-    }
-    
-    // Stable softmax
-    float sum_exp = 0.0f;
-    for (int i = 0; i < vocab_size; i++) {
-        probs[i] = expf(probs[i] - max_logit);
-        sum_exp += probs[i];
-    }
-    for (int i = 0; i < vocab_size; i++) {
-        probs[i] /= sum_exp;
-    }
-    
-    // Top-P nucleus sampling
-    if (top_p < 1.0f && top_p > 0.0f) {
-        // Sort by probability descending
-        std::vector<int> indices(vocab_size);
-        std::iota(indices.begin(), indices.end(), 0);
-        std::sort(indices.begin(), indices.end(), [&](int a, int b) {
-            return probs[a] > probs[b];
-        });
-        
-        float cumsum = 0.0f;
-        int cutoff = vocab_size;
-        for (int i = 0; i < vocab_size; i++) {
-            cumsum += probs[indices[i]];
-            if (cumsum >= top_p) {
-                cutoff = i + 1;
-                break;
-            }
+    // The arithmetic lives in src/sampling.h, which has no Metal dependency, so the
+    // NaN handling that used to pin every draw to token 0 is covered by a test that
+    // runs on any machine rather than only on a Mac.
+    antigravity::SamplingStats stats;
+    const int32_t token = antigravity::sampleTokenFromLogits(
+        logits, vocab_size, temperature, top_p, rng, stats, raw_logprob);
+    recordSamplingStats(stats, vocab_size);
+    return token;
+}
+
+void MetalTransformerEngine::seedChannelRngs(std::vector<std::mt19937>& rngs) {
+    if (hasFixedSeed_) {
+        for (size_t c = 0; c < rngs.size(); c++) {
+            antigravity::seedChannelRng(rngs[c], fixedSeed_, generationCalls_, (uint32_t)c);
         }
-        
-        // Zero out tokens below cutoff
-        for (int i = cutoff; i < vocab_size; i++) {
-            probs[indices[i]] = 0.0f;
+    } else {
+        // Unchanged from before ANTIGRAVITY_SEED existed.
+        std::random_device rd;
+        for (size_t c = 0; c < rngs.size(); c++) {
+            rngs[c].seed(rd() + (uint32_t)c * 10007);
         }
-        
-        // Re-normalize
-        sum_exp = 0.0f;
-        for (int i = 0; i < vocab_size; i++) sum_exp += probs[i];
-        for (int i = 0; i < vocab_size; i++) probs[i] /= sum_exp;
     }
-    
-    std::discrete_distribution<int> dist(probs.begin(), probs.end());
-    return dist(rng);
+    generationCalls_++;
+}
+
+void MetalTransformerEngine::recordSamplingStats(
+    const antigravity::SamplingStats& stats, int vocab_size
+) {
+    nonFiniteLogitCount_ += stats.non_finite_logits;
+    if (stats.empty_distributions && emptyDistributionCount_ == 0) {
+        // Once, not once per token: a failed forward pass would otherwise print this
+        // for every position in every sequence.
+        std::cerr << "[sampleToken] every one of " << vocab_size << " logits is NaN or "
+                     "infinite; the forward pass produced no usable distribution"
+                  << std::endl;
+    }
+    emptyDistributionCount_ += stats.empty_distributions;
 }
 
 
@@ -1071,9 +1327,33 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         std::cerr << "[generateSpeculative] Weights not loaded!" << std::endl;
         return GenerationResult();
     }
+
+    // Also checked at the C API boundary, but this method is public and the Swift
+    // SDK reaches it directly. k_draft + 1 rows are forwarded in one pass and
+    // q_len_max is what the scratch buffers were sized for; past that, the GEMM
+    // writes outside them.
+    {
+        antigravity::LimitError lim = antigravity::checkDraftChunk(k_draft, config_.q_len_max);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generateSpeculative] " << antigravity::describe(lim)
+                      << " (k_draft=" << k_draft << ", q_len_max=" << config_.q_len_max
+                      << ")" << std::endl;
+            return GenerationResult();
+        }
+        lim = antigravity::checkSequence(prompt_len, max_new_tokens, config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generateSpeculative] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len << ", max_new_tokens="
+                      << max_new_tokens << ", max_seq_len=" << config_.max_seq_len
+                      << ")" << std::endl;
+            return GenerationResult();
+        }
+    }
     
     auto start_time = std::chrono::high_resolution_clock::now();
-    std::mt19937 rng(42);
+    std::vector<std::mt19937> spec_rngs(1);
+    seedChannelRngs(spec_rngs);
+    std::mt19937& rng = spec_rngs[0];
 
     GenerationResult res;
     res.channel_tokens.resize(1); // Speculative decoding prototype is 1-channel for now
@@ -1098,8 +1378,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H_draft = draft_engine->config_.hidden_dim;
         [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
         MTLSize gridD = MTLSizeMake(1, H_draft, 1);
-        MTLSize tgD = MTLSizeMake(1, 1, 1);
-        [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+        draft_engine->dispatchGrid(encDraft, draft_engine->embedPipeline_, gridD);
 
         for (int l = 0; l < draft_engine->config_.n_layers; l++) {
             draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos);
@@ -1118,8 +1397,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H = config_.hidden_dim;
         [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(1, H, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, embedPipeline_, grid);
 
         for (int l = 0; l < config_.n_layers; l++) {
             forwardLayer(cmdBuf, enc, l, scratch1_, scratch1_, 1, seq_pos);
@@ -1154,8 +1432,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
             uint32_t H_draft = draft_engine->config_.hidden_dim;
             [encDraft setBytes:&H_draft length:sizeof(uint32_t) atIndex:3];
             MTLSize gridD = MTLSizeMake(1, H_draft, 1);
-            MTLSize tgD = MTLSizeMake(1, 1, 1);
-            [encDraft dispatchThreadgroups:gridD threadsPerThreadgroup:tgD];
+            draft_engine->dispatchGrid(encDraft, draft_engine->embedPipeline_, gridD);
 
             for (int l = 0; l < draft_engine->config_.n_layers; l++) {
                 draft_engine->forwardLayer(cmdBufDraft, encDraft, l, draft_engine->scratch1_, draft_engine->scratch1_, 1, draft_seq_pos + k);
@@ -1170,6 +1447,11 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
             
             _Float16* d_logits = (_Float16*)[draft_engine->scratchLogits_ contents];
             // Force greedy for draft
+            // Greedy (temperature 0, top_p 1) deliberately, NOT the caller's temperature
+            // and top_p. The acceptance test below is an exact match against the target's
+            // own greedy pick, which is only distribution-correct for greedy decoding.
+            // Sampling here without the probability-ratio accept/reject step would silently
+            // change the output distribution. See AntigravityEngineNativeGenerateSpeculative.
             int32_t next_t = draft_engine->sampleToken(d_logits, draft_engine->config_.vocab_size, 0.0f, 1.0f, rng);
             draft_tokens.push_back(next_t);
             draft_current_token = next_t;
@@ -1191,8 +1473,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         uint32_t H = config_.hidden_dim;
         [enc setBytes:&H length:sizeof(uint32_t) atIndex:3];
         MTLSize grid = MTLSizeMake(q_len, H, 1);
-        MTLSize tg = MTLSizeMake(1, 1, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        dispatchGrid(enc, embedPipeline_, grid);
 
         for (int l = 0; l < config_.n_layers; l++) {
             forwardBatched(cmdBuf, enc, l, scratch1_, scratch1_, 1, q_len, seq_pos);
@@ -1211,6 +1492,7 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
         int accepted = 0;
         for (int i = 0; i < q_len; i++) {
             _Float16* row_logits = t_logits + i * config_.vocab_size;
+            // Greedy for the same reason as the draft sampling above.
             int32_t target_tok = sampleToken(row_logits, config_.vocab_size, 0.0f, 1.0f, rng);
             
             res.channel_tokens[0].push_back(target_tok);
@@ -1243,6 +1525,197 @@ GenerationResult MetalTransformerEngine::generateSpeculative(
     return res;
 }
 
+// Prompt tokens 0 .. prompt_len-2 into every channel's KV cache, all C channels at once. The
+// last prompt token is left for the caller: generate() feeds it as the first decode step, and
+// debugForward() runs it one layer at a time so each layer's output can be read back.
+void MetalTransformerEngine::encodePrefill(const int32_t* prompt_tokens, int32_t prompt_len,
+                                           uint32_t C, id<MTLBuffer> batch_hidden_1,
+                                           id<MTLBuffer> batch_hidden_2) {
+    const uint32_t H = config_.hidden_dim;
+    //
+    // Several prompt tokens go into ONE command buffer. This loop used to create a command
+    // buffer per prompt token and block on waitUntilCompleted each time, so a 100-token
+    // prompt cost 100 CPU-GPU round trips before a single output token was produced.
+    //
+    // Merging them is safe, and for reasons worth writing down rather than rediscovering:
+    //
+    //   - Nothing in the loop reads a GPU result back. The only CPU-side input is
+    //     prompt_tokens[t], which is known before the loop starts, and setBytes: copies the
+    //     value into the encoder at encode time, so each dispatch carries its own copy of
+    //     the token id rather than aliasing a variable that the next iteration overwrites.
+    //   - The dispatches still execute in encoding order. MTLComputeCommandEncoder is
+    //     serial unless it is created with MTLDispatchTypeConcurrent, which this is not, so
+    //     each dispatch sees the previous one's writes. Token t's attention therefore still
+    //     reads the KV cache entries token t-1 wrote.
+    //   - forwardLayer() takes cmdBuf but never uses it — only the encoder. It does not end
+    //     the encoding, create a blit encoder, commit, or read buffer contents, so it has no
+    //     need of a per-token command buffer boundary. (That unused parameter is a hint that
+    //     the split was never deliberate.)
+    //
+    // Nothing about the computation changes: the same dispatches in the same order, with
+    // only the commit granularity different. That is why this is safe to change without a
+    // device to test it on.
+    //
+    // It is chunked rather than made one command buffer for the whole prompt, because a
+    // command buffer holds every dispatch encoded into it until it is committed. At roughly
+    // a dozen dispatches per layer per token, a 2048-token prompt over 22 layers would
+    // encode on the order of half a million dispatches into a single buffer before anything
+    // began executing, which trades one bottleneck for a worse one and delays any error
+    // until the end. The chunk keeps the outstanding work bounded while removing all but
+    // 1/kPrefillChunk of the round trips.
+    // The chunk size and the ranges both come from antigravity::, where they are tested:
+    // getting the bounds wrong means prefill silently skips prompt tokens, and a partially
+    // ignored prompt produces confident output that does not follow from its input.
+    const int prefill_chunk = antigravity::prefillChunkTokens(config_.n_layers);
+    for (const auto& range : antigravity::prefillChunks(prompt_len - 1, prefill_chunk)) {
+        @autoreleasepool {
+            const int chunk_start = range.first;
+            const int chunk_end = range.second;
+            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+
+            for (int t = chunk_start; t < chunk_end; t++) {
+                // Embedding lookup for prompt token t for all C channels
+                if (embedPipeline_) {
+                    [enc setComputePipelineState:embedPipeline_];
+                    uint32_t tok = (uint32_t)prompt_tokens[t];
+                    if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                    for (uint32_t c = 0; c < C; c++) {
+                        // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                        // per token per channel — thousands of object allocations inside the decode loop.
+                        [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
+                        [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+                        [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
+                        uint32_t hdim = H;
+                        [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+                        MTLSize grid = MTLSizeMake(1, H, 1);
+                        dispatchGrid(enc, embedPipeline_, grid);
+                    }
+                }
+
+                // Forward through all layers with batch_size = C
+                for (int l = 0; l < config_.n_layers; l++) {
+                    id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+                    id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+                    forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
+                }
+            }
+
+            [enc endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+        }
+    }
+}
+
+bool MetalTransformerEngine::debugForward(const int32_t* prompt_tokens, int32_t prompt_len,
+                                          std::vector<float>& hidden,
+                                          std::vector<float>& logits) {
+    if (!weightsLoaded_) {
+        std::cerr << "[debugForward] weights not loaded" << std::endl;
+        return false;
+    }
+    if (prompt_tokens == nullptr) {
+        std::cerr << "[debugForward] no prompt" << std::endl;
+        return false;
+    }
+    const antigravity::LimitError lim =
+        antigravity::checkSequence(prompt_len, 0, config_.max_seq_len);
+    if (lim != antigravity::LimitError::Ok) {
+        std::cerr << "[debugForward] " << antigravity::describe(lim) << " (prompt_len="
+                  << prompt_len << ", max_seq_len=" << config_.max_seq_len << ")" << std::endl;
+        return false;
+    }
+
+    const uint32_t H = config_.hidden_dim;
+    const uint32_t C = config_.n_channels;
+    const uint32_t V = config_.vocab_size;
+    const uint32_t L = config_.n_layers;
+    hidden.assign((size_t)(L + 1) * C * H, 0.0f);
+    logits.assign((size_t)C * V, 0.0f);
+
+    const size_t batch_hidden_bytes = (size_t)C * H * sizeof(uint16_t);
+    id<MTLBuffer> batch_hidden_1 = [device_ newBufferWithLength:batch_hidden_bytes
+                                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> batch_hidden_2 = [device_ newBufferWithLength:batch_hidden_bytes
+                                                        options:MTLResourceStorageModeShared];
+    if (!batch_hidden_1 || !batch_hidden_2) {
+        std::cerr << "[debugForward] could not allocate hidden-state buffers" << std::endl;
+        return false;
+    }
+
+    // The same prefill generate() runs, not a copy of it.
+    encodePrefill(prompt_tokens, prompt_len, C, batch_hidden_1, batch_hidden_2);
+
+    // [C, H] of FP16 from a shared buffer into block `slot` of `hidden`.
+    auto readHidden = [&](id<MTLBuffer> buf, uint32_t slot) {
+        const _Float16* src = (const _Float16*)[buf contents];
+        float* dst = hidden.data() + (size_t)slot * C * H;
+        for (size_t i = 0; i < (size_t)C * H; i++) dst[i] = (float)src[i];
+    };
+
+    // The last prompt position, one command buffer per stage so every layer's output can be
+    // read back before the next layer overwrites the buffer it lives in. Command buffers on one
+    // queue run in order and each encoder is serial, so this is the same sequence of
+    // dispatches generate()'s first decode step encodes into a single buffer.
+    const uint32_t seq_pos = (uint32_t)prompt_len - 1;
+    uint32_t tok = (uint32_t)prompt_tokens[prompt_len - 1];
+    if (tok >= V) tok = 0;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        if (embedPipeline_) {
+            [enc setComputePipelineState:embedPipeline_];
+            for (uint32_t c = 0; c < C; c++) {
+                [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
+                [enc setBuffer:embedWeights_ offset:0 atIndex:1];
+                [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
+                uint32_t hdim = H;
+                [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
+                dispatchGrid(enc, embedPipeline_, MTLSizeMake(1, H, 1));
+            }
+        } else {
+            // A null embedding pipeline is silently skipped by generate(). Here it is reported:
+            // that is one of the failures this entry point exists to find.
+            std::cerr << "[debugForward] embedding pipeline is null; block 0 is whatever the "
+                         "buffer held" << std::endl;
+        }
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+    }
+    readHidden(batch_hidden_1, 0);
+
+    for (uint32_t l = 0; l < L; l++) {
+        id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+        id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            forwardLayer(cmdBuf, enc, (int)l, in_buf, out_buf, C, seq_pos);
+            [enc endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+        }
+        readHidden(out_buf, l + 1);
+    }
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        id<MTLBuffer> final_hidden = (L % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
+        dispatchRMSNorm(enc, final_hidden, finalNorm_, scratch1_, C, H);
+        dispatchGEMM(enc, scratch1_, lmHead_, scratchLogits_, C, H, V);
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+    }
+    const _Float16* lsrc = (const _Float16*)[scratchLogits_ contents];
+    for (size_t i = 0; i < (size_t)C * V; i++) logits[i] = (float)lsrc[i];
+    return true;
+}
+
 GenerationResult MetalTransformerEngine::generate(
     const int32_t* prompt_tokens,
     int32_t prompt_len,
@@ -1263,18 +1736,32 @@ GenerationResult MetalTransformerEngine::generate(
         std::cerr << "[generate] Weights not loaded!" << std::endl;
         return result;
     }
-    
+
+    // The KV cache holds max_seq_len positions per layer and decode writes at
+    // seq_pos = prompt_len + step. Nothing bounded that before, so a long enough
+    // prompt or generation walked past the end of every layer's cache.
+    {
+        antigravity::LimitError lim =
+            antigravity::checkSequence(prompt_len, max_new_tokens, config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generate] " << antigravity::describe(lim)
+                      << " (prompt_len=" << prompt_len << ", max_new_tokens="
+                      << max_new_tokens << ", max_seq_len=" << config_.max_seq_len
+                      << "); room for " << antigravity::remainingCapacity(prompt_len,
+                                                                          config_.max_seq_len)
+                      << " more tokens" << std::endl;
+            return result;
+        }
+    }
+
     const uint32_t H = config_.hidden_dim;
     const uint32_t C = config_.n_channels;
     const bool is_qwen = (config_.vocab_size > 32000);
     const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
     const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
     
-    std::random_device rd;
     std::vector<std::mt19937> channel_rngs(C);
-    for (uint32_t c = 0; c < C; c++) {
-        channel_rngs[c].seed(rd() + c * 10007);
-    }
+    seedChannelRngs(channel_rngs);
     
     // Track active channels (not yet hit EOS)
     std::vector<bool> channel_active(C, true);
@@ -1290,42 +1777,9 @@ GenerationResult MetalTransformerEngine::generate(
     int decode_steps = 0;
     
     // ---- Prefill: Process prompt tokens 0..prompt_len-2 into KV cache ----
-    for (int t = 0; t < prompt_len - 1; t++) {
-        @autoreleasepool {
-            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-            
-            // Embedding lookup for prompt token t for all C channels
-            if (embedPipeline_) {
-                [enc setComputePipelineState:embedPipeline_];
-                uint32_t tok = (uint32_t)prompt_tokens[t];
-                if (tok >= config_.vocab_size) tok = 0;
-                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                for (uint32_t c = 0; c < C; c++) {
-                    [enc setBuffer:tokBuf offset:0 atIndex:0];
-                    [enc setBuffer:embedWeights_ offset:0 atIndex:1];
-                    [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
-                    uint32_t hdim = H;
-                    [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
-                    MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-                }
-            }
-            
-            // Forward through all layers with batch_size = C
-            for (int l = 0; l < config_.n_layers; l++) {
-                id<MTLBuffer> in_buf  = (l % 2 == 0) ? batch_hidden_1 : batch_hidden_2;
-                id<MTLBuffer> out_buf = (l % 2 == 0) ? batch_hidden_2 : batch_hidden_1;
-                forwardLayer(cmdBuf, enc, l, in_buf, out_buf, C, t);
-            }
-            
-            [enc endEncoding];
-            [cmdBuf commit];
-            [cmdBuf waitUntilCompleted];
-        }
-    }
-    
+    // Factored out so debugForward() runs exactly this code rather than a copy of it.
+    encodePrefill(prompt_tokens, prompt_len, C, batch_hidden_1, batch_hidden_2);
+
     // ---- Decode: Autoregressive generation starting from prompt_tokens[prompt_len - 1] ----
     for (int step = 0; step < max_new_tokens; step++) {
         @autoreleasepool {
@@ -1346,16 +1800,16 @@ GenerationResult MetalTransformerEngine::generate(
                     }
                     int32_t cur_token = (step == 0) ? prompt_tokens[prompt_len - 1] : result.channel_tokens[c].back();
                     uint32_t tok = (uint32_t)cur_token;
-                    if (tok >= config_.vocab_size) tok = 0;
-                    id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                    // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                    // per token per channel — thousands of object allocations inside the decode loop.
+                    [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                     [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                     [enc setBuffer:batch_hidden_1 offset:c * H * sizeof(uint16_t) atIndex:2];
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
             
@@ -1377,27 +1831,52 @@ GenerationResult MetalTransformerEngine::generate(
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
         
-        // CPU-side sampling from logits for each active channel
+        // CPU-side sampling from logits for each active channel, in two phases.
+        //
+        // Phase one samples every active channel CONCURRENTLY. It used to be one channel after
+        // another on one core: with the sampler at about 1.2 ms per channel at a 32k vocabulary
+        // and 4.8 ms at 151,936, that was 10 to 39 ms of serial CPU per decode step at 8
+        // channels. The channels are independent by construction — channel c reads only its
+        // own slice of the logits, draws only from channel_rngs[c], and writes only slot c of
+        // these three arrays — so running them concurrently changes when each is computed and
+        // never what. tests/test_sampling_equivalence.cpp runs a 40-step, 8-channel decode
+        // serially, on real threads and in reverse order, and requires every trajectory to
+        // match the per-channel loop this replaces: tokens, log-probs bit for bit, RNG state.
+        //
+        // Phase two, below, is serial and in channel order, because it touches what is shared:
+        // the engine's counters, result.total_tokens, and channel_active — a std::vector<bool>,
+        // whose packed bits make concurrent writes to different channels a data race. Phase one
+        // only reads channel_active.
         const _Float16* logits_base = (const _Float16*)[scratchLogits_ contents];
+        std::vector<int32_t> step_tokens(C, 0);
+        std::vector<float> step_logprobs(C, -INFINITY);
+        std::vector<antigravity::SamplingStats> step_stats(C);
+        antigravity::sampleChannels(
+            logits_base, config_.vocab_size, (int)C,
+            [&](int c) { return (bool)channel_active[(size_t)c]; },
+            temperature, top_p, channel_rngs.data(),
+            step_tokens.data(), step_logprobs.data(), step_stats.data(),
+            [](int n, auto&& fn) {
+                // dispatch_apply runs fn(i) for every i on GCD's worker threads and returns
+                // when all have finished, which is the contract sampleChannels needs. The
+                // block captures a pointer to the callable rather than the callable itself.
+                auto* fnp = &fn;
+                dispatch_apply((size_t)n,
+                               dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                               ^(size_t i) { (*fnp)((int)i); });
+            });
+
         for (uint32_t c = 0; c < C; c++) {
+            recordSamplingStats(step_stats[c], config_.vocab_size);
             if (!channel_active[c]) continue;
-            
-            const _Float16* logits = logits_base + c * config_.vocab_size;
-            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p, channel_rngs[c]);
-            
-            // Accumulate log-probability
-            float max_logit = -1e9f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                float v = (float)logits[i];
-                if (v > max_logit) max_logit = v;
-            }
-            float sum_exp = 0.0f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                sum_exp += expf((float)logits[i] - max_logit);
-            }
-            float token_logprob = (float)logits[next_token] - max_logit - logf(sum_exp);
-            result.channel_logprobs[c] += token_logprob;
-            
+
+            // The token's raw log-probability came out of the sampler's own passes. It used to
+            // take two more full passes over the vocabulary here, with an expf per element and
+            // no handling of non-finite logits, so one NaN or +Inf made it NaN and the += below
+            // kept the channel's total NaN for the rest of the sequence.
+            const int32_t next_token = step_tokens[c];
+            result.channel_logprobs[c] += step_logprobs[c];
+
             result.channel_tokens[c].push_back(next_token);
             result.total_tokens++;
             
@@ -1442,7 +1921,22 @@ GenerationResult MetalTransformerEngine::generate(
               << "TTFT=" << result.ttft_ms << "ms, "
               << "TPOT=" << result.tpot_ms << "ms, "
               << "Total=" << result.total_ms << "ms" << std::endl;
-    
+
+    // A run that hit non-finite logits must not look clean. Before this, one NaN
+    // anywhere in the vocabulary silently pinned sampling to token 0 for the rest of
+    // the sequence, which reads as a model that has collapsed rather than as a fault.
+    if (emptyDistributionCount_ > 0) {
+        std::cerr << "[generate] WARNING: " << emptyDistributionCount_
+                  << " sampling step(s) had no finite logit at all. Those tokens are "
+                     "not model output." << std::endl;
+    }
+    if (nonFiniteLogitCount_ > 0) {
+        std::cerr << "[generate] WARNING: discarded " << nonFiniteLogitCount_
+                  << " non-finite logits during this generation. The forward pass is "
+                     "producing NaN or Inf; the output above is not trustworthy."
+                  << std::endl;
+    }
+
     return result;
 }
 
@@ -1469,13 +1963,39 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
         return result;
     }
 
-    const uint32_t H = config_.hidden_dim;
-    const int EOS_TOKEN = 2;
-
-    std::vector<std::mt19937> channel_rngs(config_.n_channels);
-    for (int c = 0; c < config_.n_channels; c++) {
-        channel_rngs[c].seed(1337 + c * 10007);
+    // Prefill is the image patches followed by the text tokens, and both occupy KV
+    // cache positions, so the cache has to hold them plus everything generated.
+    {
+        const int64_t prefill = (int64_t)(n_patches > 0 ? n_patches : 0)
+                              + (int64_t)(text_len > 0 ? text_len : 0);
+        antigravity::LimitError lim = antigravity::checkSequence(
+            (int32_t)std::min<int64_t>(prefill, INT32_MAX), max_new_tokens,
+            config_.max_seq_len);
+        if (lim != antigravity::LimitError::Ok) {
+            std::cerr << "[generateMultimodal] " << antigravity::describe(lim)
+                      << " (patches=" << n_patches << ", text_len=" << text_len
+                      << ", max_new_tokens=" << max_new_tokens
+                      << ", max_seq_len=" << config_.max_seq_len << ")" << std::endl;
+            return result;
+        }
     }
+
+    const uint32_t H = config_.hidden_dim;
+
+    // EOS was hardcoded to 2, which is Llama's. On a Qwen vocabulary that token never
+    // appears as a stop, so multimodal decode ran to max_new_tokens every time and
+    // emitted tokens past the end of the response. Match generate()'s detection.
+    const bool is_qwen = (config_.vocab_size > 32000);
+    const int EOS_TOKEN_1 = is_qwen ? 151645 : 2;
+    const int EOS_TOKEN_2 = is_qwen ? 151643 : 2;
+    const int EOS_TOKEN = EOS_TOKEN_1;
+
+    // Seeds were fixed constants, so every call produced identical rollouts and the
+    // channels differed only by a constant offset. generate() seeds from std::random_device;
+    // so does this, through seedChannelRngs — which, with ANTIGRAVITY_SEED set, derives each
+    // call's seeds from a per-call counter precisely so that identical rollouts stay fixed.
+    std::vector<std::mt19937> channel_rngs(config_.n_channels);
+    seedChannelRngs(channel_rngs);
 
     std::vector<bool> channel_active(config_.n_channels, true);
 
@@ -1495,11 +2015,27 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
     int total_prefill_len = n_patches + text_len;
 
     // ---- Prefill: Vision Patches first, then Text Tokens ----
+    // One command buffer per prefill token, holding all n_channels — not one per channel.
+    //
+    // This was `for t { for c { commit; waitUntilCompleted } }`, so prefill cost
+    // total_prefill_len * n_channels CPU-GPU round trips: eight times more than the text
+    // path for the same prompt. The channels can share a command buffer because they share
+    // nothing else: channel c reads and writes only hidden_bufs[c] and hidden_bufs2[c], and
+    // forwardLayer's channel argument selects kvCaches_[l][c]. The CPU-side write of an
+    // image patch below also targets hidden_bufs[c] alone, and every such write happens
+    // before this command buffer is committed, so the GPU sees all of them.
+    //
+    // The token loop is NOT merged, and that asymmetry is the point: hidden_bufs[c] is
+    // REUSED for the next token. Encoding tokens t and t+1 into one command buffer would let
+    // the CPU overwrite hidden_bufs[c] with token t+1's embedding while the GPU was still
+    // reading it for token t. The text path in generate() can merge across tokens because
+    // nothing there writes the hidden buffer from the CPU between tokens; here something
+    // does. Merging both loops would be a race that produced plausible output.
     for (int t = 0; t < total_prefill_len; t++) {
-        for (int c = 0; c < config_.n_channels; c++) {
-            id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
-            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        id<MTLCommandBuffer> cmdBuf = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
 
+        for (int c = 0; c < config_.n_channels; c++) {
             if (t < n_patches && image_embeddings != nullptr) {
                 // Image patch embedding: convert FP32 to FP16 and copy directly to hidden_bufs[c]
                 _Float16* dst = (_Float16*)[hidden_bufs[c] contents];
@@ -1513,15 +2049,19 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                 if (embedPipeline_ && text_idx >= 0 && text_idx < text_len) {
                     [enc setComputePipelineState:embedPipeline_];
                     uint32_t tok = (uint32_t)text_tokens[text_idx];
-                    id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                    [enc setBuffer:tokBuf offset:0 atIndex:0];
+                    // Unchecked here, unlike the text path: embedding_lookup_kernel
+                    // indexes embed_table[token_id * hidden_dim + ...], so an
+                    // out-of-range id is an out-of-bounds GPU read.
+                    if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                    // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                    // per token per channel — thousands of object allocations inside the decode loop.
+                    [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                     [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                     [enc setBuffer:hidden_bufs[c] offset:0 atIndex:2];
                     uint32_t hdim = H;
                     [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                     MTLSize grid = MTLSizeMake(1, H, 1);
-                    MTLSize tg = MTLSizeMake(1, 1, 1);
-                    [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                    dispatchGrid(enc, embedPipeline_, grid);
                 }
             }
 
@@ -1531,17 +2071,31 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
                 id<MTLBuffer> out_buf = (l % 2 == 0) ? hidden_bufs2[c] : hidden_bufs[c];
                 forwardLayer(cmdBuf, enc, l, in_buf, out_buf, 1, t, c);
             }
-
-            [enc endEncoding];
-            [cmdBuf commit];
-            [cmdBuf waitUntilCompleted];
         }
+
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
     }
 
     // ---- Decode: Autoregressive generation ----
     for (int step = 0; step < max_new_tokens; step++) {
         auto t_step_start = std::chrono::high_resolution_clock::now();
 
+        // The channel loop below still commits and waits per channel, unlike the prefill
+        // loop above, and for a reason that is not a missed optimisation: every channel's
+        // lm_head writes the SAME scratchLogits_ buffer, and the CPU reads it and samples
+        // from it before the next channel runs. Merging the channels into one command buffer
+        // would have channel c+1 overwrite the logits channel c has not been sampled from
+        // yet — the same class of race as merging prefill across tokens.
+        //
+        // The fix is a logits buffer per channel, which is cheap (vocab_size * 2 bytes *
+        // n_channels: about 512 KB at a 32k vocabulary, 2.4 MB at Qwen's 151,936) and would
+        // let all n_channels share one command buffer per step, as generate() already does.
+        // It is left undone deliberately: this path is exposed through the C API and
+        // native_bridge but no test or benchmark calls it, so the change could not be
+        // validated by anything, and this engine's history is of plausible-looking output
+        // from untested paths. Recorded in NEXT_ON_HARDWARE.md instead.
         for (int c = 0; c < config_.n_channels; c++) {
             if (!channel_active[c]) continue;
 
@@ -1560,15 +2114,16 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             if (embedPipeline_) {
                 [enc setComputePipelineState:embedPipeline_];
                 uint32_t tok = (uint32_t)cur_token;
-                id<MTLBuffer> tokBuf = [device_ newBufferWithBytes:&tok length:sizeof(uint32_t) options:MTLResourceStorageModeShared];
-                [enc setBuffer:tokBuf offset:0 atIndex:0];
+                if (tok >= (uint32_t)config_.vocab_size) tok = 0;
+                // setBytes: copies the 4-byte token id into the encoder. This was a fresh MTLBuffer
+                // per token per channel — thousands of object allocations inside the decode loop.
+                [enc setBytes:&tok length:sizeof(uint32_t) atIndex:0];
                 [enc setBuffer:embedWeights_ offset:0 atIndex:1];
                 [enc setBuffer:hidden_bufs[c] offset:0 atIndex:2];
                 uint32_t hdim = H;
                 [enc setBytes:&hdim length:sizeof(uint32_t) atIndex:3];
                 MTLSize grid = MTLSizeMake(1, H, 1);
-                MTLSize tg = MTLSizeMake(1, 1, 1);
-                [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+                dispatchGrid(enc, embedPipeline_, grid);
             }
 
             for (int l = 0; l < config_.n_layers; l++) {
@@ -1586,24 +2141,20 @@ GenerationResult MetalTransformerEngine::generateMultimodal(
             [cmdBuf waitUntilCompleted];
 
             const _Float16* logits = (const _Float16*)[scratchLogits_ contents];
-            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p, channel_rngs[c]);
-
-            float max_logit = -1e9f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                float v = (float)logits[i];
-                if (v > max_logit) max_logit = v;
-            }
-            float sum_exp = 0.0f;
-            for (int i = 0; i < config_.vocab_size; i++) {
-                sum_exp += expf((float)logits[i] - max_logit);
-            }
-            float token_logprob = (float)logits[next_token] - max_logit - logf(sum_exp);
+            // The token's raw log-probability comes out of the sampler's own passes. It used
+            // to take two more full passes over the vocabulary here, with an expf per element
+            // and no handling of non-finite logits, so one NaN or +Inf made it NaN and the +=
+            // below kept the channel's total NaN for the rest of the sequence. Bit-identical to
+            // that loop on finite logits: tests/test_sampling_equivalence.cpp.
+            float token_logprob = -INFINITY;
+            int32_t next_token = sampleToken(logits, config_.vocab_size, temperature, top_p,
+                                             channel_rngs[c], &token_logprob);
             result.channel_logprobs[c] += token_logprob;
 
             result.channel_tokens[c].push_back(next_token);
             result.total_tokens++;
 
-            if (next_token == EOS_TOKEN) {
+            if (next_token == EOS_TOKEN_1 || next_token == EOS_TOKEN_2 || next_token == 2) {
                 channel_active[c] = false;
             }
         }
@@ -1667,11 +2218,27 @@ MCTSResult MetalTransformerEngine::generateMCTS(
     const int EOS_TOKEN = (config_.vocab_size > 32000) ? 151645 : 2;
 
     for (int chunk_idx = 0; chunk_idx < mcts_config.num_chunks; chunk_idx++) {
+        // The prefix grows by a chunk each round, so the KV cache can fill part-way
+        // through the search. generate() refuses a request that would not fit, and
+        // its refusal still returns n_channels empty vectors — so without this the
+        // loop would run every remaining chunk scoring nothing. Stop instead, and
+        // ask only for what is left.
+        const int32_t room = antigravity::remainingCapacity(
+            (int32_t)current_prefix.size(), config_.max_seq_len);
+        if (room <= 0) {
+            std::cerr << "[generateMCTS] KV cache full after " << chunk_idx
+                      << " chunk(s) (" << current_prefix.size() << " of "
+                      << config_.max_seq_len << " positions); stopping search"
+                      << std::endl;
+            break;
+        }
+        const int32_t chunk_tokens = std::min(mcts_config.chunk_tokens, room);
+
         // Run parallel candidate generation across branches on Metal GPU
         GenerationResult gen = this->generate(
             current_prefix.data(),
             (int32_t)current_prefix.size(),
-            mcts_config.chunk_tokens,
+            chunk_tokens,
             mcts_config.temperature,
             mcts_config.top_p
         );

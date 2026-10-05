@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdlib>
 #include <vector>
 #include <string>
 #include <sstream>
@@ -43,7 +44,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    const char* modelPath = (argc > 2) ? argv[2] : "/Users/MohssineChazi2/moat/models/tinyllama/model_fp16.safetensors";
+    // argv[2] wins; otherwise ANTIGRAVITY_MODEL_DIR, otherwise a repo-relative default.
+    std::string defaultPath = "models/tinyllama/model_fp16.safetensors";
+    if (const char* envDir = std::getenv("ANTIGRAVITY_MODEL_DIR")) {
+        if (envDir[0] != '\0') defaultPath = std::string(envDir) + "/tinyllama/model_fp16.safetensors";
+    }
+    const char* modelPath = (argc > 2) ? argv[2] : defaultPath.c_str();
     std::cout << "[Metal Engine] Loading weights from " << modelPath << "\n";
     
     if (AntigravityEngineLoadModel(ctx, modelPath) != 0) {

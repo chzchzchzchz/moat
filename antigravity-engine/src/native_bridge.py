@@ -170,6 +170,29 @@ class NativeMetalEngine:
             ]
             lib.AntigravityEngineNativeGenerateMultimodal.restype = ctypes.c_int32
 
+        # Diagnostics. Optional: a dylib built before they existed still loads, and
+        # debug_forward() then says so instead of failing at import.
+        if hasattr(lib, 'AntigravityEngineDebugShape'):
+            lib.AntigravityEngineDebugShape.argtypes = [
+                ctypes.c_void_p,                                     # ctx
+                ctypes.POINTER(ctypes.c_int32),                      # out_n_channels
+                ctypes.POINTER(ctypes.c_int32),                      # out_n_layers
+                ctypes.POINTER(ctypes.c_int32),                      # out_hidden_dim
+                ctypes.POINTER(ctypes.c_int32),                      # out_vocab_size
+            ]
+            lib.AntigravityEngineDebugShape.restype = ctypes.c_int32
+        if hasattr(lib, 'AntigravityEngineDebugForward'):
+            lib.AntigravityEngineDebugForward.argtypes = [
+                ctypes.c_void_p,                                     # ctx
+                ctypes.POINTER(ctypes.c_int32),                      # prompt_tokens
+                ctypes.c_int32,                                      # prompt_len
+                ctypes.POINTER(ctypes.c_float),                      # out_hidden
+                ctypes.c_int64,                                      # hidden_capacity
+                ctypes.POINTER(ctypes.c_float),                      # out_logits
+                ctypes.c_int64,                                      # logits_capacity
+            ]
+            lib.AntigravityEngineDebugForward.restype = ctypes.c_int32
+
         # AntigravityEngineUnloadWeights
         lib.AntigravityEngineUnloadWeights.argtypes = [ctypes.c_void_p]
         lib.AntigravityEngineUnloadWeights.restype = None
@@ -414,6 +437,46 @@ class NativeMetalEngine:
         if not self._ctx:
             return False
         return bool(self.lib.AntigravityEngineHasWeights(self._ctx))
+
+    def debug_forward(self, prompt_token_ids: List[int]):
+        """Every layer's output and the logits for the last prompt position, for every channel.
+
+        Returns (hidden, logits) as float32 numpy arrays shaped
+        [n_layers + 1, n_channels, hidden_dim] and [n_channels, vocab_size]. hidden[0] is the
+        embedding lookup and hidden[l + 1] the output of layer l. Every channel is fed the same
+        prompt, so the channels must agree; tools/compare_forward.py checks that and compares
+        each layer against a reference implementation.
+        """
+        if not (hasattr(self.lib, 'AntigravityEngineDebugShape')
+                and hasattr(self.lib, 'AntigravityEngineDebugForward')):
+            raise RuntimeError("this libantigravity_engine predates the debug entry points; "
+                               "rebuild it from this source tree")
+        if not self._ctx:
+            raise RuntimeError("engine has been destroyed")
+        if not prompt_token_ids:
+            raise ValueError("prompt_token_ids is empty")
+
+        n_ch, n_layers, hid, vocab = (ctypes.c_int32(), ctypes.c_int32(),
+                                      ctypes.c_int32(), ctypes.c_int32())
+        ret = self.lib.AntigravityEngineDebugShape(
+            self._ctx, ctypes.byref(n_ch), ctypes.byref(n_layers),
+            ctypes.byref(hid), ctypes.byref(vocab))
+        if ret != 0:
+            raise RuntimeError(f"AntigravityEngineDebugShape failed ({ret}): "
+                               + {-1: "no model loaded", -3: "not supported by this engine"}
+                               .get(ret, "bad argument"))
+        C, L, H, V = n_ch.value, n_layers.value, hid.value, vocab.value
+
+        hidden = np.zeros((L + 1, C, H), dtype=np.float32)
+        logits = np.zeros((C, V), dtype=np.float32)
+        prompt = (ctypes.c_int32 * len(prompt_token_ids))(*prompt_token_ids)
+        ret = self.lib.AntigravityEngineDebugForward(
+            self._ctx, prompt, len(prompt_token_ids),
+            hidden.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), hidden.size,
+            logits.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), logits.size)
+        if ret != 0:
+            raise RuntimeError(f"AntigravityEngineDebugForward failed ({ret})")
+        return hidden, logits
 
     def get_allocated_bytes(self) -> int:
         """Get total VRAM/RAM allocated by the native engine."""

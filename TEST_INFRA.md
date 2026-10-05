@@ -27,7 +27,7 @@ The End-to-End (E2E) Test Harness for Project Antigravity is an opaque-box, hard
 ## 2. Directory Layout & Module Structure
 
 ```
-/Users/MohssineChazi2/moat/
+moat/
 ├── TEST_INFRA.md                   # E2E test infrastructure documentation
 └── tests/
     └── e2e/
