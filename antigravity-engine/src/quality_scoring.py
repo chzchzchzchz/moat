@@ -317,7 +317,12 @@ def sanity_checks(records: Sequence[Dict], n_samples: int,
 
     # Independent samples at a non-zero temperature disagree. Never disagreeing means
     # the samples are identical, or their answers are being discarded.
-    if n >= 20 and comparison["paired"]["only_candidate_correct"] == 0 \
+    # Both conditions at zero correct is the one case where agreement says nothing: a
+    # model below the floor of the task agrees on every problem however varied its
+    # samples are (TinyLlama-1.1B on GSM8K scored 0/40 with 5.35 distinct answers per
+    # problem). That is a model too weak to measure, not a broken harness.
+    at_floor = comparison["baseline"]["correct"] == 0 and comparison["candidate"]["correct"] == 0
+    if n >= 20 and not at_floor and comparison["paired"]["only_candidate_correct"] == 0 \
             and comparison["paired"]["only_baseline_correct"] == 0:
         warnings.append(
             f"the two conditions agree on all {n} problems; with {n_samples} sampled "

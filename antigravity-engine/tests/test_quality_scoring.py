@@ -402,9 +402,11 @@ def _records(truncated_counts, no_answer_counts=None):
             for t, a in zip(truncated_counts, no_answer_counts)]
 
 
-def _comparison(only_cand=0, only_base=0, n=50):
+def _comparison(only_cand=0, only_base=0, n=50, both=0):
     baseline = [False] * n
     candidate = [False] * n
+    for i in range(n - both, n):
+        baseline[i] = candidate[i] = True
     for i in range(only_cand):
         candidate[i] = True
     for i in range(only_cand, only_cand + only_base):
@@ -435,8 +437,16 @@ def test_no_truncation_anywhere_is_not_flagged():
 
 def test_zero_disagreement_over_many_problems_is_flagged():
     counts = [0, 2, 5] * 17
-    warnings = sanity_checks(_records(counts[:50]), 8, _comparison(0, 0, n=50))
+    warnings = sanity_checks(_records(counts[:50]), 8, _comparison(0, 0, n=50, both=9))
     assert any("agree on all" in w for w in warnings)
+
+
+def test_both_conditions_at_zero_correct_is_not_flagged_as_broken():
+    """A model below the floor agrees everywhere. TinyLlama-1.1B scored 0/40 on GSM8K
+    with varied samples; flagging that told the user to distrust a working engine."""
+    counts = [0, 2, 5] * 17
+    warnings = sanity_checks(_records(counts[:50]), 8, _comparison(0, 0, n=50))
+    assert not any("agree on all" in w for w in warnings)
 
 
 def test_zero_disagreement_on_a_tiny_run_is_not_flagged():
@@ -473,7 +483,7 @@ def test_every_warning_names_an_observation_not_a_diagnosis():
     # Each message must cite what was seen, so a reader can check it rather than
     # trust a guessed cause.
     counts = [8 if i % 2 else 0 for i in range(50)]
-    warnings = sanity_checks(_records(counts, [7] * 50), 8, _comparison(0, 0, n=50))
+    warnings = sanity_checks(_records(counts, [7] * 50), 8, _comparison(0, 0, n=50, both=9))
     assert len(warnings) == 3
     assert all(any(ch.isdigit() for ch in w) for w in warnings)
 
