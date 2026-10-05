@@ -123,6 +123,20 @@ def test_identical_output_for_every_prompt_fails(checker, monkeypatch):
     assert run(module, monkeypatch, tmp_path) == 1
 
 
+def test_healthy_model_that_stops_at_once_on_bare_questions_passes(checker, monkeypatch):
+    """TinyLlama-Chat answers a bare question with end-of-sequence. That is not a fault."""
+    module, engine, tmp_path = checker
+    engine.script = [[2], [2], [2]]
+    assert run(module, monkeypatch, tmp_path) == 0
+
+
+def test_immediate_stops_do_not_excuse_identical_known_answers(checker, monkeypatch):
+    module, engine, tmp_path = checker
+    engine.script = [[2], [2], [2]]
+    engine.known = {p: " Paris, which is also the largest city" for p in RIGHT}
+    assert run(module, monkeypatch, tmp_path) == 1
+
+
 def test_one_repeated_token_fails(checker, monkeypatch):
     """The 587-problem checkpoint's exact shape: one token, over and over."""
     module, engine, tmp_path = checker

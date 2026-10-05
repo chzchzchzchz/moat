@@ -153,17 +153,30 @@ def main() -> int:
 
     engine.destroy()
 
-    # 1. Different prompts must give different token sequences.
-    sequences = {tuple(tokens) for _p, tokens, _t in outputs}
+    # 1. Different prompts must give different token sequences. A chat model handed a bare
+    #    question with no template often answers with end-of-sequence at once (TinyLlama-Chat
+    #    does for all three free prompts, and the reference model's top-1 there is the same
+    #    token), so a one-token answer is the model choosing to stop, not evidence about the
+    #    forward pass. Those are set aside; the known-answer prompts, which every working
+    #    model continues differently, carry the comparison in their place.
+    stopped = [p for p, tokens, _t in outputs if len(tokens) == 1]
+    if stopped:
+        print(f"\nnote     {len(stopped)} free prompt(s) ended at once with one token; "
+              f"not counted toward input-dependence")
+    compared = [tuple(tokens) for _p, tokens, _t in outputs if len(tokens) != 1]
+    compared += [text for _p, _e, text, _r in known]
+    sequences = set(compared)
     if len(sequences) == 1:
-        failures.append("all three prompts produced the IDENTICAL token sequence — the "
+        failures.append("every prompt produced the IDENTICAL token sequence — the "
                         "forward pass is not reading its input")
-    elif len(sequences) < len(outputs):
-        failures.append(f"only {len(sequences)} distinct sequences from {len(outputs)} "
+    elif len(sequences) < len(compared):
+        failures.append(f"only {len(sequences)} distinct sequences from {len(compared)} "
                         f"very different prompts")
 
     # 2. No output may be one token repeated.
     for prompt, tokens, text in outputs:
+        if len(tokens) == 1:
+            continue          # stopped at once; one token is not a repetition
         share = dominant_char_share(text)
         if share > 0.5:
             failures.append(f"output for {prompt!r} is {share * 100:.0f}% a single "

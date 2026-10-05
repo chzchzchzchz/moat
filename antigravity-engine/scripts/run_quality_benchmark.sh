@@ -126,7 +126,7 @@ say "Does the engine's output depend on its input?"
 if ! PYTHONPATH=src "${PYTHON}" tools/check_engine_sanity.py \
       --model-dir "${MODEL_DIR}" \
       --dylib build/lib/libantigravity_engine.dylib \
-      "${int4_flag[@]}"; then
+      ${int4_flag[@]+"${int4_flag[@]}"}; then
   echo "Stopping: grading an engine in this state would produce a number that looks" >&2
   echo "like a weak model rather than the fault it is." >&2
 
@@ -141,7 +141,7 @@ if ! PYTHONPATH=src "${PYTHON}" tools/check_engine_sanity.py \
       --model-dir "${MODEL_DIR}" \
       --dylib build/lib/libantigravity_engine.dylib \
       --channels "${CHANNELS}" \
-      "${int4_flag[@]}" \
+      ${int4_flag[@]+"${int4_flag[@]}"} \
       --out forward_compare.json || true
   else
     echo "To find the layer: ${PYTHON} -m pip install torch transformers, then" >&2
@@ -161,7 +161,7 @@ PYTHONPATH=src "${PYTHON}" tools/benchmark_quality.py \
   --limit "${PROBLEMS}" \
   --channels "${CHANNELS}" \
   --max-tokens "${MAX_TOKENS}" \
-  "${int4_flag[@]}" \
+  ${int4_flag[@]+"${int4_flag[@]}"} \
   --out "${OUT}"
 quality_status=$?
 set -e
