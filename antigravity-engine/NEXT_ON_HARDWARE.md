@@ -10,15 +10,15 @@ What was measured, and what it does and does not show:
 | INT4 Metal kernels (`gemv_int4_kernel`, `fused_batched_gemm_int4`) | Pass on the M1: 4.25e-04 and 2.89e-04 against the host reference, no NaN, every row distinct. |
 | Does the Llama-family forward pass agree with a reference? (TinyLlama-1.1B) | Yes: every layer and the logits within tolerance of transformers in float32, top-1 and top-5 agree. The softmax bug found earlier is gone on real hardware. |
 | Does the Qwen3.5-0.8B engine agree with a reference? | Yes: all 24 layers within 2e-4 relative error of transformers in float32, logits 1e-4, top-1 and top-5 agree (`forward_compare_qwen35_m1.json`). Greedy decoding matches token for token over 40 steps and is identical across all 8 channels. |
-| Does best-of-8 beat one sample? (Qwen3.5-0.8B, GSM8K, 40 problems, 8 channels, 512 tokens, chat format, thinking off) | Yes: 15/40 = 37.5% for channel 0 alone, 27/40 = 67.5% for the majority vote, p = 0.0005, 12 problems only the vote solved and none the other way (`quality_gsm8k_qwen35.json`). |
+| Does best-of-8 beat one sample? (Qwen3.5-0.8B, GSM8K, 8 channels, chat format, thinking off) | Yes. 100 problems, 768 tokens, final build: channel 0 alone 50/100 = 50.0% [40.4, 59.6], majority vote 65/100 = 65.0% [55.3, 73.6], +15.0 points, p = 0.0026; 19 problems only the vote solved, 4 only the single sample (`quality_gsm8k_qwen35_100.json`). The first 40 problems reproduce the earlier 40-problem run exactly (15/40 and 27/40, `quality_gsm8k_qwen35.json`) on a different build, which also shows the faster sampler and matmul change no outcome. |
 | Decode speed, one channel, Qwen3.5-0.8B bf16 | 19.5 tok/s, against 6.9 for PyTorch MPS on the same weights (`throughput_qwen35_m1.json`). An 8-channel step costs about 20% more than one channel. |
 | TinyLlama-1.1B on the same benchmark | 0/40 for both conditions (`quality_gsm8k_tinyllama_m1.json`). That is the model being below the floor of the task, with varied samples, not a fault in the engine; it cannot show anything about voting. |
 
-Read the voting figure with two things in mind. The baseline is channel 0, which happened to be
-a weak one: the eight channels scored 14 to 21 of 40 and averaged 17.4 (43.5%), so against the
-average single sample the lift is about 24 points, not 30. And 59 of 320 samples reached the
-512-token limit with no answer, which understates both conditions. Forty problems resolve a
-large effect, not a small one.
+Read the voting figure with two things in mind. The baseline is channel 0; the eight channels
+scored 42 to 54 of 100 and averaged 49, so against the average single sample the lift is about 16
+points, not 15 — channel 0 was close to typical here, though it was a weak one in the first 40.
+And 87 of 800 samples reached the 768-token limit with no answer, which understates both
+conditions. A gap of this size over 100 problems is resolved; a few points would not be.
 
 What is still not measured: INT4 on a full model, a model large enough that the gain from
 voting is the interesting question, and any comparison with llama.cpp or MLX.
