@@ -110,6 +110,70 @@ inline int32_t sampleTokenFromLogits(const Logit* logits, int vocab_size,
     for (int i = 0; i < vocab_size; i++) probs[(size_t)i] /= sum_exp;
 
     if (top_p < 1.0f && top_p > 0.0f) {
+        // Fast path for large vocabularies. The nucleus is almost always a few dozen tokens out
+        // of a vocabulary of hundreds of thousands, and finding it by partial-sorting an index
+        // array of the whole vocabulary costs about 3 ms per call at 248,320 tokens — per
+        // channel, per step, after the GPU has finished and with nothing overlapped.
+        //
+        // Take every token whose probability is at least tau. That set is closed upward in the
+        // sort order, so if its mass reaches top_p the nucleus lies entirely inside it, and
+        // sorting just that set under the same total order (probability descending, index
+        // ascending) and walking the same running sum gives the same cutoff the full sort gives.
+        // If the set is too light, tau drops and the pass repeats; if it never gets there, or
+        // gets too big to be worth it, the general path below runs unchanged.
+        //
+        // The draw is then made over the nucleus alone, in ascending index order. That is the
+        // same draw as over the full vector with zeros outside the nucleus: a discrete
+        // distribution walks a cumulative sum in index order, zero weights add nothing, and
+        // the sums it forms are the same sums.
+        {
+            auto ranks = [&](int a, int b) {
+                const float pa = probs[(size_t)a], pb = probs[(size_t)b];
+                if (pa != pb) return pa > pb;
+                return a < b;
+            };
+            std::vector<int> cand;
+            const size_t too_many = (size_t)vocab_size / 8;
+            for (float tau = 1e-4f; tau >= 1e-12f; tau *= 1e-2f) {
+                cand.clear();
+                bool oversized = false;
+                for (int i = 0; i < vocab_size; i++) {
+                    if (probs[(size_t)i] >= tau) {
+                        cand.push_back(i);
+                        if (cand.size() > too_many) { oversized = true; break; }
+                    }
+                }
+                if (oversized) break;
+                std::sort(cand.begin(), cand.end(), ranks);
+                float cumulative = 0.0f;
+                size_t cutoff = 0;
+                for (size_t i = 0; i < cand.size(); i++) {
+                    cumulative += probs[(size_t)cand[i]];
+                    if (cumulative >= top_p) { cutoff = i + 1; break; }
+                }
+                if (cutoff == 0) continue;           // not enough mass above tau
+                cand.resize(cutoff);
+                std::sort(cand.begin(), cand.end());  // ascending index, as the full vector walks
+                float renorm = 0.0f;
+                for (int i : cand) renorm += probs[(size_t)i];
+                std::vector<float> weights(cand.size());
+                for (size_t j = 0; j < cand.size(); j++) {
+                    float w = probs[(size_t)cand[j]];
+                    weights[j] = (renorm > 0.0f && std::isfinite(renorm)) ? w / renorm : w;
+                }
+                std::discrete_distribution<int> nucleus(weights.begin(), weights.end());
+                const int32_t token = (int32_t)cand[(size_t)nucleus(rng)];
+                if (want_raw) {
+                    const float total = raw_is_tempered ? sum_exp : raw_sum;
+                    const float chosen = (float)logits[token];
+                    *raw_logprob = (std::isfinite(chosen) && total > 0.0f && std::isfinite(total))
+                                 ? chosen - raw_max - std::log(total)
+                                 : -INFINITY;
+                }
+                return token;
+            }
+        }
+
         // The nucleus is the shortest prefix of the tokens, most probable first, whose
         // probabilities sum to at least top_p. This used to std::sort all vocab_size indices
         // to find it. Measured on 151,936 logits at temperature 0.7, that sort made a call

@@ -1,5 +1,43 @@
 # What needs an Apple Silicon Mac
 
+## Status: measured on an Apple M1 (16 GB), 4 Oct 2026
+
+The items below were written before any of this had run on a GPU. They have now run on one.
+What was measured, and what it does and does not show:
+
+| Question | Result |
+| --- | --- |
+| INT4 Metal kernels (`gemv_int4_kernel`, `fused_batched_gemm_int4`) | Pass on the M1: 4.25e-04 and 2.89e-04 against the host reference, no NaN, every row distinct. |
+| Does the Llama-family forward pass agree with a reference? (TinyLlama-1.1B) | Yes: every layer and the logits within tolerance of transformers in float32, top-1 and top-5 agree. The softmax bug found earlier is gone on real hardware. |
+| Does the Qwen3.5-0.8B engine agree with a reference? | Yes: all 24 layers within 2e-4 relative error of transformers in float32, logits 1e-4, top-1 and top-5 agree (`forward_compare_qwen35_m1.json`). Greedy decoding matches token for token over 40 steps and is identical across all 8 channels. |
+| Does best-of-8 beat one sample? (Qwen3.5-0.8B, GSM8K, 40 problems, 8 channels, 512 tokens, chat format, thinking off) | Yes: 15/40 = 37.5% for channel 0 alone, 27/40 = 67.5% for the majority vote, p = 0.0005, 12 problems only the vote solved and none the other way (`quality_gsm8k_qwen35.json`). |
+| Decode speed, one channel, Qwen3.5-0.8B bf16 | 19.5 tok/s, against 6.9 for PyTorch MPS on the same weights (`throughput_qwen35_m1.json`). An 8-channel step costs about 20% more than one channel. |
+| TinyLlama-1.1B on the same benchmark | 0/40 for both conditions (`quality_gsm8k_tinyllama_m1.json`). That is the model being below the floor of the task, with varied samples, not a fault in the engine; it cannot show anything about voting. |
+
+Read the voting figure with two things in mind. The baseline is channel 0, which happened to be
+a weak one: the eight channels scored 14 to 21 of 40 and averaged 17.4 (43.5%), so against the
+average single sample the lift is about 24 points, not 30. And 59 of 320 samples reached the
+512-token limit with no answer, which understates both conditions. Forty problems resolve a
+large effect, not a small one.
+
+What is still not measured: INT4 on a full model, a model large enough that the gain from
+voting is the interesting question, and any comparison with llama.cpp or MLX.
+
+Reproduce:
+
+```
+MODEL_DIR=models/qwen35 PROMPT_FORMAT=qwen-chat-nothink MAX_TOKENS=512 \
+  scripts/run_quality_benchmark.sh
+python3 tools/compare_forward.py --model-dir models/qwen35
+PYTHONPATH=src python3 tools/benchmark_throughput.py --model models/qwen35 --bandwidth-gbs 56
+```
+
+`models/qwen35` is `Qwen/Qwen3.5-0.8B` with `model.safetensors` symlinked to the single shard.
+
+---
+
+*The sections that follow are the original plan, kept for the reasoning.*
+
 Everything in this file is blocked on hardware, not on effort. It cannot be done in
 CI: `MTLCreateSystemDefaultDevice()` returns nil on GitHub's `macos-14` runners — they
 are arm64 VMs without GPU passthrough — and `macos-14-xlarge` is not available on this

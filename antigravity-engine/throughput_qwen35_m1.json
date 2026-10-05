@@ -1,0 +1,84 @@
+{
+  "hardware": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.3",
+    "chip": "Apple M1",
+    "memory_bytes": "17179869184"
+  },
+  "model_dir": "models/qwen35",
+  "max_new_tokens": 64,
+  "repeats": 3,
+  "prompt_token_ids": [
+    1,
+    15043,
+    29892,
+    1125,
+    29892,
+    29871,
+    313,
+    29906
+  ],
+  "backends": {
+    "native_metal": {
+      "samples": [
+        {
+          "tokens": 64,
+          "seconds": 3.3595280419976916,
+          "tokens_per_sec": 19.05029492236159
+        },
+        {
+          "tokens": 64,
+          "seconds": 3.283348083990859,
+          "tokens_per_sec": 19.492298215975016
+        },
+        {
+          "tokens": 64,
+          "seconds": 3.286448708997341,
+          "tokens_per_sec": 19.47390805911153
+        }
+      ],
+      "median_tokens_per_sec": 19.47390805911153,
+      "min_tokens_per_sec": 19.05029492236159,
+      "max_tokens_per_sec": 19.492298215975016,
+      "weights_mb": 1666.014289855957
+    },
+    "pytorch_mps": {
+      "samples": [
+        {
+          "tokens": 64,
+          "seconds": 9.712460459006252,
+          "tokens_per_sec": 6.58947341614694
+        },
+        {
+          "tokens": 64,
+          "seconds": 9.13769274999504,
+          "tokens_per_sec": 7.003956222979236
+        },
+        {
+          "tokens": 64,
+          "seconds": 9.34081100000185,
+          "tokens_per_sec": 6.851653459211125
+        }
+      ],
+      "median_tokens_per_sec": 6.851653459211125,
+      "min_tokens_per_sec": 6.58947341614694,
+      "max_tokens_per_sec": 7.003956222979236,
+      "device": "mps",
+      "weights_mb": 1626.9415283203125
+    }
+  },
+  "errors": {},
+  "roofline": {
+    "native_metal": {
+      "bandwidth_gbs": 56.0,
+      "ceiling_tokens_per_sec": 34.41987283611952,
+      "fraction_of_roofline": 0.5657751308911289
+    },
+    "pytorch_mps": {
+      "bandwidth_gbs": 56.0,
+      "ceiling_tokens_per_sec": 35.24650333266931,
+      "fraction_of_roofline": 0.1943924307765434
+    }
+  }
+}

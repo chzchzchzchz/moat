@@ -110,8 +110,14 @@ def bench_torch_mps(model_dir: str, prompt_ids, max_tokens: int, repeats: int) -
     import torch
     from transformers import AutoModelForCausalLM
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir, dtype=torch.float16).to(device).eval()
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir, dtype=torch.float16).to(device).eval()
+    except AttributeError:
+        # Multimodal checkpoints (Qwen3.5) nest the text config; the causal-LM class cannot read it.
+        from transformers import AutoModelForImageTextToText
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_dir, dtype=torch.float16).to(device).eval()
     ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
     def once():

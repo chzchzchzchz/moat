@@ -586,6 +586,7 @@ struct Qwen35Engine::Impl {
     // QWEN35_SKIP=matmul,deltanet,attn,conv,norm drops those kernels from the decode graph. The
     // output is garbage; it exists so the time each kernel costs can be read off the step time.
     std::string skip;
+    std::string mmVariant = "v4";   // QWEN35_MM=old selects the one-column reference kernel
     bool skipped(const char* name) const { return skip.find(name) != std::string::npos; }
 
     bool hasFixedSeed = false;
@@ -643,11 +644,17 @@ struct Qwen35Engine::Impl {
     void matmul(id<MTLComputeCommandEncoder> e, id<MTLBuffer> A, id<MTLBuffer> W, id<MTLBuffer> Cb,
                 uint32_t M, uint32_t K, uint32_t N, bool accumulate) {
         if (skipped("matmul")) return;
-        const bool v4 = !skipped("oldmatmul");
-        [e setComputePipelineState:pso[v4 ? "k_matmul4" : "k_matmul"]];
+        // k_matmul4 (4 columns per simdgroup) is the default; k_matmul is the one-column reference.
+        // Measured on an M1 over a full Qwen3.5-0.8B decode step: 52 ms against 84 ms of GPU time.
+        // Tried and not kept: 16-byte weight loads (58 ms and worse, register pressure) and two
+        // columns per simdgroup (51 ms, no different). A streaming-read kernel reaches 56 GB/s on
+        // this machine; the matmuls run at about 37.
+        const bool ref = (mmVariant == "old");
+        const char* kname = ref ? "k_matmul" : "k_matmul4";
+        const uint32_t per_tg = ref ? 4 : 16;
+        [e setComputePipelineState:pso[kname]];
         [e setBuffer:A offset:0 atIndex:0]; [e setBuffer:W offset:0 atIndex:1]; [e setBuffer:Cb offset:0 atIndex:2];
         bindU(e, M, 3); bindU(e, K, 4); bindU(e, N, 5); bindU(e, accumulate ? 1 : 0, 6);
-        const uint32_t per_tg = v4 ? 16 : 4;
         [e dispatchThreadgroups:MTLSizeMake((N + per_tg - 1) / per_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     }
 
@@ -831,6 +838,7 @@ bool Qwen35Engine::matches(const std::string& safetensors_path) {
 Qwen35Engine::Qwen35Engine(int n_channels, int max_seq_len) : impl_(new Impl) {
     impl_->C = n_channels > 0 ? n_channels : 8;
     if (const char* sk = getenv("QWEN35_SKIP")) impl_->skip = sk;
+    if (const char* mv = getenv("QWEN35_MM")) impl_->mmVariant = mv;
     impl_->maxSeq = std::min(std::max(max_seq_len, 64), 4096);   // k_attn keeps scores in 4096 floats
     if (const char* seed = getenv("ANTIGRAVITY_SEED")) {
         uint64_t v = 0;
