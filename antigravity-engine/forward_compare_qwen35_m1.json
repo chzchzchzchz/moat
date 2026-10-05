@@ -1,0 +1,336 @@
+{
+  "blocks": [
+    {
+      "block": 0,
+      "name": "embedding",
+      "rel_err": 0.0,
+      "cosine": 1.0000001415139543,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.06982421875,
+      "max_abs_ref": 0.06982421875
+    },
+    {
+      "block": 1,
+      "name": "layer 0",
+      "rel_err": 1.3841947020303668e-06,
+      "cosine": 0.9999999598417811,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.32043930888175964,
+      "max_abs_ref": 0.32043933868408203
+    },
+    {
+      "block": 2,
+      "name": "layer 1",
+      "rel_err": 1.5477802581658647e-06,
+      "cosine": 0.9999999817595222,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.4432818591594696,
+      "max_abs_ref": 0.443281888961792
+    },
+    {
+      "block": 3,
+      "name": "layer 2",
+      "rel_err": 1.4569595033458359e-06,
+      "cosine": 0.9999999593708349,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.6350436210632324,
+      "max_abs_ref": 0.6350433826446533
+    },
+    {
+      "block": 4,
+      "name": "layer 3",
+      "rel_err": 9.004509497911496e-05,
+      "cosine": 0.9999999410800434,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.5241802334785461,
+      "max_abs_ref": 0.5241753458976746
+    },
+    {
+      "block": 5,
+      "name": "layer 4",
+      "rel_err": 7.414908505024876e-05,
+      "cosine": 0.999999993863568,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.5779886245727539,
+      "max_abs_ref": 0.5779867768287659
+    },
+    {
+      "block": 6,
+      "name": "layer 5",
+      "rel_err": 5.74092358891349e-05,
+      "cosine": 0.9999999452719193,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.579372763633728,
+      "max_abs_ref": 0.5793701410293579
+    },
+    {
+      "block": 7,
+      "name": "layer 6",
+      "rel_err": 4.706712386127925e-05,
+      "cosine": 0.9999999318005176,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.7120084166526794,
+      "max_abs_ref": 0.7120116949081421
+    },
+    {
+      "block": 8,
+      "name": "layer 7",
+      "rel_err": 0.00016150857499857999,
+      "cosine": 0.9999999999375737,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.5979108810424805,
+      "max_abs_ref": 0.5978859663009644
+    },
+    {
+      "block": 9,
+      "name": "layer 8",
+      "rel_err": 0.0001459139558823492,
+      "cosine": 1.0000000118605232,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.4726630747318268,
+      "max_abs_ref": 0.47266334295272827
+    },
+    {
+      "block": 10,
+      "name": "layer 9",
+      "rel_err": 0.00013260848841200118,
+      "cosine": 1.000000108439083,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.6368259191513062,
+      "max_abs_ref": 0.6368291974067688
+    },
+    {
+      "block": 11,
+      "name": "layer 10",
+      "rel_err": 0.00010787506352961487,
+      "cosine": 0.9999999907088479,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.9063311219215393,
+      "max_abs_ref": 0.9063310027122498
+    },
+    {
+      "block": 12,
+      "name": "layer 11",
+      "rel_err": 0.00014416278164758347,
+      "cosine": 1.0000000152001172,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.5224539041519165,
+      "max_abs_ref": 0.5224164724349976
+    },
+    {
+      "block": 13,
+      "name": "layer 12",
+      "rel_err": 0.00012273555540104426,
+      "cosine": 1.0000000287871535,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 0.8909804821014404,
+      "max_abs_ref": 0.8909571170806885
+    },
+    {
+      "block": 14,
+      "name": "layer 13",
+      "rel_err": 0.0001069852061248105,
+      "cosine": 1.0000000510447051,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 1.1785197257995605,
+      "max_abs_ref": 1.178493618965149
+    },
+    {
+      "block": 15,
+      "name": "layer 14",
+      "rel_err": 9.605537916496918e-05,
+      "cosine": 1.0000000941264386,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 1.002568244934082,
+      "max_abs_ref": 1.0025792121887207
+    },
+    {
+      "block": 16,
+      "name": "layer 15",
+      "rel_err": 0.00011138471987357528,
+      "cosine": 0.9999999025756391,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 1.1354411840438843,
+      "max_abs_ref": 1.1354866027832031
+    },
+    {
+      "block": 17,
+      "name": "layer 16",
+      "rel_err": 9.306521716183634e-05,
+      "cosine": 0.9999999973155002,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 1.2425609827041626,
+      "max_abs_ref": 1.2426022291183472
+    },
+    {
+      "block": 18,
+      "name": "layer 17",
+      "rel_err": 8.845465141290892e-05,
+      "cosine": 0.9999999839126353,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 1.7371368408203125,
+      "max_abs_ref": 1.7372180223464966
+    },
+    {
+      "block": 19,
+      "name": "layer 18",
+      "rel_err": 7.202607156771762e-05,
+      "cosine": 0.9999999250421898,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 3.7311320304870605,
+      "max_abs_ref": 3.7312159538269043
+    },
+    {
+      "block": 20,
+      "name": "layer 19",
+      "rel_err": 0.00014490740937155182,
+      "cosine": 1.0000000052516014,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 2.747523784637451,
+      "max_abs_ref": 2.747637987136841
+    },
+    {
+      "block": 21,
+      "name": "layer 20",
+      "rel_err": 0.00015301205105576677,
+      "cosine": 0.9999999165872627,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 1.9712333679199219,
+      "max_abs_ref": 1.9712674617767334
+    },
+    {
+      "block": 22,
+      "name": "layer 21",
+      "rel_err": 0.0001541161381987081,
+      "cosine": 0.9999999559539297,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 2.2689316272735596,
+      "max_abs_ref": 2.2689273357391357
+    },
+    {
+      "block": 23,
+      "name": "layer 22",
+      "rel_err": 0.00016322285110081033,
+      "cosine": 0.9999999102727828,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 2.4426627159118652,
+      "max_abs_ref": 2.442518472671509
+    },
+    {
+      "block": 24,
+      "name": "layer 23",
+      "rel_err": 0.00017882910003545304,
+      "cosine": 0.9999999779374483,
+      "nonfinite": 0,
+      "channel_spread": 0.0,
+      "max_abs_engine": 2.6232824325561523,
+      "max_abs_ref": 2.623311996459961
+    }
+  ],
+  "logits": {
+    "rel_err": 0.00012235526889113426,
+    "nonfinite": 0,
+    "ref_top5": [
+      271,
+      198,
+      2500,
+      471,
+      318
+    ],
+    "engine_top5": [
+      271,
+      198,
+      2500,
+      471,
+      318
+    ],
+    "top1_agrees": true,
+    "top5_overlap": 5,
+    "channel_spread": 0.0
+  },
+  "verdict": {
+    "ok": true,
+    "kind": "agrees",
+    "block": null,
+    "name": null,
+    "message": "every layer and the logits agree with the reference within tolerance; top-1 agrees, top-5 overlap 5/5."
+  },
+  "thresholds": {
+    "diverged": 0.1,
+    "warn": 0.03,
+    "embedding_diverged": 0.01,
+    "channels_diverged": 0.001
+  },
+  "prompt": "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. How many eggs does she have left?",
+  "prompt_ids": [
+    17770,
+    294,
+    579,
+    75119,
+    10641,
+    220,
+    16,
+    21,
+    18237,
+    791,
+    1834,
+    13,
+    2838,
+    48005,
+    2250,
+    364,
+    16976,
+    1396,
+    6353,
+    321,
+    292,
+    1982,
+    52480,
+    1283,
+    364,
+    1024,
+    4627,
+    1396,
+    1834,
+    440,
+    2943,
+    13,
+    2500,
+    1599,
+    18237,
+    1503,
+    1292,
+    599,
+    2047,
+    30
+  ],
+  "config": {
+    "channels": 8,
+    "int4": false,
+    "weights": "/Users/MohssineChazi2/Desktop/nowonenew/moat/antigravity-engine/models/qwen35/model.safetensors-00001-of-00001.safetensors"
+  }
+}

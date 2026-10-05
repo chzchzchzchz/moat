@@ -34,6 +34,7 @@ PROBLEMS="${PROBLEMS:-40}"
 CHANNELS="${CHANNELS:-8}"
 MAX_TOKENS="${MAX_TOKENS:-256}"
 INT4="${INT4:-0}"
+PROMPT_FORMAT="${PROMPT_FORMAT:-plain}"   # qwen-chat-nothink for Qwen3.5
 MODEL_DIR="${MODEL_DIR:-models/bench}"
 MODEL_REPO="${MODEL_REPO:-TinyLlama/TinyLlama-1.1B-Chat-v1.0}"
 DATASET="${DATASET:-${PROJECT_ROOT}/../gsm8k_test_set.jsonl}"
@@ -78,6 +79,7 @@ clang++ -std=c++17 -x objective-c++ -O3 -dynamiclib \
   -framework Metal -framework Foundation \
   src/antigravity_c_api.cpp \
   src/transformer_engine.mm \
+  src/qwen35_engine.mm \
   src/antigravity_engine_c.cpp \
   src/gguf_reader.cpp \
   src/config_parser.cpp \
@@ -161,6 +163,7 @@ PYTHONPATH=src "${PYTHON}" tools/benchmark_quality.py \
   --limit "${PROBLEMS}" \
   --channels "${CHANNELS}" \
   --max-tokens "${MAX_TOKENS}" \
+  --prompt-format "${PROMPT_FORMAT}" \
   ${int4_flag[@]+"${int4_flag[@]}"} \
   --out "${OUT}"
 quality_status=$?

@@ -68,6 +68,17 @@ PROMPT_TEMPLATE = (
 )
 
 
+# Chat models built to reason inside a <think> block (Qwen3.5) need their turn markers, and the
+# empty think block their template inserts when thinking is off. A bare prompt makes them open a
+# think block of their own, which runs past any token budget a benchmark can afford.
+PROMPT_FORMATS = {
+    "plain": "{prompt}",
+    "qwen-chat-nothink": (
+        "<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    ),
+}
+
+
 def hardware_profile() -> dict:
     """Record the machine, so a number is never again quoted without its context."""
     info = {
@@ -125,6 +136,9 @@ def main() -> int:
                         help="path to libantigravity_engine.dylib; "
                              "searched in the usual package locations if omitted")
     parser.add_argument("--out", default="quality_gsm8k.json")
+    parser.add_argument("--prompt-format", choices=sorted(PROMPT_FORMATS), default="plain",
+                        help="how the question is wrapped; 'plain' feeds it bare, as the "
+                             "Llama-family runs did")
     parser.add_argument("--seed", type=int, default=0,
                         help="passed to the engine as ANTIGRAVITY_SEED, so the run is "
                              "reproducible and a re-run after a fix can be compared with "
@@ -181,7 +195,8 @@ def main() -> int:
     started = time.time()
 
     for position, problem in enumerate(problems):
-        prompt_ids = tokenizer.encode(PROMPT_TEMPLATE.format(question=problem["question"]))
+        prompt_ids = tokenizer.encode(PROMPT_FORMATS[args.prompt_format].format(
+            prompt=PROMPT_TEMPLATE.format(question=problem["question"])))
         try:
             channel_tokens, logprobs, ttft_ms, total_ms = engine.generate(
                 prompt_ids,
@@ -252,6 +267,7 @@ def main() -> int:
             "dataset": str(dataset),
             "channels": args.channels,
             "max_new_tokens": args.max_tokens,
+            "prompt_format": args.prompt_format,
             "temperature": args.temperature,
             "top_p": args.top_p,
             "int4_weights": bool(args.int4),

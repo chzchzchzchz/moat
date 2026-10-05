@@ -59,22 +59,29 @@ def reference_forward(model_dir: Path, ids: List[int]) -> Tuple[np.ndarray, np.n
     import torch                                                  # noqa: PLC0415
     from transformers import AutoModelForCausalLM                 # noqa: PLC0415
 
-    model = AutoModelForCausalLM.from_pretrained(str(model_dir), dtype=torch.float32).eval()
+    try:
+        model = AutoModelForCausalLM.from_pretrained(str(model_dir), dtype=torch.float32).eval()
+    except AttributeError:
+        # Multimodal checkpoints carry a nested text_config that the causal-LM class cannot read.
+        from transformers import AutoModelForImageTextToText      # noqa: PLC0415
+        model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=torch.float32).eval()
     captured: List[np.ndarray] = []
 
     def grab(_module, _inputs, output):
         h = output[0] if isinstance(output, tuple) else output
         captured.append(h[0, -1].detach().float().cpu().numpy())
 
-    hooks = [model.model.embed_tokens.register_forward_hook(grab)]
-    hooks += [layer.register_forward_hook(grab) for layer in model.model.layers]
+    # Multimodal checkpoints (Qwen3.5) nest the text decoder under model.language_model.
+    text = getattr(model.model, "language_model", model.model)
+    hooks = [text.embed_tokens.register_forward_hook(grab)]
+    hooks += [layer.register_forward_hook(grab) for layer in text.layers]
     try:
         with torch.no_grad():
             logits = model(input_ids=torch.tensor([ids])).logits[0, -1].float().cpu().numpy()
     finally:
         for h in hooks:
             h.remove()
-    expected = len(model.model.layers) + 1
+    expected = len(text.layers) + 1
     if len(captured) != expected:
         raise RuntimeError(f"captured {len(captured)} blocks, expected {expected}")
     return np.stack(captured), logits

@@ -5,6 +5,7 @@
 
 #include "antigravity_c_api.h"
 #include "transformer_engine.h"
+#include "qwen35_engine.h"
 #include "license_verifier.h"
 #include "gguf_reader.h"
 #include "prm_weights.h"
@@ -134,6 +135,13 @@ int32_t AntigravityEngineLoadModel(AntigravityEngineContext* ctx, const char* mo
     if (!ctx || !model_path) return -1;
 
     std::string path_str(model_path);
+    // A Qwen3.5 checkpoint (hybrid Gated-DeltaNet / full attention) is not Llama-shaped and has
+    // its own engine; config.json beside the weights says which one this is.
+    if (!ctx->nativeEngine && Qwen35Engine::matches(path_str)) {
+        ctx->nativeEngine = new Qwen35Engine(
+            ctx->config.n_channels > 0 ? ctx->config.n_channels : 8,
+            ctx->config.max_seq_len > 0 ? ctx->config.max_seq_len : 2048);
+    }
     if (!ctx->nativeEngine) {
         TransformerConfig t_cfg;
         // Dynamically infer architecture dimensions from GGUF or Safetensors metadata headers
