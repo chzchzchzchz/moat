@@ -105,6 +105,7 @@ jobs:
             -framework Metal -framework Foundation \
             src/antigravity_c_api.cpp \
             src/transformer_engine.mm \
+            src/qwen35_engine.mm \
             src/antigravity_engine_c.cpp \
             src/gguf_reader.cpp \
             src/config_parser.cpp \

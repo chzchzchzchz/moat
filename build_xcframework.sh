@@ -12,11 +12,14 @@ xcrun -sdk iphoneos clang++ -arch arm64 -O3 -std=c++17 -x objective-c++ -fobjc-a
     -c antigravity-engine/src/transformer_engine.mm -o build_xcf/ios-arm64/transformer_engine.o \
     -target arm64-apple-ios16.0
 xcrun -sdk iphoneos clang++ -arch arm64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
+    -c antigravity-engine/src/qwen35_engine.mm -o build_xcf/ios-arm64/qwen35_engine.o \
+    -target arm64-apple-ios16.0
+xcrun -sdk iphoneos clang++ -arch arm64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
     -c antigravity-engine/src/antigravity_c_api.cpp -o build_xcf/ios-arm64/antigravity_c_api.o \
     -target arm64-apple-ios16.0
 
 xcrun -sdk iphoneos ar rcs build_xcf/ios-arm64/libAntigravityEngineCore.a \
-    build_xcf/ios-arm64/transformer_engine.o build_xcf/ios-arm64/antigravity_c_api.o
+    build_xcf/ios-arm64/transformer_engine.o build_xcf/ios-arm64/qwen35_engine.o build_xcf/ios-arm64/antigravity_c_api.o
 
 # 2. Build for iOS Simulator (arm64, x86_64)
 echo "Building for iOS Simulator (arm64)..."
@@ -24,22 +27,28 @@ xcrun -sdk iphonesimulator clang++ -arch arm64 -O3 -std=c++17 -x objective-c++ -
     -c antigravity-engine/src/transformer_engine.mm -o build_xcf/ios-simulator/transformer_engine_arm64.o \
     -target arm64-apple-ios16.0-simulator
 xcrun -sdk iphonesimulator clang++ -arch arm64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
+    -c antigravity-engine/src/qwen35_engine.mm -o build_xcf/ios-simulator/qwen35_engine_arm64.o \
+    -target arm64-apple-ios16.0-simulator
+xcrun -sdk iphonesimulator clang++ -arch arm64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
     -c antigravity-engine/src/antigravity_c_api.cpp -o build_xcf/ios-simulator/antigravity_c_api_arm64.o \
     -target arm64-apple-ios16.0-simulator
 
 xcrun -sdk iphonesimulator ar rcs build_xcf/ios-simulator/libAntigravityEngineCore_arm64.a \
-    build_xcf/ios-simulator/transformer_engine_arm64.o build_xcf/ios-simulator/antigravity_c_api_arm64.o
+    build_xcf/ios-simulator/transformer_engine_arm64.o build_xcf/ios-simulator/qwen35_engine_arm64.o build_xcf/ios-simulator/antigravity_c_api_arm64.o
 
 echo "Building for iOS Simulator (x86_64)..."
 xcrun -sdk iphonesimulator clang++ -arch x86_64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
     -c antigravity-engine/src/transformer_engine.mm -o build_xcf/ios-simulator/transformer_engine_x86_64.o \
     -target x86_64-apple-ios16.0-simulator
 xcrun -sdk iphonesimulator clang++ -arch x86_64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
+    -c antigravity-engine/src/qwen35_engine.mm -o build_xcf/ios-simulator/qwen35_engine_x86_64.o \
+    -target x86_64-apple-ios16.0-simulator
+xcrun -sdk iphonesimulator clang++ -arch x86_64 -O3 -std=c++17 -x objective-c++ -fobjc-arc \
     -c antigravity-engine/src/antigravity_c_api.cpp -o build_xcf/ios-simulator/antigravity_c_api_x86_64.o \
     -target x86_64-apple-ios16.0-simulator
 
 xcrun -sdk iphonesimulator ar rcs build_xcf/ios-simulator/libAntigravityEngineCore_x86_64.a \
-    build_xcf/ios-simulator/transformer_engine_x86_64.o build_xcf/ios-simulator/antigravity_c_api_x86_64.o
+    build_xcf/ios-simulator/transformer_engine_x86_64.o build_xcf/ios-simulator/qwen35_engine_x86_64.o build_xcf/ios-simulator/antigravity_c_api_x86_64.o
 
 # Universal Simulator Lib
 xcrun -sdk iphonesimulator lipo -create \

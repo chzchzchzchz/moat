@@ -362,6 +362,11 @@ jobs:
           echo "transformer_engine.mm compiles"
           clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
             -I./src \
+            src/qwen35_engine.mm \
+            -framework Metal -framework Foundation
+          echo "qwen35_engine.mm compiles"
+          clang++ -std=c++17 -fsyntax-only -fobjc-arc -x objective-c++ \
+            -I./src \
             src/antigravity_c_api.cpp \
             -framework Metal -framework Foundation
           echo "antigravity_c_api.cpp compiles"
