@@ -6,7 +6,7 @@
     "chip": "Apple M1",
     "memory_bytes": "17179869184"
   },
-  "model_dir": "models/tinyllama",
+  "model_dir": "models/qwen35",
   "max_new_tokens": 64,
   "repeats": 3,
   "prompt_token_ids": [
@@ -24,48 +24,48 @@
       "samples": [
         {
           "tokens": 64,
-          "seconds": 4.277225332916714,
-          "tokens_per_sec": 14.962971323364274
+          "seconds": 4.129823083058,
+          "tokens_per_sec": 15.49703188559111
         },
         {
           "tokens": 64,
-          "seconds": 4.2645972080063075,
-          "tokens_per_sec": 15.007278971117627
+          "seconds": 4.464035292039625,
+          "tokens_per_sec": 14.336804217055885
         },
         {
           "tokens": 64,
-          "seconds": 4.277286457945593,
-          "tokens_per_sec": 14.96275749338977
+          "seconds": 4.522665041964501,
+          "tokens_per_sec": 14.150948479748667
         }
       ],
-      "median_tokens_per_sec": 14.962971323364274,
-      "min_tokens_per_sec": 14.96275749338977,
-      "max_tokens_per_sec": 15.007278971117627,
-      "weights_mb": 2098.1978073120117
+      "median_tokens_per_sec": 14.336804217055885,
+      "min_tokens_per_sec": 14.150948479748667,
+      "max_tokens_per_sec": 15.49703188559111,
+      "weights_mb": 1666.014289855957
     },
     "pytorch_mps": {
       "samples": [
         {
           "tokens": 64,
-          "seconds": 3.454361457959749,
-          "tokens_per_sec": 18.527302593805672
+          "seconds": 10.921307042008266,
+          "tokens_per_sec": 5.860104450303171
         },
         {
           "tokens": 64,
-          "seconds": 3.407277249963954,
-          "tokens_per_sec": 18.78332618828628
+          "seconds": 10.760182332945988,
+          "tokens_per_sec": 5.947854601314892
         },
         {
           "tokens": 64,
-          "seconds": 3.4502552920021117,
-          "tokens_per_sec": 18.549352028632676
+          "seconds": 11.234797499957494,
+          "tokens_per_sec": 5.696586876643049
         }
       ],
-      "median_tokens_per_sec": 18.549352028632676,
-      "min_tokens_per_sec": 18.527302593805672,
-      "max_tokens_per_sec": 18.78332618828628,
+      "median_tokens_per_sec": 5.860104450303171,
+      "min_tokens_per_sec": 5.696586876643049,
+      "max_tokens_per_sec": 5.947854601314892,
       "device": "mps",
-      "weights_mb": 2098.17578125
+      "weights_mb": 1626.9415283203125
     }
   },
   "errors": {}
