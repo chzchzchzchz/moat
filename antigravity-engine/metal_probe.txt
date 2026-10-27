@@ -1,0 +1,16 @@
+Metal device: Apple M1
+  unified memory: yes | max threadgroup: 1024 threads
+[PASS]  the embedded shader source compiles on this device
+[PASS]  gemv_int4_kernel builds a pipeline
+[PASS]  fused_batched_gemm_int4 builds a pipeline
+[PASS]  the gemv_int4_kernel command buffer completes
+       gemv worst relative deviation from the host reference: 4.25e-04
+[PASS]  GPU gemv_int4_kernel matches the host reference to FP16 output precision
+[PASS]  the fused_batched_gemm_int4 command buffer completes
+       fused GEMM relative RMS vs the host reference: 2.89e-04
+[PASS]  no output element is NaN
+[PASS]  the kernel wrote something (a silent no-op would pass a tolerance test)
+[PASS]  GPU fused_batched_gemm_int4 matches the host reference within FP16 accumulation error
+[PASS]  each of the 8 rows has its own result
+
+ALL CHECKS PASSED

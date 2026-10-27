@@ -1,0 +1,72 @@
+{
+  "hardware": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.3",
+    "chip": "Apple M1",
+    "memory_bytes": "17179869184"
+  },
+  "model_dir": "models/tinyllama",
+  "max_new_tokens": 64,
+  "repeats": 3,
+  "prompt_token_ids": [
+    1,
+    15043,
+    29892,
+    1125,
+    29892,
+    29871,
+    313,
+    29906
+  ],
+  "backends": {
+    "native_metal": {
+      "samples": [
+        {
+          "tokens": 64,
+          "seconds": 4.277225332916714,
+          "tokens_per_sec": 14.962971323364274
+        },
+        {
+          "tokens": 64,
+          "seconds": 4.2645972080063075,
+          "tokens_per_sec": 15.007278971117627
+        },
+        {
+          "tokens": 64,
+          "seconds": 4.277286457945593,
+          "tokens_per_sec": 14.96275749338977
+        }
+      ],
+      "median_tokens_per_sec": 14.962971323364274,
+      "min_tokens_per_sec": 14.96275749338977,
+      "max_tokens_per_sec": 15.007278971117627,
+      "weights_mb": 2098.1978073120117
+    },
+    "pytorch_mps": {
+      "samples": [
+        {
+          "tokens": 64,
+          "seconds": 3.454361457959749,
+          "tokens_per_sec": 18.527302593805672
+        },
+        {
+          "tokens": 64,
+          "seconds": 3.407277249963954,
+          "tokens_per_sec": 18.78332618828628
+        },
+        {
+          "tokens": 64,
+          "seconds": 3.4502552920021117,
+          "tokens_per_sec": 18.549352028632676
+        }
+      ],
+      "median_tokens_per_sec": 18.549352028632676,
+      "min_tokens_per_sec": 18.527302593805672,
+      "max_tokens_per_sec": 18.78332618828628,
+      "device": "mps",
+      "weights_mb": 2098.17578125
+    }
+  },
+  "errors": {}
+}
