@@ -1,7 +1,7 @@
 # iPhone End-Goal Status: Claude 3.5 Haiku Equivalent, Locally, Privately
 
 **Repo**: https://github.com/chzchzchzchz/moat  
-**Current commit**: `5ea35da` (local == origin/main, clean tree)  
+**Current commit**: `5b4e4c2` (local == origin/main, clean tree)  
 **Test hardware**: Apple M1 Mac, macOS 26.5.2, 16 GB RAM, Metal GPU
 
 ---
@@ -61,43 +61,27 @@ AST adversarial, production hardening.
 
 ---
 
-## Pillar 3: Larger Capable Model (Qwen3-4B) ⬜ ENGINE GAP
+## Pillar 3: Larger Capable Model (Qwen3-4B) ⬜ PARTIAL
 
 Qwen3-4B weights downloaded and merged into `antigravity-engine/models/qwen3-4b/model.safetensors`
 (8.04 GB BF16, 3 shards merged via `merge_qwen34b.py`). Tool committed.
 
-**BLOCKER**: The engine's `parseDims()` in `src/qwen35_engine.mm` has hardcoded constraints
-for Qwen3.5-0.8B's **hybrid DeltaNet/attention** architecture:
+**`parseDims()` and weight loading: WORKING** — Qwen3-4B loads successfully:
+- 36 layers, hidden=2560, nH=32, nKV=8, hd=128, vocab=151936
+- All 398 tensors loaded with correct shapes
+- Qwen3.5-0.8B regression test passes (no breakage)
 
-| Constraint | Qwen3.5-0.8B | Qwen3-4B |
-|------------|-------------|----------|
-| `text_config` wrapper | present | absent (flat config) |
-| `layer_types` array | 24 entries (mixed linear/full) | absent (all dense) |
-| `linear_conv_kernel_dim` | 4 | absent |
-| `linear_num_key_heads/value_heads` | 16 | absent |
-| `linear_key/value_head_dim` | 128 | absent |
-| `head_dim` | 256 | 128 |
-| `hidden_size` | 1024 | 2560 |
-| `num_hidden_layers` | 24 | 36 |
-| `num_attention_heads` | 8 | 32 |
-| `num_key_value_heads` | 2 | 8 |
-| `vocab_size` | 248320 | 151936 |
-| `model_type` | qwen3_5 | qwen3 |
-| `architectures` | Qwen3_5ForConditionalGeneration | Qwen3ForCausalLM |
+**Metal kernels: BLOCKED** — The attention kernels (`k_attn_prep_q`, `k_attn_prep_kv`, `k_attn`)
+have hardcoded `head_dim=256` values in threadgroup memory declarations (`threadgroup float sh[256]`)
+and buffer access strides (`nH * 256`, `nKV * 256`). Qwen3-4B uses `head_dim=128`, so these kernels
+would read wrong memory offsets and produce incorrect results. Forward pass with Qwen3-4B timed out.
 
-`parseDims()` rejects Qwen3-4B with: `"model shape is outside what the Qwen3.5 kernels were
-written for"` (head_dim=128 ≠ 256, linear_num_key_heads missing, etc.).
+To support Qwen3-4B end-to-end, the Metal kernels need head_dim parameterization:
+- Option A: Compile separate kernel variants for head_dim=128 vs head_dim=256
+- Option B: Pass head_dim as a runtime uniform and use dynamic threadgroup memory
 
-**To support Qwen3-4B**, `qwen35_engine.mm` needs:
-1. Flat-config parsing (no `text_config` wrapper)
-2. Default all layers to full_attention when `layer_types` absent
-3. Remove/relax hardcoded shape constraints (head_dim, linear_* counts)
-4. Verify GQA attention kernel handles 32 q-heads / 8 kv-heads
-5. Verify RoPE with head_dim=128, theta=1e6
-6. Verify weight key naming matches (q_proj/k_proj/v_proj/o_proj, gate/up/down_proj, layernorms)
-
-**Estimated effort**: Moderate — kernel math is standard GQA/RoPE/RMSNorm/SwiGLU, but the
-engine is tightly coupled to Qwen3.5-0.8B's hybrid architecture.
+**Changes committed** (`5b4e4c2`): `parseDims()` accepts flat Qwen3 config, weight loading uses
+`d.qProjHeadDim`/`d.hd` instead of hardcoded 512/256, buffer sizes and KV cache use `d.hd`.
 
 ---
 
