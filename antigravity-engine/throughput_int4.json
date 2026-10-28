@@ -1,0 +1,72 @@
+{
+  "hardware": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.3",
+    "chip": "Apple M1",
+    "memory_bytes": "17179869184"
+  },
+  "model_dir": "models/qwen35",
+  "max_new_tokens": 64,
+  "repeats": 3,
+  "prompt_token_ids": [
+    1,
+    15043,
+    29892,
+    1125,
+    29892,
+    29871,
+    313,
+    29906
+  ],
+  "backends": {
+    "native_metal": {
+      "samples": [
+        {
+          "tokens": 64,
+          "seconds": 3.7608356249984354,
+          "tokens_per_sec": 17.01749461598089
+        },
+        {
+          "tokens": 64,
+          "seconds": 3.7880556249292567,
+          "tokens_per_sec": 16.895211247378455
+        },
+        {
+          "tokens": 64,
+          "seconds": 3.820245833019726,
+          "tokens_per_sec": 16.752848585508694
+        }
+      ],
+      "median_tokens_per_sec": 16.895211247378455,
+      "min_tokens_per_sec": 16.752848585508694,
+      "max_tokens_per_sec": 17.01749461598089,
+      "weights_mb": 1666.014289855957
+    },
+    "pytorch_mps": {
+      "samples": [
+        {
+          "tokens": 64,
+          "seconds": 7.30806162499357,
+          "tokens_per_sec": 8.75745215135023
+        },
+        {
+          "tokens": 64,
+          "seconds": 7.199940333026461,
+          "tokens_per_sec": 8.88896255242964
+        },
+        {
+          "tokens": 64,
+          "seconds": 7.233147082966752,
+          "tokens_per_sec": 8.84815409750381
+        }
+      ],
+      "median_tokens_per_sec": 8.84815409750381,
+      "min_tokens_per_sec": 8.75745215135023,
+      "max_tokens_per_sec": 8.88896255242964,
+      "device": "mps",
+      "weights_mb": 1626.9415283203125
+    }
+  },
+  "errors": {}
+}
