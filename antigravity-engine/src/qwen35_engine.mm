@@ -474,8 +474,11 @@ struct Dims {
     int H = 0, I = 0, L = 0, nH = 0, nKV = 0, hd = 0, V = 0;
     int convK = 4, linKH = 0, linVH = 0, linKD = 0, linVD = 0;
     int keyDim = 0, valDim = 0, convDim = 0, rotDim = 0;
+    int qProjHeadDim = 0;   // per-head q projection output dim (512 for Qwen3.5-0.8B, hd for Qwen3-4B)
     float eps = 1e-6f, theta = 1e7f;
     bool tied = true;
+    bool isQwen35 = true;   // Qwen3.5-0.8B hybrid (text_config wrapper) vs Qwen3 dense (flat config)
+    std::string modelPrefix = "model.language_model.layers.";  // weight key prefix
     std::vector<bool> isLinear;
     std::vector<int> eos;
 };
@@ -484,55 +487,90 @@ bool parseDims(const std::string& model_dir, Dims& d, std::string& err) {
     const std::string cfg = readFile(model_dir + "/config.json");
     if (cfg.empty()) { err = "cannot read " + model_dir + "/config.json"; return false; }
     const std::string tc = objectOf(cfg, "text_config");
-    if (tc.empty()) { err = "config.json has no text_config"; return false; }
+    const std::string& cfgObj = tc.empty() ? cfg : tc;
+    d.isQwen35 = !tc.empty();
+    d.modelPrefix = d.isQwen35 ? "model.language_model.layers." : "model.layers.";
     auto need = [&](const char* key, int& dst) {
         double v;
-        if (!numberOf(tc, key, v)) { err = std::string("text_config lacks ") + key; return false; }
+        if (!numberOf(cfgObj, key, v)) { err = std::string(key) + " not found"; return false; }
         dst = (int)v;
         return true;
     };
     if (!need("hidden_size", d.H) || !need("intermediate_size", d.I) ||
         !need("num_hidden_layers", d.L) || !need("num_attention_heads", d.nH) ||
         !need("num_key_value_heads", d.nKV) || !need("head_dim", d.hd) ||
-        !need("vocab_size", d.V) || !need("linear_conv_kernel_dim", d.convK) ||
-        !need("linear_num_key_heads", d.linKH) || !need("linear_num_value_heads", d.linVH) ||
-        !need("linear_key_head_dim", d.linKD) || !need("linear_value_head_dim", d.linVD)) {
+        !need("vocab_size", d.V)) {
         return false;
     }
+
+    // Linear-attention fields (only present in Qwen3.5-0.8B hybrid config).
+    if (d.isQwen35) {
+        if (!need("linear_conv_kernel_dim", d.convK) ||
+            !need("linear_num_key_heads", d.linKH) || !need("linear_num_value_heads", d.linVH) ||
+            !need("linear_key_head_dim", d.linKD) || !need("linear_value_head_dim", d.linVD)) {
+            return false;
+        }
+        // Qwen3.5-0.8B q_proj emits 2*hd per head (512 at hd=256).
+        d.qProjHeadDim = 2 * d.hd;
+    } else {
+        // Dense Qwen3: no linear attention / DeltaNet layers.
+        d.convK = 1;
+        d.linKH = d.nH;
+        d.linVH = d.nKV;
+        d.linKD = d.hd;
+        d.linVD = d.hd;
+        // Qwen3-4B q_proj emits hd per head.
+        d.qProjHeadDim = d.hd;
+    }
     double v;
-    if (numberOf(tc, "rms_norm_eps", v)) d.eps = (float)v;
-    const std::string rp = objectOf(tc, "rope_parameters");
+    if (numberOf(cfgObj, "rms_norm_eps", v)) d.eps = (float)v;
+
+    // RoPE theta: Qwen3.5-0.8B nests it under rope_parameters; Qwen3-4B places it at top level.
+    const std::string rp = objectOf(cfgObj, "rope_parameters");
     double prf = 1.0;
-    if (numberOf(rp, "rope_theta", v)) d.theta = (float)v;
-    numberOf(rp, "partial_rotary_factor", prf);
+    if (!rp.empty() && numberOf(rp, "rope_theta", v)) d.theta = (float)v;
+    else if (numberOf(cfgObj, "rope_theta", v)) d.theta = (float)v;
+    if (!rp.empty()) numberOf(rp, "partial_rotary_factor", prf);
     d.rotDim = (int)(d.hd * prf);
+
     d.keyDim = d.linKH * d.linKD;
     d.valDim = d.linVH * d.linVD;
     d.convDim = 2 * d.keyDim + d.valDim;
     d.tied = cfg.find("\"tie_word_embeddings\": false") == std::string::npos;
 
-    // layer_types: the strings inside the array, in order.
-    size_t lt = tc.find("\"layer_types\"");
-    if (lt == std::string::npos) { err = "text_config lacks layer_types"; return false; }
-    size_t open = tc.find('[', lt), close = tc.find(']', lt);
-    std::string arr = tc.substr(open, close - open);
-    size_t pos = 0;
-    while ((pos = arr.find('"', pos)) != std::string::npos) {
-        size_t e = arr.find('"', pos + 1);
-        std::string name = arr.substr(pos + 1, e - pos - 1);
-        d.isLinear.push_back(name == "linear_attention");
-        pos = e + 1;
+    // layer_types (only Qwen3.5-0.8B has them; Qwen3-4B is all dense).
+    if (d.isQwen35) {
+        size_t lt = cfgObj.find("\"layer_types\"");
+        if (lt == std::string::npos) { err = "config lacks layer_types"; return false; }
+        size_t open = cfgObj.find('[', lt), close = cfgObj.find(']', lt);
+        std::string arr = cfgObj.substr(open, close - open);
+        size_t pos = 0;
+        while ((pos = arr.find('"', pos)) != std::string::npos) {
+            size_t e = arr.find('"', pos + 1);
+            std::string name = arr.substr(pos + 1, e - pos - 1);
+            d.isLinear.push_back(name == "linear_attention");
+            pos = e + 1;
+        }
+        if ((int)d.isLinear.size() != d.L) { err = "layer_types length differs from num_hidden_layers"; return false; }
+    } else {
+        d.isLinear.assign(d.L, false);  // every layer is full attention
     }
-    if ((int)d.isLinear.size() != d.L) { err = "layer_types length differs from num_hidden_layers"; return false; }
 
-    // Shapes this implementation is written for.
-    if (d.hd != 256 || d.linKD != 128 || d.linVD != 128 || d.linKH != d.linVH || d.convK != 4 ||
-        d.rotDim <= 0 || d.rotDim > d.hd || d.nH % d.nKV != 0 || d.linKH != 16) {
-        err = "model shape is outside what the Qwen3.5 kernels were written for";
+    // Dimension sanity checks (relaxed for Qwen3-4B dense architecture).
+    if (d.hd <= 0 || d.rotDim <= 0 || d.rotDim > d.hd || d.nH % d.nKV != 0) {
+        err = "invalid model dimensions";
         return false;
     }
+    // Qwen3.5-0.8B-specific linear-attention constraints.
+    if (d.isQwen35) {
+        if (d.linKD != 128 || d.linVD != 128 || d.linKH != d.linVH || d.convK != 4 ||
+            d.linKH != 16) {
+            err = "Qwen3.5 linear-attention shape constraints not met";
+            return false;
+        }
+    }
 
-    if (numberOf(tc, "eos_token_id", v)) d.eos.push_back((int)v);
+    if (numberOf(cfgObj, "eos_token_id", v)) d.eos.push_back((int)v);
     // <|im_end|> ends a chat turn; look its id up in the tokenizer rather than assume it.
     const std::string tok = readFile(model_dir + "/tokenizer.json");
     size_t m = tok.find("\"content\": \"<|im_end|>\"");
@@ -669,9 +707,9 @@ struct Qwen35Engine::Impl {
 
         if (!L.linear) {
             const uint32_t nH = dm.nH, nKV = dm.nKV;
-            matmul(e, nrm, L.q, qg, rows, H, nH * 512, false);
-            matmul(e, nrm, L.k, kp, rows, H, nKV * 256, false);
-            matmul(e, nrm, L.v, vp, rows, H, nKV * 256, false);
+            matmul(e, nrm, L.q, qg, rows, H, nH * dm.qProjHeadDim, false);
+            matmul(e, nrm, L.k, kp, rows, H, nKV * dm.hd, false);
+            matmul(e, nrm, L.v, vp, rows, H, nKV * dm.hd, false);
 
             [e setComputePipelineState:pso["k_attn_prep_q"]];
             [e setBuffer:qg offset:0 atIndex:0]; [e setBuffer:L.qNorm offset:0 atIndex:1];
@@ -698,7 +736,7 @@ struct Qwen35Engine::Impl {
             [e dispatchThreadgroups:MTLSizeMake(nH, rows, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             }
 
-            matmul(e, attnOut, L.o, hid, rows, nH * 256, H, true);
+            matmul(e, attnOut, L.o, hid, rows, nH * dm.hd, H, true);
         } else {
             const uint32_t cd = dm.convDim, vd = dm.valDim, nh = dm.linVH;
             matmul(e, nrm, L.inQkv, qkv, rows, H, cd, false);
@@ -798,8 +836,8 @@ struct Qwen35Engine::Impl {
                     [bl copyFromBuffer:L.recState sourceOffset:0 toBuffer:L.recState destinationOffset:s * rs size:rs];
                 }
             } else {
-                const size_t perHead = (size_t)maxSeq * 256 * sizeof(uint16_t);
-                const size_t bytes = (size_t)n * 256 * sizeof(uint16_t);
+                const size_t perHead = (size_t)maxSeq * dm.hd * sizeof(uint16_t);
+                const size_t bytes = (size_t)n * dm.hd * sizeof(uint16_t);
                 for (int s = 1; s < C; s++)
                     for (int h = 0; h < dm.nKV; h++) {
                         const size_t src = (size_t)(0 * dm.nKV + h) * perHead;
@@ -930,7 +968,7 @@ bool Qwen35Engine::loadWeights(const std::string& path) {
         return [m.device newBufferWithBytes:v.data() length:(NSUInteger)elems * 4 options:MTLResourceStorageModeShared];
     };
 
-    const std::string P = "model.language_model.";
+    const std::string P = d.isQwen35 ? "model.language_model." : "model.";
     m.embed = bf16(P + "embed_tokens.weight", (int64_t)d.V * d.H);
     m.finalNorm = bf16(P + "norm.weight", d.H);
     if (!d.tied && parsed.tensors.count("lm_head.weight")) m.lmHead = bf16("lm_head.weight", (int64_t)d.V * d.H);
@@ -961,13 +999,13 @@ bool Qwen35Engine::loadWeights(const std::string& path) {
             L.recState = m.newBuf((size_t)m.C * d.linVH * 128 * 128 * sizeof(float));
         } else {
             const std::string a = p + "self_attn.";
-            L.q = bf16(a + "q_proj.weight", (int64_t)d.nH * 512 * d.H);
-            L.k = bf16(a + "k_proj.weight", (int64_t)d.nKV * 256 * d.H);
-            L.v = bf16(a + "v_proj.weight", (int64_t)d.nKV * 256 * d.H);
-            L.o = bf16(a + "o_proj.weight", (int64_t)d.H * d.nH * 256);
-            L.qNorm = bf16(a + "q_norm.weight", 256);
-            L.kNorm = bf16(a + "k_norm.weight", 256);
-            const size_t cache = (size_t)m.C * d.nKV * m.maxSeq * 256 * sizeof(uint16_t);
+            L.q = bf16(a + "q_proj.weight", (int64_t)d.nH * d.qProjHeadDim * d.H);
+            L.k = bf16(a + "k_proj.weight", (int64_t)d.nKV * d.hd * d.H);
+            L.v = bf16(a + "v_proj.weight", (int64_t)d.nKV * d.hd * d.H);
+            L.o = bf16(a + "o_proj.weight", (int64_t)d.H * d.nH * d.hd);
+            L.qNorm = bf16(a + "q_norm.weight", d.hd);
+            L.kNorm = bf16(a + "k_norm.weight", d.hd);
+            const size_t cache = (size_t)m.C * d.nKV * m.maxSeq * d.hd * sizeof(uint16_t);
             L.kCache = m.newBuf(cache);
             L.vCache = m.newBuf(cache);
         }
@@ -980,8 +1018,8 @@ bool Qwen35Engine::loadWeights(const std::string& path) {
     auto fb = [&](size_t cols) { return m.newBuf(R * cols * sizeof(float)); };
     m.tokBuf = m.newBuf(R * sizeof(int32_t));
     m.hid = fb(d.H); m.nrm = fb(d.H);
-    m.qg = fb((size_t)d.nH * 512); m.qa = fb((size_t)d.nH * 256); m.gateA = fb((size_t)d.nH * 256);
-    m.kp = fb((size_t)d.nKV * 256); m.vp = fb((size_t)d.nKV * 256); m.attnOut = fb((size_t)d.nH * 256);
+    m.qg = fb((size_t)d.nH * d.qProjHeadDim); m.qa = fb((size_t)d.nH * d.hd); m.gateA = fb((size_t)d.nH * d.hd);
+    m.kp = fb((size_t)d.nKV * d.hd); m.vp = fb((size_t)d.nKV * d.hd); m.attnOut = fb((size_t)d.nH * d.hd);
     m.qkv = fb(d.convDim); m.conv = fb(d.convDim); m.zp = fb(d.valDim);
     m.bp = fb(d.linVH); m.ap = fb(d.linVH); m.dn = fb(d.valDim); m.dnn = fb(d.valDim);
     m.mg = fb(d.I); m.mu = fb(d.I);
