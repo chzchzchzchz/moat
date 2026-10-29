@@ -173,30 +173,37 @@ inline float rope_angle(uint pos, uint i, uint half_rot, float theta) {
     return float(pos) * pow(theta, -float(i) / float(half_rot));
 }
 
-// q_proj output is [row][head][q(256) | gate(256)]. Split it, RMSNorm q per head with (1 + w),
-// rotate the first rot_dim dims, and write q and gate as separate [row][head*256] arrays.
+// q_proj output is [row][head][q(head_dim) | gate(head_dim)] when attn_output_gate=1
+// (Qwen3.5-0.8B: q_proj_head_dim=2*head_dim), or just [q(head_dim)] when attn_output_gate=0
+// (Qwen3-4B: q_proj_head_dim=head_dim). Split it, RMSNorm q per head with (1 + w),
+// rotate the first rot_dim dims, and write q and gate as separate arrays.
 kernel void k_attn_prep_q(device const float* qg [[buffer(0)]], device const ushort* qn [[buffer(1)]],
                           device float* q_out [[buffer(2)]], device float* gate_out [[buffer(3)]],
                           constant uint& nH [[buffer(4)]], constant uint& rps [[buffer(5)]],
                           constant uint& pos0 [[buffer(6)]], constant float& theta [[buffer(7)]],
                           constant float& eps [[buffer(8)]], constant uint& rot_dim [[buffer(9)]],
+                          constant uint& head_dim [[buffer(10)]],
+                          constant uint& q_proj_head_dim [[buffer(11)]],
+                          constant int& attn_output_gate [[buffer(12)]],
                           uint2 tgp [[threadgroup_position_in_grid]],
                           uint2 tid2 [[thread_position_in_threadgroup]],
                           uint sg [[simdgroup_index_in_threadgroup]],
                           uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float part[8];
-    threadgroup float sh[256];
+    threadgroup float sh[512];
     const uint d = tid2.x;
+    const uint hd = head_dim;
+    if (d >= hd) return;
     const uint h = tgp.x, row = tgp.y;
-    device const float* src = qg + (ulong)row * nH * 512 + h * 512;
+    device const float* src = qg + (ulong)row * nH * q_proj_head_dim + h * q_proj_head_dim;
     float x = src[d];
-    gate_out[(ulong)row * nH * 256 + h * 256 + d] = src[256 + d];
+    if (attn_output_gate) gate_out[(ulong)row * nH * hd + h * hd + d] = src[hd + d];
     float ss = simd_sum(x * x);
     if (lane == 0) part[sg] = ss;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float tot = 0.0f;
     for (uint i = 0; i < 8; i++) tot += part[i];
-    float y = x * rsqrt(tot / 256.0f + eps) * (1.0f + bf(qn[d]));
+    float y = x * rsqrt(tot / (float)hd + eps) * (1.0f + bf(qn[d]));
     sh[d] = y;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint half_rot = rot_dim / 2;
@@ -208,35 +215,38 @@ kernel void k_attn_prep_q(device const float* qg [[buffer(0)]], device const ush
         if (d < half_rot) r = y * c - sh[d + half_rot] * s;
         else              r = y * c + sh[d - half_rot] * s;
     }
-    q_out[(ulong)row * nH * 256 + h * 256 + d] = r;
+    q_out[(ulong)row * nH * hd + h * hd + d] = r;
 }
 
 // k: RMSNorm per kv head, rotate, store to the K cache as half. v: store to the V cache as half.
-// Cache layout [slot][kv head][max_seq][256].
+// Cache layout [slot][kv head][max_seq][head_dim].
 kernel void k_attn_prep_kv(device const float* kp [[buffer(0)]], device const float* vp [[buffer(1)]],
                            device const ushort* kn [[buffer(2)]],
                            device half* Kc [[buffer(3)]], device half* Vc [[buffer(4)]],
                            constant uint& nKV [[buffer(5)]], constant uint& rps [[buffer(6)]],
                            constant uint& pos0 [[buffer(7)]], constant float& theta [[buffer(8)]],
                            constant float& eps [[buffer(9)]], constant uint& rot_dim [[buffer(10)]],
-                           constant uint& maxSeq [[buffer(11)]],
+                           constant uint& head_dim [[buffer(11)]],
+                           constant uint& maxSeq [[buffer(12)]],
                            uint2 tgp [[threadgroup_position_in_grid]],
                            uint2 tid2 [[thread_position_in_threadgroup]],
                            uint sg [[simdgroup_index_in_threadgroup]],
                            uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float part[8];
-    threadgroup float sh[256];
+    threadgroup float sh[512];
     const uint d = tid2.x;
+    const uint hd = head_dim;
+    if (d >= hd) return;
     const uint kvh = tgp.x, row = tgp.y;
     const uint slot = row / rps;
     const uint pos = pos0 + row % rps;
-    float x = kp[(ulong)row * nKV * 256 + kvh * 256 + d];
+    float x = kp[(ulong)row * nKV * hd + kvh * hd + d];
     float ss = simd_sum(x * x);
     if (lane == 0) part[sg] = ss;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float tot = 0.0f;
     for (uint i = 0; i < 8; i++) tot += part[i];
-    float y = x * rsqrt(tot / 256.0f + eps) * (1.0f + bf(kn[d]));
+    float y = x * rsqrt(tot / (float)hd + eps) * (1.0f + bf(kn[d]));
     sh[d] = y;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint half_rot = rot_dim / 2;
@@ -248,19 +258,22 @@ kernel void k_attn_prep_kv(device const float* kp [[buffer(0)]], device const fl
         if (d < half_rot) r = y * c - sh[d + half_rot] * s;
         else              r = y * c + sh[d - half_rot] * s;
     }
-    const ulong ci = ((ulong)(slot * nKV + kvh) * maxSeq + pos) * 256 + d;
+    const ulong ci = ((ulong)(slot * nKV + kvh) * maxSeq + pos) * hd + d;
     Kc[ci] = half(r);
-    Vc[ci] = half(vp[(ulong)row * nKV * 256 + kvh * 256 + d]);
+    Vc[ci] = half(vp[(ulong)row * nKV * hd + kvh * hd + d]);
 }
 
 // One threadgroup (128 threads) per (head, row). Scores for positions 0..pos, softmax, weighted
-// sum of V, then the output gate: out = softmax(qK^T/16) V * sigmoid(gate).
+// sum of V, then the output gate: out = softmax(qK^T/16) V * sigmoid(gate) when attn_output_gate=1,
+// or just out = softmax(qK^T/16) V when attn_output_gate=0.
 kernel void k_attn(device const float* q [[buffer(0)]], device const float* gate [[buffer(1)]],
                    device const half* Kc [[buffer(2)]], device const half* Vc [[buffer(3)]],
                    device float* out [[buffer(4)]],
                    constant uint& nH [[buffer(5)]], constant uint& nKV [[buffer(6)]],
                    constant uint& rps [[buffer(7)]], constant uint& pos0 [[buffer(8)]],
                    constant uint& maxSeq [[buffer(9)]], constant float& scale [[buffer(10)]],
+                   constant uint& head_dim [[buffer(11)]],
+                   constant int& attn_output_gate [[buffer(12)]],
                    uint2 tgp [[threadgroup_position_in_grid]],
                    uint2 tid2 [[thread_position_in_threadgroup]],
                    uint sg [[simdgroup_index_in_threadgroup]],
@@ -274,15 +287,17 @@ kernel void k_attn(device const float* q [[buffer(0)]], device const float* gate
     const uint pos = pos0 + row % rps;
     const uint n = pos + 1;
     const uint kvh = h / (nH / nKV);
-    device const half* Kb = Kc + (ulong)(slot * nKV + kvh) * maxSeq * 256;
-    device const half* Vb = Vc + (ulong)(slot * nKV + kvh) * maxSeq * 256;
+    const uint hd = head_dim;
+    if (lane * 8 + 7 >= hd) return;
+    device const half* Kb = Kc + (ulong)(slot * nKV + kvh) * maxSeq * hd;
+    device const half* Vb = Vc + (ulong)(slot * nKV + kvh) * maxSeq * hd;
 
     float qv[8];
-    device const float* qp = q + (ulong)row * nH * 256 + h * 256 + lane * 8;
+    device const float* qp = q + (ulong)row * nH * hd + h * hd + lane * 8;
     for (uint i = 0; i < 8; i++) qv[i] = qp[i];
 
     for (uint j = sg; j < n; j += 4) {
-        device const half* kr = Kb + (ulong)j * 256 + lane * 8;
+        device const half* kr = Kb + (ulong)j * hd + lane * 8;
         float acc = 0.0f;
         for (uint i = 0; i < 8; i++) acc += qv[i] * float(kr[i]);
         acc = simd_sum(acc);
@@ -308,13 +323,18 @@ kernel void k_attn(device const float* q [[buffer(0)]], device const float* gate
     float a0 = 0.0f, a1 = 0.0f;
     for (uint j = 0; j < n; j++) {
         float p = sc[j];
-        half2 v = *(device const half2*)(Vb + (ulong)j * 256 + d0);
+        half2 v = *(device const half2*)(Vb + (ulong)j * hd + d0);
         a0 += p * float(v.x);
         a1 += p * float(v.y);
     }
-    const ulong oi = (ulong)row * nH * 256 + h * 256 + d0;
-    out[oi]     = (a0 / tot) * sigmoid_f(gate[oi]);
-    out[oi + 1] = (a1 / tot) * sigmoid_f(gate[oi + 1]);
+    const ulong oi = (ulong)row * nH * hd + h * hd + d0;
+    if (attn_output_gate) {
+        out[oi]     = (a0 / tot) * sigmoid_f(gate[oi]);
+        out[oi + 1] = (a1 / tot) * sigmoid_f(gate[oi + 1]);
+    } else {
+        out[oi]     = a0 / tot;
+        out[oi + 1] = a1 / tot;
+    }
 }
 
 // ---- Gated DeltaNet (linear attention) -----------------------------------------------------
@@ -478,6 +498,7 @@ struct Dims {
     float eps = 1e-6f, theta = 1e7f;
     bool tied = true;
     bool isQwen35 = true;   // Qwen3.5-0.8B hybrid (text_config wrapper) vs Qwen3 dense (flat config)
+    int attn_output_gate = 1;  // apply sigmoid(gate) to attention output (Qwen3.5-0.8B: yes, Qwen3-4B: no)
     std::string modelPrefix = "model.language_model.layers.";  // weight key prefix
     std::vector<bool> isLinear;
     std::vector<int> eos;
@@ -537,6 +558,10 @@ bool parseDims(const std::string& model_dir, Dims& d, std::string& err) {
     d.valDim = d.linVH * d.linVD;
     d.convDim = 2 * d.keyDim + d.valDim;
     d.tied = cfg.find("\"tie_word_embeddings\": false") == std::string::npos;
+
+    // attn_output_gate: Qwen3.5-0.8B has it (true), Qwen3-4B may not (defaults to false).
+    d.attn_output_gate = d.isQwen35 ? 1 : 0;
+    if (numberOf(cfgObj, "attn_output_gate", v)) d.attn_output_gate = (int)v;
 
     // layer_types (only Qwen3.5-0.8B has them; Qwen3-4B is all dense).
     if (d.isQwen35) {
@@ -715,7 +740,8 @@ struct Qwen35Engine::Impl {
             [e setBuffer:qg offset:0 atIndex:0]; [e setBuffer:L.qNorm offset:0 atIndex:1];
             [e setBuffer:qa offset:0 atIndex:2]; [e setBuffer:gateA offset:0 atIndex:3];
             bindU(e, nH, 4); bindU(e, rps, 5); bindU(e, pos0, 6); bindF(e, dm.theta, 7); bindF(e, dm.eps, 8);
-            bindU(e, dm.rotDim, 9);
+            bindU(e, dm.rotDim, 9); bindU(e, dm.hd, 10); bindU(e, dm.qProjHeadDim, 11);
+            bindU(e, dm.attn_output_gate, 12);
             [e dispatchThreadgroups:MTLSizeMake(nH, rows, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
             [e setComputePipelineState:pso["k_attn_prep_kv"]];
@@ -723,7 +749,7 @@ struct Qwen35Engine::Impl {
             [e setBuffer:L.kNorm offset:0 atIndex:2]; [e setBuffer:L.kCache offset:0 atIndex:3];
             [e setBuffer:L.vCache offset:0 atIndex:4];
             bindU(e, nKV, 5); bindU(e, rps, 6); bindU(e, pos0, 7); bindF(e, dm.theta, 8); bindF(e, dm.eps, 9);
-            bindU(e, dm.rotDim, 10); bindU(e, maxSeq, 11);
+            bindU(e, dm.rotDim, 10); bindU(e, dm.hd, 11); bindU(e, maxSeq, 12);
             [e dispatchThreadgroups:MTLSizeMake(nKV, rows, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
             if (!skipped("attn")) {
@@ -733,6 +759,7 @@ struct Qwen35Engine::Impl {
             [e setBuffer:attnOut offset:0 atIndex:4];
             bindU(e, nH, 5); bindU(e, nKV, 6); bindU(e, rps, 7); bindU(e, pos0, 8); bindU(e, maxSeq, 9);
             bindF(e, 1.0f / sqrtf((float)dm.hd), 10);
+            bindU(e, dm.hd, 11); bindU(e, dm.attn_output_gate, 12);
             [e dispatchThreadgroups:MTLSizeMake(nH, rows, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             }
 
