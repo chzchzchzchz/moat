@@ -1,7 +1,7 @@
 # iPhone End-Goal Status: Claude 3.5 Haiku Equivalent, Locally, Privately
 
 **Repo**: https://github.com/chzchzchzchz/moat  
-**Current commit**: `5b4e4c2` (local == origin/main, clean tree)  
+**Current commit**: `1be9fe5` (local == origin/main, clean tree)  
 **Test hardware**: Apple M1 Mac, macOS 26.5.2, 16 GB RAM, Metal GPU
 
 ---
@@ -71,17 +71,23 @@ Qwen3-4B weights downloaded and merged into `antigravity-engine/models/qwen3-4b/
 - All 398 tensors loaded with correct shapes
 - Qwen3.5-0.8B regression test passes (no breakage)
 
-**Metal kernels: BLOCKED** — The attention kernels (`k_attn_prep_q`, `k_attn_prep_kv`, `k_attn`)
-have hardcoded `head_dim=256` values in threadgroup memory declarations (`threadgroup float sh[256]`)
-and buffer access strides (`nH * 256`, `nKV * 256`). Qwen3-4B uses `head_dim=128`, so these kernels
-would read wrong memory offsets and produce incorrect results. Forward pass with Qwen3-4B timed out.
+**Metal kernel parameterization: DONE** — `k_attn_prep_q`, `k_attn_prep_kv`, `k_attn`
+kernels now take `head_dim`, `q_proj_head_dim`, and `attn_output_gate` as runtime
+uniforms instead of hardcoded 256/512 values. Bounds checks added for threadgroups
+larger than head_dim.
 
-To support Qwen3-4B end-to-end, the Metal kernels need head_dim parameterization:
-- Option A: Compile separate kernel variants for head_dim=128 vs head_dim=256
-- Option B: Pass head_dim as a runtime uniform and use dynamic threadgroup memory
+**Metal kernel forward pass: NOT YET WORKING** — Qwen3-4B loads and kernels compile,
+but the forward pass produces garbage output (sanity check: 0/4 known continuations).
+Qwen3.5-0.8B still passes 4/4 sanity checks. Possible causes:
+- RoPE theta difference (Qwen3-4B: 1e6 vs Qwen3.5-0.8B: 1e7)
+- Qwen3-4B may be a base (non-instruction-tuned) model
+- Some other architectural difference not yet identified
 
-**Changes committed** (`5b4e4c2`): `parseDims()` accepts flat Qwen3 config, weight loading uses
-`d.qProjHeadDim`/`d.hd` instead of hardcoded 512/256, buffer sizes and KV cache use `d.hd`.
+To support Qwen3-4B end-to-end, the Metal kernel numerical computation needs
+further debugging beyond the dimension parameterization that's now complete.
+
+**Changes committed** (`1be9fe5`): Metal kernels parameterized for head_dim; Qwen3.5-0.8B
+regression passes.
 
 ---
 
