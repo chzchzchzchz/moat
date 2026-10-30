@@ -191,6 +191,10 @@ kernel void k_attn_prep_q(device const float* qg [[buffer(0)]], device const ush
                           uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float part[8];
     threadgroup float sh[512];
+    // Initialize part to 0 so simdgroups whose threads all return early
+    // (when hd < 256) contribute 0 to the RMSNorm reduction sum.
+    if (lane == 0) part[sg] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint d = tid2.x;
     const uint hd = head_dim;
     if (d >= hd) return;
@@ -203,7 +207,7 @@ kernel void k_attn_prep_q(device const float* qg [[buffer(0)]], device const ush
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float tot = 0.0f;
     for (uint i = 0; i < 8; i++) tot += part[i];
-    float y = x * rsqrt(tot / (float)hd + eps) * (1.0f + bf(qn[d]));
+    float y = x * rsqrt(tot / (float)hd + eps) * bf(qn[d]);
     sh[d] = y;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint half_rot = rot_dim / 2;
@@ -234,6 +238,10 @@ kernel void k_attn_prep_kv(device const float* kp [[buffer(0)]], device const fl
                            uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float part[8];
     threadgroup float sh[512];
+    // Initialize part to 0 so simdgroups whose threads all return early
+    // (when hd < 256) contribute 0 to the RMSNorm reduction sum.
+    if (lane == 0) part[sg] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint d = tid2.x;
     const uint hd = head_dim;
     if (d >= hd) return;
@@ -246,7 +254,7 @@ kernel void k_attn_prep_kv(device const float* kp [[buffer(0)]], device const fl
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float tot = 0.0f;
     for (uint i = 0; i < 8; i++) tot += part[i];
-    float y = x * rsqrt(tot / (float)hd + eps) * (1.0f + bf(kn[d]));
+    float y = x * rsqrt(tot / (float)hd + eps) * bf(kn[d]);
     sh[d] = y;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint half_rot = rot_dim / 2;
@@ -288,13 +296,15 @@ kernel void k_attn(device const float* q [[buffer(0)]], device const float* gate
     const uint n = pos + 1;
     const uint kvh = h / (nH / nKV);
     const uint hd = head_dim;
-    if (lane * 8 + 7 >= hd) return;
     device const half* Kb = Kc + (ulong)(slot * nKV + kvh) * maxSeq * hd;
     device const half* Vb = Vc + (ulong)(slot * nKV + kvh) * maxSeq * hd;
 
-    float qv[8];
-    device const float* qp = q + (ulong)row * nH * hd + h * hd + lane * 8;
-    for (uint i = 0; i < 8; i++) qv[i] = qp[i];
+    float qv[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    device const float* qp = q + (ulong)row * nH * hd + h * hd;
+    for (uint i = 0; i < 8; i++) {
+        uint idx = lane * 8 + i;
+        if (idx < hd) qv[i] = qp[idx];
+    }
 
     for (uint j = sg; j < n; j += 4) {
         device const half* kr = Kb + (ulong)j * hd + lane * 8;
@@ -320,6 +330,7 @@ kernel void k_attn(device const float* q [[buffer(0)]], device const float* gate
     const float tot = reds[0] + reds[1] + reds[2] + reds[3];
 
     const uint d0 = tid * 2;
+    if (d0 >= hd) return;
     float a0 = 0.0f, a1 = 0.0f;
     for (uint j = 0; j < n; j++) {
         float p = sc[j];
