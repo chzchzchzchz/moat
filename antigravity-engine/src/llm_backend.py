@@ -54,6 +54,11 @@ class LLMBackend(abc.ABC):
     def model_name(self) -> str:
         ...
 
+    @abc.abstractmethod
+    def backend_name(self) -> str:
+        """Short identifier for this backend (e.g. 'ollama', 'mlx', 'strata')."""
+        ...
+
 
 class OpenAICompatibleBackend(LLMBackend):
     """
@@ -182,6 +187,9 @@ class CloudBackend(LLMBackend):
 
     def model_name(self) -> str:
         return self.model
+
+    def backend_name(self) -> str:
+        return "cloud"
 
     def generate(self, prompt: str, max_tokens: int = 40,
                  temperature: float = 0.7, top_p: float = 0.9,
