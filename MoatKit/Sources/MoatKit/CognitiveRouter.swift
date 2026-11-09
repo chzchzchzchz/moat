@@ -80,10 +80,10 @@ public final class ComplexityClassifier: Sendable {
         score += min(Float(nWords) / 60.0, 1.0) * 0.25
 
         // Keyword signals
-        let mathHits = MATH_KEYWORDS.filter { text.contains($0) }.count
-        let codeHits = CODE_KEYWORDS.filter { text.contains($0) }.count
-        let logicHits = LOGIC_KEYWORDS.filter { text.contains($0) }.count
-        let complexHits = COMPLEX_WORDS.filter { text.contains($0) }.count
+        let mathHits = mathKeywords.filter { text.contains($0) }.count
+        let codeHits = codeKeywords.filter { text.contains($0) }.count
+        let logicHits = logicKeywords.filter { text.contains($0) }.count
+        let complexHits = complexWords.filter { text.contains($0) }.count
 
         score += min(
             Float(mathHits) * 0.15 + Float(codeHits) * 0.15 +
@@ -105,21 +105,53 @@ public final class ComplexityClassifier: Sendable {
     }
 }
 
+/// Router configuration
+public struct RouterConfig: Sendable {
+    public var nChannels: Int = 8
+    public var maxTokens: Int = 256
+    public var temperature: Float = 0.7
+    public var topP: Float = 0.9
+    public var tier1Model: String = "llama-3.2-1b"
+    public var tier2Model: String = "qwen2.5-3b"
+    public var tier3Model: String = "gpt-4o-mini"
+    public var backendURLs: [String: String] = [
+        "llama.cpp": "http://127.0.0.1:8080",
+        "mlx": "http://127.0.0.1:8081",
+        "ollama": "http://127.0.0.1:11434/v1",
+        "strata": "http://127.0.0.1:8082",
+        "cloud": "https://api.openai.com/v1",
+    ]
+    public var enableVerification: Bool = true
+    public var reflectionThreshold: Float = 0.75
+    public var memoryBudgetBytes: Int = 2_500 * 1024 * 1024
+    public var thermalBudgetWatts: Float = 5.0
+    public var verbose: Bool = false
+
+    public init() {}
+}
+
 /// The Cognitive Router — main entry point.
+/// NOTE: This class is NOT Sendable because it holds mutable state
+/// (backends dict, stats dict). All access is synchronized via dedicated
+/// dispatch queues.
 public final class CognitiveRouter {
     public let config: RouterConfig
     private let classifier = ComplexityClassifier()
 
-    // Backends (lazy)
+    // Backends (lazy, thread-safe)
     private var backends: [String: LLMBackend] = [:]
     private let queue = DispatchQueue(label: "moat.router.backends", attributes: .concurrent)
 
     // Stats
-    private var stats: [String: Int] = [
+    private var statsData: [String: Int] = [
         "total": 0, "tier1": 0, "tier2": 0, "tier3": 0,
         "verified": 0, "reflection": 0, "circuitBreaker": 0
     ]
     private let statsQueue = DispatchQueue(label: "moat.router.stats", attributes: .concurrent)
+
+    // Memory & thermal guards (owned by this router)
+    private let memoryGuard = MemoryGuard()
+    private let thermalMonitor = ThermalMonitor()
 
     public init(config: RouterConfig = RouterConfig()) {
         self.config = config
@@ -147,8 +179,8 @@ public final class CognitiveRouter {
         }
 
         // 2. Guardrails
-        try? MemoryGuard.shared.check()
-        try? ThermalMonitor.shared.update(watts: 0.0)
+        try? memoryGuard.check()
+        try? thermalMonitor.update(watts: 0.0)
 
         // 3. Dispatch
         switch tier {
@@ -180,8 +212,8 @@ public final class CognitiveRouter {
             topP: topP
         )
 
-        try? MemoryGuard.shared.check()
-        try? ThermalMonitor.shared.update(watts: result.estimatedWatts)
+        try? memoryGuard.check()
+        try? thermalMonitor.update(watts: Float(result.estimatedWatts))
 
         return RouteResult(
             text: result.text,
@@ -209,7 +241,7 @@ public final class CognitiveRouter {
         statsUpdate(key: "tier2", delta: 1)
 
         let backend = backend(for: "mlx")
-        let result = doraRollout(
+        let result = try await doraRollout(
             backend: backend,
             prompt: prompt,
             maxTokens: maxTokens,
@@ -217,8 +249,8 @@ public final class CognitiveRouter {
             topP: topP
         )
 
-        try? MemoryGuard.shared.check()
-        try? ThermalMonitor.shared.update(watts: result.estimatedWatts)
+        try? memoryGuard.check()
+        try? thermalMonitor.update(watts: Float(result.estimatedWatts))
 
         return result
     }
@@ -229,12 +261,13 @@ public final class CognitiveRouter {
         maxTokens: Int,
         temperature: Float,
         topP: Float
-    ) -> RouteResult {
+    ) async -> RouteResult {
         let nChannels = config.nChannels
 
         // Launch N parallel rollouts
         let tasks = (0..<nChannels).map { idx in
             Task {
+                let t0 = Date()
                 do {
                     let result = try await backend.generate(
                         prompt: prompt,
@@ -387,8 +420,8 @@ public final class CognitiveRouter {
             topP: topP
         )
 
-        try? MemoryGuard.shared.check()
-        try? ThermalMonitor.shared.update(watts: result.estimatedWatts)
+        try? memoryGuard.check()
+        try? thermalMonitor.update(watts: Float(result.estimatedWatts))
 
         return RouteResult(
             text: result.text,
@@ -513,30 +546,30 @@ public final class CognitiveRouter {
 
     private func statsUpdate(key: String, delta: Int) {
         statsQueue.async {
-            self.stats[key, default: 0] += delta
+            self.statsData[key, default: 0] += delta
         }
     }
 
     private func _statsUpdate(key: String, delta: Int) {
         statsQueue.async {
-            self.stats[key, default: 0] += delta
+            self.statsData[key, default: 0] += delta
         }
     }
 
     public func stats() -> [String: Int] {
-        return statsQueue.sync { stats }
+        return statsQueue.sync { statsData }
     }
 
     public func memorySnapshot() -> [String: Any] {
-        return MemoryGuard.shared.snapshot()
+        return memoryGuard.snapshot()
     }
 
     public func thermalSnapshot() -> [String: Any] {
-        let snap = ThermalMonitor.shared.update(watts: 0.0)
+        let snap = thermalMonitor.update(watts: 0.0)
         return [
             "watts": snap.watts,
             "overBudget": snap.overBudget,
-            "violations": ThermalMonitor.shared.violationCount
+            "violations": thermalMonitor.violationCount
         ]
     }
 }
@@ -544,7 +577,6 @@ public final class CognitiveRouter {
 // MARK: - MemoryGuard (simplified inline)
 
 public final class MemoryGuard {
-    public static let shared = MemoryGuard()
     public let budgetBytes: Int
     public let warnBytes: Int
     private let lock = NSLock()
@@ -617,7 +649,6 @@ extension MemoryGuard {
 }
 
 public final class ThermalMonitor {
-    public static let shared = ThermalMonitor()
     public let budgetWatts: Float
     private let lock = NSLock()
     private var ewmaWatts: Float?
