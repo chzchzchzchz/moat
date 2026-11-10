@@ -324,6 +324,7 @@ To maintain full transparency, here is the current engineering status of all sys
   - Standard BPE tokenizer with merge table matching HuggingFace.
   - AES-256-GCM column encryption backed by Keychain Data Protection.
   - **Qwen3-4B via MLX Python**: model loads and generates correct reasoning (GSM8K Janet's ducks: "16 - 3 - 4 = 9 eggs left. 9 * $2 = $18" ✓).
+  - **Qwen3-4B via MLX Swift**: RUNTIME VERIFIED — tokenizer matches HF exactly ([785, 6722, 315, 9625, 374]), generates in ~4.5s (vs ~35s Python CPU), correct completions ("2 + 2 =" → "4").
   - **MoatKit Swift SDK**: builds successfully on macOS 26.5.2 with Swift 6.1.2. Includes `Qwen34BEngine.swift` using MLX Swift LM's native `Qwen3Model`.
   - **Proven GSM8K benchmark**: Qwen3.5-0.8B best-of-8: 50% → 65%, p = 0.0026 (100 problems, Apple M1 Metal engine).
 
