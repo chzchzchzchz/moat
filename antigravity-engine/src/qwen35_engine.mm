@@ -911,8 +911,12 @@ struct Qwen35Engine::Impl {
 
 bool Qwen35Engine::matches(const std::string& safetensors_path) {
     const std::string cfg = readFile(dirName(safetensors_path) + "/config.json");
-    return cfg.find("\"model_type\": \"qwen3_5") != std::string::npos ||
-           cfg.find("\"model_type\":\"qwen3_5") != std::string::npos;
+    // Qwen3-4B (dense attention) uses "model_type": "qwen3" at top level.
+    // Qwen3.5-0.8B (hybrid DeltaNet/attention) uses "model_type": "qwen3_5".
+    return cfg.find("\"model_type\": \"qwen3\"") != std::string::npos ||
+           cfg.find("\"model_type\":\"qwen3\"") != std::string::npos ||
+           cfg.find("\"model_type\": \"qwen3_5\"") != std::string::npos ||
+           cfg.find("\"model_type\":\"qwen3_5\"") != std::string::npos;
 }
 
 Qwen35Engine::Qwen35Engine(int n_channels, int max_seq_len) : impl_(new Impl) {
