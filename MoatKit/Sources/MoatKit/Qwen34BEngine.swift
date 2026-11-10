@@ -16,7 +16,7 @@ import MLXLMCommon
 
 /// Qwen3-4B engine using MLX Swift - native Qwen3 architecture support.
 public final class Qwen34BEngine: Sendable {
-    private let container: ModelContainer
+    public let container: ModelContainer
 
     /// Load Qwen3-4B from a local directory containing config.json,
     /// model.safetensors (or shards), and tokenizer.json.
@@ -45,6 +45,21 @@ public final class Qwen34BEngine: Sendable {
         topP: Float = 0.9
     ) async throws -> String {
         let tokenIds = await container.encode(prompt)
+        return try await generate(
+            tokenIds: tokenIds,
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: topP
+        )
+    }
+
+    /// Generate text from pre-computed token IDs.
+    public func generate(
+        tokenIds: [Int],
+        maxTokens: Int = 256,
+        temperature: Float = 0.7,
+        topP: Float = 0.9
+    ) async throws -> String {
         let tokens = MLXArray(tokenIds)
         let input = LMInput(tokens: tokens)
 
@@ -141,15 +156,23 @@ private struct Qwen3ByteLevelBPETokenizer: Tokenizer {
         // NFC normalize
         let normalized = text.precomposedStringWithCanonicalMapping
 
-        // GPT-2 style regex pre-tokenization
-        let pattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"#
+        // Pre-tokenization: match non-whitespace sequences (\S+).
+        // For all pieces after the first, prepend U+0120 ("Ġ", the byte-level
+        // encoding of space) to match HuggingFace's ByteLevel pre-tokenizer.
+        let pattern = #"\S+"#
         let regex = try! NSRegularExpression(pattern: pattern, options: [])
         let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
         let matches = regex.matches(in: normalized, options: [], range: range)
 
         var allTokens: [String] = []
-        for match in matches {
-            let piece = String(normalized[Range(match.range, in: normalized)!])
+        for (idx, match) in matches.enumerated() {
+            var piece = String(normalized[Range(match.range, in: normalized)!])
+            // Prepend a space to all non-first pieces so that byte-level
+            // encoding maps it to "Ġ" (U+0120), matching HF's ByteLevel
+            // pre-tokenizer which marks word boundaries this way.
+            if idx > 0 {
+                piece = " " + piece
+            }
             let byteTokens = byteLevelEncode(piece)
             let bpeTokens = applyBPE(byteTokens)
             allTokens.append(contentsOf: bpeTokens)
