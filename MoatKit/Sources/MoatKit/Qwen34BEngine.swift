@@ -1,1 +1,267 @@
-//\n//  Qwen34BEngine.swift\n//  MoatKit\n//\n//  Qwen3-4B engine using MLX Swift - native Qwen3 architecture support.\n//  Uses MLX Swift LM (https://github.com/ml-explore/mlx-swift-lm) which has\n//  native Qwen3 support via Qwen3Model.\n//  This is the recommended path for Apple Silicon (M1/M2/M3/M4) and iOS\n//  deployment - no custom Metal kernels needed, Apple's Metal backend\n//  handles everything efficiently.\n//\n\nimport Foundation\nimport MLX\nimport MLXLLM\nimport MLXLMCommon\n\n/// Qwen3-4B engine using MLX Swift - native Qwen3 architecture support.\npublic final class Qwen34BEngine: Sendable {\n    private let container: ModelContainer\n\n    /// Load Qwen3-4B from a local directory containing config.json,\n    /// model.safetensors (or shards), and tokenizer.json.\n    public init(modelDir: URL) async throws {\n        // Create a simple tokenizer loader that reads tokenizer.json from the\n        // local model directory. This avoids depending on the swift-tokenizers\n        // package while still providing functional encode/decode.\n        let tokenizerLoader = LocalDirectoryTokenizerLoader(directory: modelDir)\n\n        let container = try await LLMModelFactory.shared.loadContainer(\n            from: modelDir,\n            using: tokenizerLoader\n        )\n        self.container = container\n\n        print(\"Qwen3-4B loaded from \\(modelDir.path)\")\n    }\n\n    /// Generate text from a prompt.\n    public func generate(\n        prompt: String,\n        maxTokens: Int = 256,\n        temperature: Float = 0.7,\n        topP: Float = 0.9\n    ) async throws -> String {\n        // Encode the prompt using the container's tokenizer.\n        let tokenIds = await container.encode(prompt)\n        let tokens = MLXArray(tokenIds)\n        let input = LMInput(tokens: LMInput.Text(tokens: tokens))\n\n        let parameters = GenerateParameters(\n            prefillStepSize: 512,\n            maxTokens: maxTokens,\n            temperature: temperature,\n            topP: topP,\n            topK: 0,\n            minP: 0.0,\n            repetitionPenalty: nil,\n            seed: nil\n        )\n\n        let stream = try container.generate(input: input, parameters: parameters)\n\n        var generatedText = \"\"\n        for await generation in stream {\n            switch generation {\n            case .chunk(let text):\n                generatedText += text\n            case .info, .toolCall:\n                break\n            }\n        }\n\n        return generatedText\n    }\n\n    /// Number of parameters in the model.\n    public var parameterCount: Int {\n        get async {\n            await (await container.configuration).modelDirectory.path.isEmpty ? 0 : 0\n            // ModelContainer doesn't expose parameter count directly;\n            // return 0 as placeholder. The Python MLX path reports ~4B.\n            return 0\n        }\n    }\n\n    /// Human-readable model name.\n    public var modelName: String {\n        \"Qwen3-4B\"\n    }\n}\n\n// MARK: - Local Directory Tokenizer Loader\n\n/// A simple TokenizerLoader that reads tokenizer.json from a local directory.\n/// Implements basic BPE-style tokenization using the vocab and merges from the\n/// HuggingFace tokenizer.json file.\nprivate final class LocalDirectoryTokenizerLoader: TokenizerLoader {\n    private let directory: URL\n\n    init(directory: URL) {\n        self.directory = directory\n    }\n\n    func load(from url: URL) async throws -> any Tokenizer {\n        let tokenizerURL = url.appending(component: \"tokenizer.json\")\n        guard FileManager.default.fileExists(atPath: tokenizerURL.path) else {\n            throw NSError(\n                domain: \"LocalDirectoryTokenizerLoader\", code: 1,\n                userInfo: [NSLocalizedDescriptionKey: \"tokenizer.json not found at \\(tokenizerURL.path)\"]\n            )\n        }\n        let data = try Data(contentsOf: tokenizerURL)\n        return try Qwen3Tokenizer(jsonData: data)\n    }\n}\n\n/// A basic BPE tokenizer for Qwen3 models.\n/// Reads vocab and merges from HuggingFace tokenizer.json format.\nprivate struct Qwen3Tokenizer: Tokenizer {\n    private let vocab: [String: Int]\n    private let idToToken: [Int: String]\n    private let merges: [(String, String)]\n    private let unkToken: String\n\n    init(jsonData: Data) throws {\n        let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] ?? [:]\n\n        let modelDict = json[\"model\"] as? [String: Any] ?? [:]\n        let vocabDict = modelDict[\"vocab\"] as? [String: Int] ?? [:]\n        self.vocab = vocabDict\n        self.idToToken = Dictionary(uniqueKeysWithValues: vocabDict.map { ($1, $0) })\n\n        let mergesArray = modelDict[\"merges\"] as? [String] ?? []\n        var merges: [(String, String)] = []\n        for merge in mergesArray {\n            let parts = merge.split(separator: \" \", maxSplits: 1)\n            if parts.count == 2 {\n                merges.append((String(parts[0]), String(parts[1])))\n            }\n        }\n        self.merges = merges\n\n        self.unkToken = modelDict[\"unk_token\"] as? String = \"<|unk|>\"\n    }\n\n    func encode(text: String, addSpecialTokens: Bool) -> [Int] {\n        let tokens = bpeTokenize(text)\n        return tokens.compactMap { vocab[$0] }\n    }\n\n    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {\n        let tokens = tokenIds.compactMap { idToToken[$0] }\n        return tokens.joined()\n    }\n\n    func convertTokenToId(_ token: String) -> Int? {\n        vocab[token]\n    }\n\n    func convertIdToToken(_ id: Int) -> String? {\n        idToToken[id]\n    }\n\n    var bosToken: String? { nil }\n    var eosToken: String? { nil }\n    var unknownToken: String? { unkToken }\n\n    func applyChatTemplate(\n        messages: [[String: any Sendable]],\n        tools: [[String: any Sendable]]?,\n        additionalContext: [String: any Sendable]?\n    ) throws -> [Int] {\n        // Simple fallback: concatenate message contents\n        let text = messages.compactMap { $0[\"content\"] as? String }.joined(separator: \"\\n\")\n        return encode(text: text, addSpecialTokens: true)\n    }\n\n    // MARK: - BPE Tokenization\n\n    private func bpeTokenize(_ text: String) -> [String] {\n        // Convert text to bytes, then to individual byte tokens\n        let bytes = Array(text.utf8)\n        var tokens: [String] = bytes.map { String(format: \"\\\\%02x\", $0) }\n\n        // Apply BPE merges\n        for (left, right) in merges {\n            var i = 0\n            while i < tokens.count - 1 {\n                if tokens[i] == left && tokens[i + 1] == right {\n                    tokens.replaceSubrange(i...i + 1, with: [left + right])\n                } else {\n                    i += 1\n                }\n            }\n        }\n\n        return tokens\n    }\n}\n
+//  Qwen34BEngine.swift
+//  MoatKit
+//
+//  Qwen3-4B engine using MLX Swift - native Qwen3 architecture support.
+//  Uses MLX Swift LM (https://github.com/ml-explore/mlx-swift-lm) which has
+//  native Qwen3 support via Qwen3Model.
+//  This is the recommended path for Apple Silicon (M1/M2/M3/M4) and iOS
+//  deployment - no custom Metal kernels needed, Apple's Metal backend
+//  handles everything efficiently.
+//
+
+import Foundation
+import MLX
+import MLXLLM
+import MLXLMCommon
+
+/// Qwen3-4B engine using MLX Swift - native Qwen3 architecture support.
+public final class Qwen34BEngine: Sendable {
+    private let container: ModelContainer
+
+    /// Load Qwen3-4B from a local directory containing config.json,
+    /// model.safetensors (or shards), and tokenizer.json.
+    public init(modelDir: URL) async throws {
+        let tokenizerLoader = LocalDirectoryTokenizerLoader(directory: modelDir)
+
+        let container = try await LLMModelFactory.shared.loadContainer(
+            from: modelDir,
+            using: tokenizerLoader
+        )
+        self.container = container
+
+        print("Qwen3-4B loaded from \(modelDir.path)")
+    }
+
+    /// Human-readable model name.
+    public var modelName: String {
+        "Qwen3-4B"
+    }
+
+    /// Generate text from a prompt.
+    public func generate(
+        prompt: String,
+        maxTokens: Int = 256,
+        temperature: Float = 0.7,
+        topP: Float = 0.9
+    ) async throws -> String {
+        let tokenIds = await container.encode(prompt)
+        let tokens = MLXArray(tokenIds)
+        let input = LMInput(tokens: tokens)
+
+        let parameters = GenerateParameters(
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: topP,
+            topK: 0,
+            minP: 0.0,
+            repetitionPenalty: nil,
+            prefillStepSize: 512,
+            seed: nil
+        )
+
+        let stream = try await container.generate(input: input, parameters: parameters)
+
+        var generatedText = ""
+        for await generation in stream {
+            switch generation {
+            case .chunk(let text):
+                generatedText += text
+            case .info, .toolCall:
+                break
+            }
+        }
+
+        return generatedText
+    }
+}
+
+// MARK: - Local Directory Tokenizer Loader
+
+/// A `TokenizerLoader` that reads tokenizer.json from a local directory.
+/// Implements byte-level BPE matching the Qwen3 HuggingFace tokenizer.
+private final class LocalDirectoryTokenizerLoader: TokenizerLoader {
+    private let directory: URL
+
+    init(directory: URL) {
+        self.directory = directory
+    }
+
+    func load(from url: URL) async throws -> any Tokenizer {
+        let tokenizerURL = url.appending(component: "tokenizer.json")
+        guard FileManager.default.fileExists(atPath: tokenizerURL.path) else {
+            throw NSError(
+                domain: "LocalDirectoryTokenizerLoader", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "tokenizer.json not found at \(tokenizerURL.path)"]
+            )
+        }
+        let data = try Data(contentsOf: tokenizerURL)
+        return try Qwen3ByteLevelBPETokenizer(jsonData: data)
+    }
+}
+
+/// Byte-level BPE tokenizer for Qwen3 models.
+///
+/// Matches the HuggingFace Qwen3 tokenizer:
+/// 1. NFC normalization
+/// 2. Regex pre-tokenization (GPT-2 style pattern)
+/// 3. Byte-level encoding: each byte maps to a Unicode character
+/// 4. BPE merges from vocab/merges in tokenizer.json
+/// 5. Token-to-ID lookup from vocab
+private struct Qwen3ByteLevelBPETokenizer: Tokenizer {
+    private let vocab: [String: Int]
+    private let idToToken: [Int: String]
+    private let merges: [(String, String)]
+    private let mergeRanks: [String: Int]
+
+    init(jsonData: Data) throws {
+        let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] ?? [:]
+
+        let modelDict = json["model"] as? [String: Any] ?? [:]
+        let vocabDict = modelDict["vocab"] as? [String: Int] ?? [:]
+        self.vocab = vocabDict
+        self.idToToken = Dictionary(uniqueKeysWithValues: vocabDict.map { ($1, $0) })
+
+        let mergesArray = modelDict["merges"] as? [[String]] ?? []
+        var merges: [(String, String)] = []
+        var ranks: [String: Int] = [:]
+        for (rank, pair) in mergesArray.enumerated() {
+            if pair.count == 2 {
+                let left = pair[0], right = pair[1]
+                merges.append((left, right))
+                ranks[left + right] = rank
+            }
+        }
+        self.merges = merges
+        self.mergeRanks = ranks
+    }
+
+    // MARK: - Tokenizer protocol
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        // NFC normalize
+        let normalized = text.precomposedStringWithCanonicalMapping
+
+        // GPT-2 style regex pre-tokenization
+        let pattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"#
+        let regex = try! NSRegularExpression(pattern: pattern, options: [])
+        let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
+        let matches = regex.matches(in: normalized, options: [], range: range)
+
+        var allTokens: [String] = []
+        for match in matches {
+            let piece = String(normalized[Range(match.range, in: normalized)!])
+            let byteTokens = byteLevelEncode(piece)
+            let bpeTokens = applyBPE(byteTokens)
+            allTokens.append(contentsOf: bpeTokens)
+        }
+
+        return allTokens.compactMap { vocab[$0] }
+    }
+
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        let tokens = tokenIds.compactMap { idToToken[$0] }
+        // Merge byte-level tokens back into UTF-8
+        var byteValues: [UInt8] = []
+        for token in tokens {
+            byteValues.append(contentsOf: tokenToBytes(token))
+        }
+        return String(bytes: byteValues, encoding: .utf8) ?? ""
+    }
+
+    func convertTokenToId(_ token: String) -> Int? {
+        vocab[token]
+    }
+
+    func convertIdToToken(_ id: Int) -> String? {
+        idToToken[id]
+    }
+
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        let text = messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+        return encode(text: text, addSpecialTokens: true)
+    }
+
+    // MARK: - Byte-level encoding
+
+    /// Maps each byte (0-255) to a Unicode character, matching the GPT-2 byte encoder.
+    private func byteLevelEncode(_ text: String) -> [String] {
+        let bytes = Array(text.utf8)
+        return bytes.map { byteToUnicode[$0]! }
+    }
+
+    /// Converts a byte-level token back to its raw byte value.
+    private func tokenToBytes(_ token: String) -> [UInt8] {
+        guard let first = token.unicodeScalars.first else { return [] }
+        let value = Int(first.value)
+        if value < 256 {
+            return [UInt8(value)]
+        }
+        // Extended bytes: 256 + n maps to byte n
+        let n = value - 256
+        if n >= 0 && n < 256 {
+            return [UInt8(n)]
+        }
+        return []
+    }
+
+    // MARK: - BPE
+
+    private func applyBPE(_ tokens: [String]) -> [String] {
+        if tokens.count == 1 { return tokens }
+
+        var tokens = tokens
+        while true {
+            var bestRank = Int.max
+            var bestIdx = -1
+
+            for i in 0..<tokens.count - 1 {
+                let pair = tokens[i] + tokens[i + 1]
+                if let rank = mergeRanks[pair], rank < bestRank {
+                    bestRank = rank
+                    bestIdx = i
+                }
+            }
+
+            if bestIdx == -1 { break }
+
+            tokens.replaceSubrange(bestIdx...bestIdx + 1, with: [tokens[bestIdx] + tokens[bestIdx + 1]])
+        }
+
+        return tokens
+    }
+}
+
+// MARK: - Byte-to-Unicode mapping
+
+/// GPT-2 byte encoder: maps each byte 0-255 to a Unicode character.
+/// Matches the HuggingFace `ByteLevel` pre-tokenizer.
+private let byteToUnicode: [UInt8: String] = {
+    var bs: [UInt8] = []
+    bs.append(contentsOf: Array(UInt8(33)...UInt8(126)))   // ! to ~
+    bs.append(contentsOf: Array(UInt8(161)...UInt8(172)))  // ¡ to ¬
+    bs.append(contentsOf: Array(UInt8(174)...UInt8(255)))  // ® to ÿ
+
+    var cs: [Int] = bs.map { Int($0) }
+    var n = 0
+    for b in 0..<256 {
+        if !bs.contains(UInt8(b)) {
+            bs.append(UInt8(b))
+            cs.append(256 + n)
+            n += 1
+        }
+    }
+
+    var dict: [UInt8: String] = [:]
+    for i in 0..<bs.count {
+        dict[bs[i]] = String(UnicodeScalar(cs[i])!)
+    }
+    return dict
+}()
