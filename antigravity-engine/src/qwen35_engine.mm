@@ -510,6 +510,7 @@ struct Dims {
     bool tied = true;
     bool isQwen35 = true;   // Qwen3.5-0.8B hybrid (text_config wrapper) vs Qwen3 dense (flat config)
     int attn_output_gate = 1;  // apply sigmoid(gate) to attention output (Qwen3.5-0.8B: yes, Qwen3-4B: no)
+    int plus1 = 1;             // RMSNorm weight convention: (1 + w) for Qwen3.5-0.8B, plain w for Qwen3-4B
     std::string modelPrefix = "model.language_model.layers.";  // weight key prefix
     std::vector<bool> isLinear;
     std::vector<int> eos;
@@ -573,6 +574,9 @@ bool parseDims(const std::string& model_dir, Dims& d, std::string& err) {
     // attn_output_gate: Qwen3.5-0.8B has it (true), Qwen3-4B may not (defaults to false).
     d.attn_output_gate = d.isQwen35 ? 1 : 0;
     if (numberOf(cfgObj, "attn_output_gate", v)) d.attn_output_gate = (int)v;
+
+    // RMSNorm weight convention: Qwen3.5-0.8B uses (1 + w), Qwen3-4B uses plain w.
+    d.plus1 = d.isQwen35 ? 1 : 0;
 
     // layer_types (only Qwen3.5-0.8B has them; Qwen3-4B is all dense).
     if (d.isQwen35) {
@@ -739,7 +743,7 @@ struct Qwen35Engine::Impl {
         Layer& L = layers[li];
         const uint32_t H = dm.H, I = dm.I;
         const uint32_t nslots = rows / rps;
-        rmsnorm(e, hid, L.inputNorm, nrm, rows, H, true);
+        rmsnorm(e, hid, L.inputNorm, nrm, rows, H, dm.plus1 != 0);
 
         if (!L.linear) {
             const uint32_t nH = dm.nH, nKV = dm.nKV;
@@ -809,7 +813,7 @@ struct Qwen35Engine::Impl {
             matmul(e, dnn, L.outProj, hid, rows, vd, H, true);
         }
 
-        rmsnorm(e, hid, L.postNorm, nrm, rows, H, true);
+        rmsnorm(e, hid, L.postNorm, nrm, rows, H, dm.plus1 != 0);
         matmul(e, nrm, L.gate, mg, rows, H, I, false);
         matmul(e, nrm, L.up, mu, rows, H, I, false);
         [e setComputePipelineState:pso["k_silu_mul"]];
@@ -827,7 +831,7 @@ struct Qwen35Engine::Impl {
     }
 
     void encodeHead(id<MTLComputeCommandEncoder> e, uint32_t rows) {
-        rmsnorm(e, hid, finalNorm, nrm, rows, dm.H, true);
+        rmsnorm(e, hid, finalNorm, nrm, rows, dm.H, dm.plus1 != 0);
         matmul(e, nrm, lmHead, logits, rows, dm.H, dm.V, false);
     }
 
