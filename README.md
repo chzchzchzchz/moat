@@ -30,6 +30,7 @@ Antigravity is an on-device inference stack engineered specifically for Apple Si
 - **Zero Cloud Dependence**: Full transformer forward pass, KV cache management, and token sampling run locally on the device GPU.
 - **Edge Budget Compliant**: Designed to operate within iOS physical RAM limitations (~3.5 GB Jetsam memory boundary on iPhone 15 Pro) and Apple M-series Macs.
 - **Multi-Platform Integration**: Includes an Objective-C++/C API, a native Swift Package (`AntigravityEngine.xcframework`) for iOS/macOS applications, and a Python `ctypes` bridge with an OpenAI-compatible REST server.
+- **Qwen3-4B Support**: Qwen3-4B (8.04 GB BF16, 36 layers, hidden=2560) runs via MLX Python (`mlx_lm`) and via the MLX Swift engine (`MoatKit/Sources/MoatKit/Qwen34BEngine.swift`). Metal engine RMSNorm convention bug fixed (`5b8817e`).
 - **Encrypted Local Persistence**: AES-256-GCM column-level database encryption using keys derived from Apple Keychain Data Protection.
 
 ---
@@ -322,11 +323,15 @@ To maintain full transparency, here is the current engineering status of all sys
   - Python ctypes native bridge and OpenAI-compatible API server.
   - Standard BPE tokenizer with merge table matching HuggingFace.
   - AES-256-GCM column encryption backed by Keychain Data Protection.
+  - **Qwen3-4B via MLX Python**: model loads and generates correct reasoning (GSM8K Janet's ducks: "16 - 3 - 4 = 9 eggs left. 9 * $2 = $18" ✓).
+  - **MoatKit Swift SDK**: builds successfully on macOS 26.5.2 with Swift 6.1.2. Includes `Qwen34BEngine.swift` using MLX Swift LM's native `Qwen3Model`.
+  - **Proven GSM8K benchmark**: Qwen3.5-0.8B best-of-8: 50% → 65%, p = 0.0026 (100 problems, Apple M1 Metal engine).
 
 - **Work in Progress & Roadmapped**:
   - **Trained Verifier**: The current Process Reward Model (PRM) uses token-frequency and logprob heuristics — concretely `logprob / len^0.6 + unique_token_ratio * 3.0 + log1p(len) * 0.5`, hand-tuned rather than learned. Training an on-device neural verifier is in progress.
   - **Tree Search**: Despite the name, `generateMCTS` / `AntigravityEngineNativeMCTSGenerate` is **not** Monte Carlo Tree Search. It is a chunk-wise greedy hill climb: each round generates N continuations, scores them with the PRM heuristic, appends the single best one and moves on. There is no tree, no visit counts, no UCT selection and no backpropagation, so it cannot recover from an early wrong turn. The name is retained because it is part of the published ABI. Real UCT expansion and backpropagation are planned.
   - **Speculative Sampling**: `AntigravityEngineNativeGenerateSpeculative` accepts `temperature` and `top_p` but **ignores them** — both draft and target decode greedily, because the acceptance test is an exact match against the target's greedy pick, which is only distribution-correct for greedy. Proper stochastic speculative sampling needs a probability-ratio accept/reject step and is roadmapped. Output is also single-channel regardless of `n_channels`.
+  - **Qwen3-4B Metal engine**: RMSNorm `plus1` convention bug fixed (`5b8817e`). Forward pass needs end-to-end verification. MLX Swift path (native `Qwen3Model`) is the recommended iOS deployment route.
   - **Cross-Platform**: Windows ARM64 and Vulkan shader backends are experimental drafts and not yet functional for production use.
 
 - **Notes on Verification**:

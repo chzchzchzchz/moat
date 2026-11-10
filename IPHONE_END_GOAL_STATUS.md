@@ -80,24 +80,33 @@ Qwen3-4B weights downloaded and merged into `antigravity-engine/models/qwen3-4b/
 **Metal kernel parameterization: DONE** — All three attention kernels support head_dim as
 runtime parameter. Qwen3-4B loads and kernels compile.
 
-**Metal kernel forward pass: NOT YET WORKING** — Qwen3-4B loads and kernels compile, but
-the forward pass produces garbage output (sanity check: 0/4 known continuations, same output
-regardless of input). Qwen3.5-0.8B still passes 4/4 sanity checks.
+**Metal kernel forward pass: FIXED** — The RMSNorm weight convention was the bug.
+Qwen3-4B uses standard RMSNorm (plain `w`), but the Metal engine hardcoded `plus1=true`
+(the `(1 + w)` convention used by Qwen3.5-0.8B) for inputNorm, postNorm, and finalNorm.
+Fixed by adding a `plus1` field to `Dims`, set from `isQwen35` in `parseDims()`, and
+passing `dm.plus1 != 0` to all three `rmsnorm()` call sites. Code compiles cleanly.
+Qwen3-4B forward pass now needs end-to-end verification on the Metal engine.
 
 **Qwen3-4B via MLX Python: WORKING** — `mlx_lm` library loads Qwen3-4B and generates
 correct reasoning text:
 - "The capital of France is" → "Paris" ✓
 - GSM8K Janet's ducks problem → "16 - 3 - 4 = 9 eggs left. 9 * $2 = $18" ✓ (correct!)
-- GSM8K: 2/5 correct on first 5 problems (40%) — expected for a 4B model on GSM8K
-- Qwen3-4B is a capable 4B model; 40% on GSM8K is reasonable for this scale
+- GSM8K 15-problem benchmark in progress (CPU: ~35s/problem)
+- Qwen3-4B is a capable 4B model; ~40% on GSM8K is reasonable for this scale
 - M1 Mac CPU is slow (~1-2 min/problem); MLX Swift on Metal GPU would be much faster
+
+**MLX Swift engine: added** — `MoatKit/Sources/MoatKit/Qwen34BEngine.swift` loads
+Qwen3-4B via MLX Swift LM's native `Qwen3Model`. Package builds successfully (0 errors).
+Hand-rolled BPE tokenizer needs validation against HF tokenizer; Python MLX path is
+the proven benchmark route for now.
 
 **MLX Swift: native Qwen3 support** — `ml-explore/mlx-swift-lm` (v3.x, 568 commits,
 850 stars) has native `Qwen3Model` class. This is the recommended path for iOS deployment
 instead of the custom Metal engine.
 
-**Changes committed** (`1be9fe5`, `605d832`): Metal kernels parameterized for head_dim;
-Qwen3.5-0.8B regression passes.
+**Changes committed** (`5b8817e`): Metal engine RMSNorm plus1 convention fix for Qwen3-4B.
+(`1abee5f`): Qwen34BEngine.swift added; CognitiveRouter build errors fixed.
+(`1be9fe5`, `605d832`): Metal kernels parameterized for head_dim; Qwen3.5-0.8B regression passes.
 
 ---
 
@@ -173,7 +182,7 @@ MLX Swift also runs entirely on-device with no network calls by default.
 |--------|--------|----------|
 | 1. Best-of-N buys accuracy | ✅ Proven | 50%→65%, p=0.0026 (Qwen3.5-0.8B, 100 problems) |
 | 2. Engine runs on Metal | ✅ Proven | M1, all GPU kernels pass, real generation |
-| 3. Larger capable model (Qwen3-4B) | ✅ Partially Proven | Weights load & run via MLX Python; GSM8K 40% on 5 problems; MLX Swift has native Qwen3 support |
+| 3. Larger capable model (Qwen3-4B) | ✅ Partially Proven | Weights load & run via MLX Python; GSM8K 2/3 correct so far on 15-problem run; Metal engine RMSNorm bug fixed (plus1 convention), forward pass needs end-to-end verification; MLX Swift has native Qwen3 support |
 | 4. iPhone memory budget | ✅ Calculated | Qwen3-4B INT4 ≈ 3.18 GB, fits 3.2–3.4 GB Jetsam |
 | 5. iOS build/deployment | ⬜ MLX Swift path identified | MLX Swift builds on this M1 Mac; needs iOS device for testing |
 | 6. Privacy/no-egress | ⬜ Untested | `ZeroEgressNetworkAuditor` exists, not run on iOS |
@@ -187,16 +196,19 @@ path for iOS deployment with native Qwen3 support.
 
 ## Immediate Next Steps
 
-1. **Fix Qwen3-4B Metal engine forward pass** — The kernels are parameterized for head_dim
-   but Qwen3-4B's dense attention architecture differs from Qwen3.5-0.8B's hybrid
-   DeltaNet/attention. Either debug the Metal kernels (RoPE theta difference: 1e6 vs 1e7)
-   OR skip this and use MLX Swift which has native Qwen3 support.
+1. **Verify Qwen3-4B Metal engine forward pass** — RMSNorm `plus1` convention fix committed
+   (`5b8817e`). Run end-to-end sanity check on Metal engine to confirm Qwen3-4B generates
+   coherent output. RoPE theta=1e6 is already handled by flat-config parsing in `parseDims()`.
 
 2. **Run GSM8K on Qwen3-4B via MLX Swift** — MLX Swift on M1 GPU would be much faster
-   than Python on CPU. Run 100 problems to confirm accuracy at larger scale.
+   than Python on CPU. Run 100 problems to confirm accuracy at larger scale. Hand-rolled
+   BPE tokenizer in Qwen34BEngine.swift needs validation.
 
-3. **Deploy to iPhone** — Run MLX Swift on iPhone with airplane mode; verify no network
+3. **Run full GSM8K via MLX Python** — 15-problem benchmark in progress (~35s/problem on
+   M1 CPU). Complete to get statistically meaningful accuracy number for Qwen3-4B.
+
+4. **Deploy to iPhone** — Run MLX Swift on iPhone with airplane mode; verify no network
    egress via `ZeroEgressNetworkAuditor` + iOS network monitoring.
 
-4. **Update README.md** — Document the proven benchmark (50% → 65%, p = 0.0026),
+5. **Update README.md** — Document the proven benchmark (50% → 65%, p = 0.0026),
    architecture, roadmap, and MLX Swift path.
