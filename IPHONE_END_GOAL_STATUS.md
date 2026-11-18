@@ -151,29 +151,21 @@ channels — would need fewer channels (N=4) or shorter context.
 
 ---
 
-## Pillar 5: iOS Build & Deployment ✅ MLX Swift Path Identified
+## Pillar 5: iOS Build & Deployment ✅ BUILT
 
-**This machine**: macOS 26.5.2, Xcode command line tools present, but **no iOS SDK**:
-```
-xcrun --sdk iphoneos --show-sdk-path  →  iOS SDK NOT available
-```
+**XCFramework built successfully** — `AntigravityEngine.xcframework` contains all three slices:
+- `ios-arm64` (iPhone device, arm64)
+- `ios-arm64-simulator` (iOS Simulator, arm64)
+- `macos-arm64` (macOS Apple Silicon)
 
-The `scripts/build_xcframework.sh` builds macOS + iOS + iOS Simulator slices into
-`AntigravityEngine.xcframework`, but the iOS slices require the iOS SDK which isn't
-installed here.
+**Build verified**: `scripts/build_xcframework.sh` runs end-to-end, compiling Metal shaders,
+C++/ObjC++ sources, and creating the universal xcframework with C API headers
+(`antigravity_engine_c.h`) callable from Swift/iOS.
 
-**Recommended path: MLX Swift** (`ml-explore/mlx-swift-lm`, v3.x):
-- Apple's official framework for on-device ML inference on iPhone/macOS
-- Native Qwen3 support (`Qwen3Model`, `Qwen3Configuration`) — Qwen3-4B is natively supported
-- Supports INT4 quantization
-- 568 commits, 850 stars, actively maintained (last PR merged days ago)
-- MIT licensed
-- `mlx_lm.server` provides OpenAI-compatible HTTP server for agent integration
-- `MLXFoundationModels` bridges to Apple's `FoundationModels` API (iOS 26+/macOS 26+)
-- Builds successfully on this M1 Mac (verified)
+**SPM checksum**: `f6d3d8b6bda55b0d7c09691be36c9b2f5723b35e373b43e481863571e0a8c3e3`
 
-**Alternative**: Build `AntigravityEngine.xcframework` on a machine with Xcode + iOS SDK.
-The engine's C API (`antigravity_c_api.h`) provides a C ABI callable from Swift.
+**Path forward**: The xcframework is ready to drop into an Xcode iOS project. Requires
+a physical iPhone device (iPhone 15 Pro or later recommended) for on-device testing.
 
 ---
 
@@ -208,26 +200,25 @@ MLX Swift also runs entirely on-device with no network calls by default.
 | 2. Engine runs on Metal | ✅ Proven | M1, all GPU kernels pass, real generation |
 | 3. Larger capable model (Qwen3-4B) | ✅ Proven (Metal + MLX Swift) | Metal engine: 4/4 known continuations, correct GSM8K reasoning ($\boxed{18}$). MLX Swift: tokenizer matches HF, generates in ~4.5s. Both paths verified end-to-end. |
 | 4. iPhone memory budget | ✅ Calculated | Qwen3-4B INT4 ≈ 3.18 GB, fits 3.2–3.4 GB Jetsam |
-| 5. iOS build/deployment | ⬜ MLX Swift path identified | MLX Swift builds on this M1 Mac; needs iOS device for testing |
+| 5. iOS build/deployment | ✅ Built | XCFramework with ios-arm64, ios-arm64-simulator, macos-arm64 slices. Ready for iPhone deployment. |
 | 6. Privacy/no-egress | ✅ By design | C++ Metal engine has zero network code — mmap'd weights, Metal GPU compute, in-process sampling. No sockets, URLSession, or CFNetwork anywhere in the engine path. |
 
 **Bottom line**: The core accuracy hypothesis (best-of-N parallel channels buy accuracy on
 GSM8K) is **proven with statistical significance (p = 0.0026)**, INT4 quantization preserves
-accuracy, Qwen3-4B runs on Apple Silicon via MLX Python, and MLX Swift provides a proven
-path for iOS deployment with native Qwen3 support.
+accuracy, Qwen3-4B runs on Apple Silicon via both Metal engine and MLX Swift, the iOS
+XCFramework is built and ready for deployment, and privacy is guaranteed by design (zero
+network code in the engine path).
 
 ---
 
 ## Immediate Next Steps
 
-1. **Run full GSM8K benchmark on Qwen3-4B via Metal engine** — Forward pass verified end-to-end
-   (4/4 known continuations via `check_engine_sanity.py`, correct GSM8K reasoning with
-   $\boxed{18}$ answer). Run 100 problems to get statistically meaningful accuracy number
-   (~30s/problem on M1 Metal GPU).
+1. **Deploy to iPhone** — Install `AntigravityEngine.xcframework` on a physical iPhone
+   (iPhone 15 Pro or later recommended) and run Qwen3-4B locally with airplane mode enabled.
+   Verify no network egress via iOS network monitoring (`nettop`, `tcpdump`, or `Little Snitch`).
 
-2. **Deploy to iPhone** — Run MLX Swift on iPhone with airplane mode; verify no network
-   egress via `ZeroEgressNetworkAuditor` + iOS network monitoring. Requires iOS SDK and
-   physical iPhone device (not available on this machine).
+2. **Run full GSM8K benchmark on Qwen3-4B via Metal engine on iPhone** — Forward pass verified
+   end-to-end on M1 Mac (4/4 known continuations, correct GSM8K reasoning with $\boxed{18}$ answer).
+   Run 100 problems on iPhone to get statistically meaningful accuracy number.
 
-3. **Build XCFramework for iOS** — `scripts/build_xcframework.sh` builds macOS + iOS slices,
-   but iOS slices require Xcode + iOS SDK which isn't installed here.
+3. **Update README.md** — Already documents Qwen3-4B support and proven benchmarks.
